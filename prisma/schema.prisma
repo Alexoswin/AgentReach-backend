@@ -1,0 +1,119 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model SystemSettings {
+  id                 String   @id @default("default") @map("_id")
+  awsAccessKeyId     String   @default("")
+  awsSecretAccessKey String   @default("")
+  awsRegion          String   @default("")
+  awsSenderEmail     String   @default("")
+  openRouterApiKey   String   @default("")
+  openRouterModel    String   @default("meta-llama/llama-3-8b-instruct:free")
+  updatedAt          DateTime @updatedAt
+}
+
+model Contact {
+  id               String                 @id @default(uuid()) @map("_id")
+  firstName        String
+  lastName         String
+  email            String                 @unique
+  company          String?
+  jobTitle         String?
+  linkedinUrl      String?
+  phoneNumber      String?
+  notes            String?
+  customFields     String?                // Store JSON string
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  campaignContacts EmailCampaignContact[]
+  callHistory      CallHistory[]
+}
+
+model Template {
+  id           String          @id @default(uuid()) @map("_id")
+  name         String
+  goal         String?
+  audience     String?
+  tone         String?
+  instructions String?
+  subject      String
+  bodyHtml     String
+  bodyText     String
+  type         String          // 'AI', 'PREDEFINED', 'CUSTOM'
+  category     String?         // 'JOB_APPLICATION', 'RECRUITER_OUTREACH', etc.
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  campaigns    EmailCampaign[]
+}
+
+model EmailCampaign {
+  id         String                 @id @default(uuid()) @map("_id")
+  name       String
+  status     String                 @default("DRAFT") // 'DRAFT', 'SCHEDULED', 'RUNNING', 'COMPLETED', 'FAILED'
+  templateId String?
+  template   Template?              @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  contacts   EmailCampaignContact[]
+}
+
+model EmailCampaignContact {
+  id             String         @id @default(uuid()) @map("_id")
+  campaignId     String?
+  campaign       EmailCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId      String
+  contact        Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  subject        String?
+  bodyText       String?
+  bodyHtml       String?
+  sentTime       DateTime?      @default(now())
+  deliveryStatus String         @default("PENDING") // 'PENDING', 'SENT', 'DELIVERED', 'FAILED'
+  openStatus     Boolean        @default(false)
+  replyStatus    Boolean        @default(false)
+  errorMessage   String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+model CallingCampaign {
+  id          String        @id @default(uuid()) @map("_id")
+  name        String
+  description String?
+  objective   String?
+  prompt      String?
+  voice       String?
+  language    String?
+  status      String        @default("DRAFT") // 'DRAFT', 'RUNNING', 'COMPLETED'
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  calls       CallHistory[]
+}
+
+model CallHistory {
+  id           String          @id @default(uuid()) @map("_id")
+  campaignId   String
+  campaign     CallingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId    String
+  contact      Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  duration     Int             @default(0) // In seconds
+  outcome      String          @default("PENDING") // 'PENDING', 'ANSWERED', 'NO_ANSWER', 'BUSY', 'FAILED'
+  transcript   String?
+  recordingUrl String?
+  timestamp    DateTime        @default(now())
+  createdAt    DateTime        @default(now())
+
+  @@index([campaignId])
+  @@index([contactId])
+}

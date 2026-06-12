@@ -1,0 +1,30 @@
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+export type SystemSettingsDocument = SystemSettings & Document;
+
+@Schema({ collection: 'SystemSettings', timestamps: true })
+export class SystemSettings {
+  @Prop({ default: 'default' })
+  _id: string;
+
+  @Prop({ default: '' })
+  awsAccessKeyId: string;
+
+  @Prop({ default: '' })
+  awsSecretAccessKey: string;
+
+  @Prop({ default: 'us-east-1' })
+  awsRegion: string;
+
+  @Prop({ default: '' })
+  awsSenderEmail: string;
+
+  @Prop({ default: '' })
+  openRouterApiKey: string;
+
+  @Prop({ default: 'meta-llama/llama-3-8b-instruct:free' })
+  openRouterModel: string;
+}
+
+export const SystemSettingsSchema = SchemaFactory.createForClass(SystemSettings);
