@@ -15,7 +15,7 @@ export class User {
   @Prop({ required: true })
   passwordHash: string;
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   refreshTokenHash?: string | null;
 
   @Prop({ default: 'Oswin Alex' })
