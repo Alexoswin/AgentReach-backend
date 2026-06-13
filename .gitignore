@@ -24,6 +24,10 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Markdown files
+*.md
+!README.md
+
 # OS-generated files
 .DS_Store
 .DS_Store?
