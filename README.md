@@ -1,6 +1,6 @@
 # ReachConvert Backend
 
-This is the NestJS API for ReachConvert. It handles authentication, MongoDB persistence, contacts, templates, email campaigns, calling campaigns, settings, history, analytics, and integrations such as AWS SES and OpenRouter.
+This is the NestJS API for ReachConvert, a bulk email and AI calling app for exploring job opportunities. The backend handles authentication, MongoDB persistence, recruiter/company contacts, email templates, bulk email campaigns, AI calling campaign records, settings, history, analytics, AWS SES email sending, and OpenRouter-powered AI generation.
 
 ## Tech Stack
 
@@ -115,16 +115,29 @@ For production, verify the sender domain/address in AWS SES and change the defau
 
 ```text
 src/auth/                 # Login, refresh token, logout, profile, password reset
-src/contacts/             # Contact CRUD and import support
-src/templates/            # Manual and AI email templates
-src/email-campaigns/      # Campaign creation, launch, relaunch, sending
-src/calling-campaigns/    # AI calling campaign records
-src/history/              # Outreach history
+src/contacts/             # Recruiter, company, hiring team, and lead contacts
+src/templates/            # Manual and AI email templates for job outreach
+src/email-campaigns/      # Bulk campaign creation, launch, relaunch, sending
+src/calling-campaigns/    # AI calling follow-up campaign records
+src/history/              # Job outreach history
 src/analytics/            # Dashboard metrics
 src/settings/             # AWS SES and OpenRouter settings
 src/schemas/              # MongoDB schema/entity definitions
 src/mongo.service.ts      # Prisma-like Mongo delegate helpers and seed data
 ```
+
+## Job Outreach Workflow
+
+The API supports this main workflow:
+
+1. Store job opportunity contacts.
+2. Create manual or AI-generated email templates.
+3. Save templates as HTML or plain text.
+4. Create a bulk email campaign.
+5. Send the campaign through AWS SES.
+6. Relaunch the campaign later for follow-up.
+7. Track AI calling campaigns and outreach history.
+8. Show analytics in the dashboard.
 
 ## Authentication
 
@@ -145,6 +158,8 @@ Email settings are stored in MongoDB system settings. To send real email:
 - Verify `oswin.alex@oswinalex.site` as a sender, or use a verified domain identity
 - Move AWS SES out of sandbox mode for sending to unverified recipients
 - Configure AWS credentials and region in Settings or environment-backed seed values
+
+Use the sender domain responsibly. For job outreach, messages should be professional, accurate, and sent only to relevant contacts.
 
 ## MongoDB
 
