@@ -1,10 +1,14 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { randomUUID } from 'crypto';
 
 export type TemplateDocument = Template & Document;
 
 @Schema({ collection: 'Template', timestamps: true })
 export class Template {
+  @Prop({ default: () => randomUUID() })
+  _id: string;
+
   @Prop({ required: true })
   name: string;
 

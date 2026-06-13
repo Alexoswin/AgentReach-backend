@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async getDashboardAnalytics() {
     // 1. Email Metrics
-    const emailHistory = await this.prisma.emailCampaignContact.findMany({
+    const emailHistory = await this.db.emailCampaignContact.findMany({
       include: {
         campaign: {
           include: { template: true },
@@ -27,7 +27,7 @@ export class AnalyticsService {
     const replyRate = sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
 
     // 2. Call Metrics
-    const callHistory = await this.prisma.callHistory.findMany();
+    const callHistory = await this.db.callHistory.findMany();
     const callsMade = callHistory.filter(c => c.outcome !== 'PENDING').length;
     const answeredCalls = callHistory.filter(c => c.outcome === 'ANSWERED').length;
     const successRate = callsMade > 0 ? Math.round((answeredCalls / callsMade) * 100) : 0;
@@ -36,17 +36,17 @@ export class AnalyticsService {
     const averageDuration = answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0;
 
     // 3. Campaign Performance Charts
-    const campaigns = await this.prisma.emailCampaign.findMany({
+    const campaigns = await this.db.emailCampaign.findMany({
       include: {
         contacts: true,
       },
     });
 
     const campaignPerformance = campaigns.map(c => {
-      const campaignSent = c.contacts.filter(h => h.deliveryStatus === 'SENT' || h.deliveryStatus === 'DELIVERED').length;
-      const campaignFailed = c.contacts.filter(h => h.deliveryStatus === 'FAILED').length;
-      const campaignOpens = c.contacts.filter(h => h.openStatus).length;
-      const campaignReplies = c.contacts.filter(h => h.replyStatus).length;
+      const campaignSent = c.contacts.filter((h: any) => h.deliveryStatus === 'SENT' || h.deliveryStatus === 'DELIVERED').length;
+      const campaignFailed = c.contacts.filter((h: any) => h.deliveryStatus === 'FAILED').length;
+      const campaignOpens = c.contacts.filter((h: any) => h.openStatus).length;
+      const campaignReplies = c.contacts.filter((h: any) => h.replyStatus).length;
 
       return {
         name: c.name,
@@ -58,7 +58,7 @@ export class AnalyticsService {
     });
 
     // 4. Template Performance
-    const templates = await this.prisma.template.findMany();
+    const templates = await this.db.template.findMany();
     const templatePerformance = templates.map(t => {
       // Find history linked to campaigns using this template
       const templateHistory = emailHistory.filter(h => h.campaign?.templateId === t.id);

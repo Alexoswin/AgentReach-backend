@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { resolveOpenRouterModel } from '../config/openrouter';
@@ -9,10 +9,10 @@ const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 
 @Injectable()
 export class SettingsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async getSettings() {
-    return this.prisma.systemSettings.findUnique({
+    return this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
   }
@@ -25,7 +25,7 @@ export class SettingsService {
         : {}),
     };
 
-    return this.prisma.systemSettings.upsert({
+    return this.db.systemSettings.upsert({
       where: { id: 'default' },
       update: data,
       create: {

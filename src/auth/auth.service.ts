@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { hashPassword, verifyPassword } from './password';
 import { TokenService } from './token.service';
 import { LoginDto } from './dto/login.dto';
@@ -9,12 +9,12 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 @Injectable()
 export class AuthService {
   constructor(
-    private prisma: PrismaService,
+    private db: MongoService,
     private tokenService: TokenService,
   ) {}
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({
+    const user = await this.db.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
 
@@ -27,7 +27,7 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     const payload = this.tokenService.verifyToken(refreshToken, 'refresh');
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
     if (!user?.refreshTokenHash) {
       throw new UnauthorizedException('Refresh token has been revoked');
@@ -41,7 +41,7 @@ export class AuthService {
   }
 
   async logout(userId: string) {
-    await this.prisma.user.update({
+    await this.db.user.update({
       where: { id: userId },
       data: { refreshTokenHash: null },
     });
@@ -50,7 +50,7 @@ export class AuthService {
   }
 
   async me(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.db.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
     return this.sanitizeUser(user);
   }
@@ -72,7 +72,7 @@ export class AuthService {
     }
 
     try {
-      const user = await this.prisma.user.update({
+      const user = await this.db.user.update({
         where: { id: userId },
         data,
       });
@@ -84,7 +84,7 @@ export class AuthService {
   }
 
   async resetPassword(dto: ResetPasswordDto) {
-    const user = await this.prisma.user.findUnique({
+    const user = await this.db.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
 
@@ -92,7 +92,7 @@ export class AuthService {
       throw new BadRequestException('No account found for that email');
     }
 
-    await this.prisma.user.update({
+    await this.db.user.update({
       where: { id: user.id },
       data: {
         passwordHash: await hashPassword(dto.newPassword),
@@ -107,7 +107,7 @@ export class AuthService {
     const accessToken = this.tokenService.signAccessToken(user);
     const refreshToken = this.tokenService.signRefreshToken(user);
 
-    const updatedUser = await this.prisma.user.update({
+    const updatedUser = await this.db.user.update({
       where: { id: user.id },
       data: {
         refreshTokenHash: this.tokenService.hashToken(refreshToken),

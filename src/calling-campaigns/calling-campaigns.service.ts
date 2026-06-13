@@ -1,13 +1,13 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 
 @Injectable()
 export class CallingCampaignsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async findAll() {
-    const campaigns = await this.prisma.callingCampaign.findMany({
+    const campaigns = await this.db.callingCampaign.findMany({
       include: {
         calls: true,
       },
@@ -26,12 +26,12 @@ export class CallingCampaignsService {
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       contactCount: c.calls.length,
-      answeredCount: c.calls.filter(call => call.outcome === 'ANSWERED').length,
+      answeredCount: c.calls.filter((call: any) => call.outcome === 'ANSWERED').length,
     }));
   }
 
   async findOne(id: string) {
-    const campaign = await this.prisma.callingCampaign.findUnique({
+    const campaign = await this.db.callingCampaign.findUnique({
       where: { id },
       include: {
         calls: {
@@ -51,17 +51,17 @@ export class CallingCampaignsService {
 
   async create(dto: CreateCallingCampaignDto) {
     const { contactIds, ...rest } = dto;
-    const campaign = await this.prisma.callingCampaign.create({
+    const campaign = await this.db.callingCampaign.create({
       data: rest,
     });
 
     if (contactIds && contactIds.length > 0) {
       // Create initial pending CallHistory items
       for (const contactId of contactIds) {
-        const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+        const contact = await this.db.contact.findUnique({ where: { id: contactId } });
         if (!contact) continue;
 
-        await this.prisma.callHistory.create({
+        await this.db.callHistory.create({
           data: {
             campaignId: campaign.id,
             contactId,
@@ -77,27 +77,27 @@ export class CallingCampaignsService {
 
   async update(id: string, dto: Partial<CreateCallingCampaignDto> & { status?: string }) {
     const { contactIds, ...rest } = dto;
-    const campaign = await this.prisma.callingCampaign.update({
+    const campaign = await this.db.callingCampaign.update({
       where: { id },
       data: rest,
     });
 
     if (contactIds) {
       // Delete existing calls that are pending
-      await this.prisma.callHistory.deleteMany({
+      await this.db.callHistory.deleteMany({
         where: { campaignId: id, outcome: 'PENDING' },
       });
 
       for (const contactId of contactIds) {
-        const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+        const contact = await this.db.contact.findUnique({ where: { id: contactId } });
         if (!contact) continue;
 
-        const existing = await this.prisma.callHistory.findFirst({
+        const existing = await this.db.callHistory.findFirst({
           where: { campaignId: id, contactId },
         });
 
         if (!existing) {
-          await this.prisma.callHistory.create({
+          await this.db.callHistory.create({
             data: {
               campaignId: id,
               contactId,
@@ -113,13 +113,13 @@ export class CallingCampaignsService {
   }
 
   async remove(id: string) {
-    return this.prisma.callingCampaign.delete({
+    return this.db.callingCampaign.delete({
       where: { id },
     });
   }
 
   async launchCampaign(id: string) {
-    const campaign = await this.prisma.callingCampaign.findUnique({
+    const campaign = await this.db.callingCampaign.findUnique({
       where: { id },
       include: {
         calls: {
@@ -137,7 +137,7 @@ export class CallingCampaignsService {
       throw new BadRequestException('No pending calls in this campaign');
     }
 
-    await this.prisma.callingCampaign.update({
+    await this.db.callingCampaign.update({
       where: { id },
       data: { status: 'RUNNING' },
     });
@@ -150,7 +150,7 @@ export class CallingCampaignsService {
 
   private async runCallSimulation(campaignId: string) {
     try {
-      const campaign = await this.prisma.callingCampaign.findUnique({
+      const campaign = await this.db.callingCampaign.findUnique({
         where: { id: campaignId },
         include: {
           calls: {
@@ -185,13 +185,13 @@ ${contact.firstName}: Yes, this is ${contact.firstName} speaking. Who is this?
 Sarah: Hi ${contact.firstName}, my name is Sarah calling from ReachConvert. I saw your application for the Software Engineer role and wanted to schedule a quick conversation.
 ${contact.firstName}: Oh, awesome! Yes, I am definitely interested.
 Sarah: Great! I see you have experience with NestJS and Next.js. Could you tell me a bit about your last project?
-${contact.firstName}: Sure, in my last role at ${contact.company || 'my previous company'}, I built a SaaS platform using Next.js on the frontend and NestJS on the backend, complete with Prisma ORM...
+${contact.firstName}: Sure, in my last role at ${contact.company || 'my previous company'}, I built a SaaS platform using Next.js on the frontend and NestJS on the backend, complete with MongoDB...
 Sarah: That sounds exactly like what we are looking for. I will pass your details to the hiring manager and we will follow up with an email to schedule a technical round.
 ${contact.firstName}: Sounds perfect, thank you Sarah!
 Sarah: Thank you, have a great day!`;
         }
 
-        await this.prisma.callHistory.update({
+        await this.db.callHistory.update({
           where: { id: call.id },
           data: {
             outcome,
@@ -203,13 +203,13 @@ Sarah: Thank you, have a great day!`;
         });
       }
 
-      await this.prisma.callingCampaign.update({
+      await this.db.callingCampaign.update({
         where: { id: campaignId },
         data: { status: 'COMPLETED' },
       });
     } catch (err) {
       console.error('Calling simulation error:', err);
-      await this.prisma.callingCampaign.update({
+      await this.db.callingCampaign.update({
         where: { id: campaignId },
         data: { status: 'FAILED' },
       });
@@ -217,8 +217,8 @@ Sarah: Thank you, have a great day!`;
   }
 
   async getDashboardMetrics() {
-    const campaigns = await this.prisma.callingCampaign.findMany();
-    const calls = await this.prisma.callHistory.findMany();
+    const campaigns = await this.db.callingCampaign.findMany();
+    const calls = await this.db.callHistory.findMany();
 
     const totalCampaigns = campaigns.length;
     const activeCampaigns = campaigns.filter(c => c.status === 'RUNNING').length;

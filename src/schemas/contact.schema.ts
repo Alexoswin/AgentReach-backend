@@ -1,10 +1,14 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { randomUUID } from 'crypto';
 
 export type ContactDocument = Contact & Document;
 
 @Schema({ collection: 'Contact', timestamps: true })
 export class Contact {
+  @Prop({ default: () => randomUUID() })
+  _id: string;
+
   @Prop({ required: true })
   firstName: string;
 
@@ -29,9 +33,9 @@ export class Contact {
   @Prop()
   notes?: string;
 
-  // Stored as a plain object (key-value custom fields)
-  @Prop({ type: Object, default: {} })
-  customFields?: Record<string, any>;
+  // Stored as a JSON string for compatibility with the current import/interpolation code.
+  @Prop()
+  customFields?: string;
 }
 
 export const ContactSchema = SchemaFactory.createForClass(Contact);

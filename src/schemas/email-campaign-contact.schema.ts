@@ -1,15 +1,19 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document } from 'mongoose';
+import { randomUUID } from 'crypto';
 
 export type EmailCampaignContactDocument = EmailCampaignContact & Document;
 
 @Schema({ collection: 'EmailCampaignContact', timestamps: true })
 export class EmailCampaignContact {
-  @Prop({ type: Types.ObjectId, ref: 'EmailCampaign', required: true, index: true })
-  campaignId: Types.ObjectId;
+  @Prop({ default: () => randomUUID() })
+  _id: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'Contact', required: true, index: true })
-  contactId: Types.ObjectId;
+  @Prop({ type: String, ref: 'EmailCampaign', required: true, index: true })
+  campaignId: string;
+
+  @Prop({ type: String, ref: 'Contact', required: true, index: true })
+  contactId: string;
 
   @Prop()
   subject?: string;

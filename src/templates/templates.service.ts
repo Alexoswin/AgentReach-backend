@@ -1,21 +1,21 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
 
 @Injectable()
 export class TemplatesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async findAll() {
-    return this.prisma.template.findMany({
+    return this.db.template.findMany({
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async findOne(id: string) {
-    const template = await this.prisma.template.findUnique({
+    const template = await this.db.template.findUnique({
       where: { id },
     });
     if (!template) {
@@ -27,7 +27,7 @@ export class TemplatesService {
   async create(dto: CreateTemplateDto) {
     const data = this.normalizeTemplateBodies(dto);
 
-    return this.prisma.template.create({
+    return this.db.template.create({
       data,
     });
   }
@@ -36,7 +36,7 @@ export class TemplatesService {
     await this.findOne(id);
     const data = this.normalizeTemplateBodies(dto, false);
 
-    return this.prisma.template.update({
+    return this.db.template.update({
       where: { id },
       data,
     });
@@ -44,7 +44,7 @@ export class TemplatesService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.template.delete({
+    return this.db.template.delete({
       where: { id },
     });
   }
@@ -110,7 +110,7 @@ export class TemplatesService {
 
   async generateAiTemplate(dto: GenerateTemplateDto) {
     const format = dto.format || 'HTML';
-    const settings = await this.prisma.systemSettings.findUnique({
+    const settings = await this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
 

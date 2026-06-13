@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 
 @Injectable()
 export class HistoryService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async getEmailHistory(filters: { startDate?: string; endDate?: string; campaignId?: string; status?: string }) {
     const where: any = {};
@@ -26,7 +26,7 @@ export class HistoryService {
       }
     }
 
-    return this.prisma.emailCampaignContact.findMany({
+    return this.db.emailCampaignContact.findMany({
       where,
       include: {
         contact: true,
@@ -57,7 +57,7 @@ export class HistoryService {
       }
     }
 
-    return this.prisma.callHistory.findMany({
+    return this.db.callHistory.findMany({
       where,
       include: {
         contact: true,

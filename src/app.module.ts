@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { PrismaModule } from './prisma.module';
+import { MongoModule } from './mongo.module';
 import { SettingsModule } from './settings/settings.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { TemplatesModule } from './templates/templates.module';
@@ -15,7 +16,13 @@ import { AuthModule } from './auth/auth.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    PrismaModule,
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        uri: configService.get<string>('DATABASE_URL') || 'mongodb://localhost:27017/reachconvert',
+      }),
+    }),
+    MongoModule,
     AuthModule,
     SettingsModule,
     ContactsModule,

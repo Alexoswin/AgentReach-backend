@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { ImportContactsDto } from './dto/import-contacts.dto';
 import { parse } from 'csv-parse';
@@ -7,16 +7,16 @@ import * as XLSX from 'xlsx';
 
 @Injectable()
 export class ContactsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async findAll() {
-    return this.prisma.contact.findMany({
+    return this.db.contact.findMany({
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async findOne(id: string) {
-    const contact = await this.prisma.contact.findUnique({
+    const contact = await this.db.contact.findUnique({
       where: { id },
     });
     if (!contact) {
@@ -26,7 +26,7 @@ export class ContactsService {
   }
 
   async create(dto: CreateContactDto) {
-    const existing = await this.prisma.contact.findUnique({
+    const existing = await this.db.contact.findUnique({
       where: { email: dto.email },
     });
     if (existing) {
@@ -34,7 +34,7 @@ export class ContactsService {
     }
 
     const { customFields, ...rest } = dto;
-    return this.prisma.contact.create({
+    return this.db.contact.create({
       data: {
         ...rest,
         customFields: customFields ? JSON.stringify(customFields) : null,
@@ -45,7 +45,7 @@ export class ContactsService {
   async update(id: string, dto: Partial<CreateContactDto>) {
     await this.findOne(id); // Check existence
     if (dto.email) {
-      const existing = await this.prisma.contact.findUnique({
+      const existing = await this.db.contact.findUnique({
         where: { email: dto.email },
       });
       if (existing && existing.id !== id) {
@@ -54,7 +54,7 @@ export class ContactsService {
     }
 
     const { customFields, ...rest } = dto;
-    return this.prisma.contact.update({
+    return this.db.contact.update({
       where: { id },
       data: {
         ...rest,
@@ -67,7 +67,7 @@ export class ContactsService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.contact.delete({
+    return this.db.contact.delete({
       where: { id },
     });
   }
@@ -177,7 +177,7 @@ export class ContactsService {
           }
         }
 
-        const existing = await this.prisma.contact.findUnique({
+        const existing = await this.db.contact.findUnique({
           where: { email },
         });
 
@@ -198,14 +198,14 @@ export class ContactsService {
             continue;
           } else {
             // OVERWRITE
-            await this.prisma.contact.update({
+            await this.db.contact.update({
               where: { id: existing.id },
               data: contactData,
             });
             updatedCount++;
           }
         } else {
-          await this.prisma.contact.create({
+          await this.db.contact.create({
             data: {
               email,
               ...contactData,

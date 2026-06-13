@@ -6,6 +6,7 @@ A production-ready NestJS application built with TypeScript, ESLint, and strict 
 
 - **NestJS (v11+)**: Robust, testable, and scalable architecture.
 - **TypeScript**: Strict type checking and advanced TypeScript compiler options enabled.
+- **MongoDB + Mongoose**: Schema/entity models live in `src/schemas`.
 - **Environment Variables**: Robust environment variable configuration using `@nestjs/config`.
 - **Preconfigured Linting**: Integrated ESLint rules for code consistency.
 
@@ -40,11 +41,7 @@ Ensure you have **Node.js 18+** and **npm** (or your preferred package manager) 
    JWT_SECRET=supersecretjwtkey
    ```
 
-4. Generate the Prisma client and sync the MongoDB schema:
-   ```bash
-   npm run prisma:generate
-   npm run db:push
-   ```
+4. Start the server. Mongoose connects to `DATABASE_URL` and applies schema/entity definitions at runtime.
 
 ---
 
@@ -60,9 +57,6 @@ Starts the application in watch (development) mode. The server will auto-reload 
 
 ### `npm run build`
 Builds the application for production to the `dist` folder.
-
-### `npm run db:push`
-Syncs the Prisma MongoDB schema to the configured database.
 
 ### `npm run lint`
 Runs ESLint to check for syntax and style issues.

@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
 import { TokenService } from './token.service';
 
@@ -9,7 +9,7 @@ export class AuthGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
     private tokenService: TokenService,
-    private prisma: PrismaService,
+    private db: MongoService,
   ) {}
 
   async canActivate(context: ExecutionContext) {
@@ -31,7 +31,7 @@ export class AuthGuard implements CanActivate {
     }
 
     const payload = this.tokenService.verifyToken(token, 'access');
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
     if (!user) {
       throw new UnauthorizedException('User not found');

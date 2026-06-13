@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { MongoService } from '../mongo.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
@@ -9,10 +9,10 @@ const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 
 @Injectable()
 export class EmailCampaignsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private db: MongoService) {}
 
   async findAll() {
-    const campaigns = await this.prisma.emailCampaign.findMany({
+    const campaigns = await this.db.emailCampaign.findMany({
       include: {
         template: { select: { id: true, name: true } },
         contacts: { select: { id: true } },
@@ -32,7 +32,7 @@ export class EmailCampaignsService {
   }
 
   async findOne(id: string) {
-    const campaign = await this.prisma.emailCampaign.findUnique({
+    const campaign = await this.db.emailCampaign.findUnique({
       where: { id },
       include: {
         template: true,
@@ -52,26 +52,26 @@ export class EmailCampaignsService {
   }
 
   async create(dto: CreateCampaignDto) {
-    return this.prisma.emailCampaign.create({
+    return this.db.emailCampaign.create({
       data: dto,
     });
   }
 
   async update(id: string, dto: Partial<CreateCampaignDto> & { status?: string }) {
-    return this.prisma.emailCampaign.update({
+    return this.db.emailCampaign.update({
       where: { id },
       data: dto,
     });
   }
 
   async remove(id: string) {
-    return this.prisma.emailCampaign.delete({
+    return this.db.emailCampaign.delete({
       where: { id },
     });
   }
 
   async addContacts(campaignId: string, dto: AddContactsDto) {
-    const campaign = await this.prisma.emailCampaign.findUnique({
+    const campaign = await this.db.emailCampaign.findUnique({
       where: { id: campaignId },
     });
     if (!campaign) {
@@ -81,16 +81,16 @@ export class EmailCampaignsService {
     let addedCount = 0;
     for (const contactId of dto.contactIds) {
       // Check if contact exists
-      const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+      const contact = await this.db.contact.findUnique({ where: { id: contactId } });
       if (!contact) continue;
 
       // Check if contact already in campaign
-      const existing = await this.prisma.emailCampaignContact.findFirst({
+      const existing = await this.db.emailCampaignContact.findFirst({
         where: { campaignId, contactId },
       });
 
       if (!existing) {
-        await this.prisma.emailCampaignContact.create({
+        await this.db.emailCampaignContact.create({
           data: {
             campaignId,
             contactId,
@@ -105,7 +105,7 @@ export class EmailCampaignsService {
   }
 
   async removeContact(campaignId: string, contactId: string) {
-    const record = await this.prisma.emailCampaignContact.findFirst({
+    const record = await this.db.emailCampaignContact.findFirst({
       where: { campaignId, contactId },
     });
 
@@ -113,13 +113,13 @@ export class EmailCampaignsService {
       throw new BadRequestException('Contact not associated with this campaign');
     }
 
-    return this.prisma.emailCampaignContact.delete({
+    return this.db.emailCampaignContact.delete({
       where: { id: record.id },
     });
   }
 
   async launchCampaign(id: string) {
-    const campaign = await this.prisma.emailCampaign.findUnique({
+    const campaign = await this.db.emailCampaign.findUnique({
       where: { id },
       include: {
         template: true,
@@ -143,11 +143,11 @@ export class EmailCampaignsService {
       throw new BadRequestException('No contacts in this campaign');
     }
 
-    const pendingCount = campaign.contacts.filter(contact => contact.deliveryStatus === 'PENDING').length;
+    const pendingCount = campaign.contacts.filter((contact: any) => contact.deliveryStatus === 'PENDING').length;
     const isRelaunch = pendingCount === 0;
 
     if (isRelaunch) {
-      await this.prisma.emailCampaignContact.updateMany({
+      await this.db.emailCampaignContact.updateMany({
         where: { campaignId: id },
         data: {
           deliveryStatus: 'PENDING',
@@ -163,7 +163,7 @@ export class EmailCampaignsService {
     }
 
     // Set campaign status to RUNNING
-    await this.prisma.emailCampaign.update({
+    await this.db.emailCampaign.update({
       where: { id },
       data: { status: 'RUNNING' },
     });
@@ -181,11 +181,11 @@ export class EmailCampaignsService {
 
   private async runBackgroundSending(campaignId: string) {
     try {
-      const settings = await this.prisma.systemSettings.findUnique({
+      const settings = await this.db.systemSettings.findUnique({
         where: { id: 'default' },
       });
 
-      const campaign = await this.prisma.emailCampaign.findUnique({
+      const campaign = await this.db.emailCampaign.findUnique({
         where: { id: campaignId },
         include: {
           template: true,
@@ -241,7 +241,7 @@ export class EmailCampaignsService {
             // Simulate 90% success, 10% failure
             const isSuccess = Math.random() > 0.1;
             if (isSuccess) {
-              await this.prisma.emailCampaignContact.update({
+              await this.db.emailCampaignContact.update({
                 where: { id: campaignContact.id },
                 data: {
                   deliveryStatus: 'SENT',
@@ -268,7 +268,7 @@ export class EmailCampaignsService {
 
             await client.send(command);
 
-            await this.prisma.emailCampaignContact.update({
+            await this.db.emailCampaignContact.update({
               where: { id: campaignContact.id },
               data: {
                 deliveryStatus: 'SENT',
@@ -280,7 +280,7 @@ export class EmailCampaignsService {
             });
           }
         } catch (err: any) {
-          await this.prisma.emailCampaignContact.update({
+          await this.db.emailCampaignContact.update({
             where: { id: campaignContact.id },
             data: {
               deliveryStatus: 'FAILED',
@@ -295,13 +295,13 @@ export class EmailCampaignsService {
       }
 
       // Update campaign status to COMPLETED
-      await this.prisma.emailCampaign.update({
+      await this.db.emailCampaign.update({
         where: { id: campaignId },
         data: { status: 'COMPLETED' },
       });
     } catch (error) {
       console.error('Error executing campaign background sending:', error);
-      await this.prisma.emailCampaign.update({
+      await this.db.emailCampaign.update({
         where: { id: campaignId },
         data: { status: 'FAILED' },
       });
