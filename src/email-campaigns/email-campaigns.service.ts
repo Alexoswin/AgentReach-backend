@@ -4,6 +4,9 @@ import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 
+const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
+const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
+
 @Injectable()
 export class EmailCampaignsService {
   constructor(private prisma: PrismaService) {}
@@ -120,10 +123,7 @@ export class EmailCampaignsService {
       where: { id },
       include: {
         template: true,
-        contacts: {
-          where: { deliveryStatus: 'PENDING' },
-          include: { contact: true },
-        },
+        contacts: true,
       },
     });
 
@@ -135,8 +135,31 @@ export class EmailCampaignsService {
       throw new BadRequestException('Cannot launch a campaign without an email template');
     }
 
+    if (campaign.status === 'RUNNING') {
+      throw new BadRequestException('Campaign is already running');
+    }
+
     if (campaign.contacts.length === 0) {
-      throw new BadRequestException('No pending contacts in this campaign');
+      throw new BadRequestException('No contacts in this campaign');
+    }
+
+    const pendingCount = campaign.contacts.filter(contact => contact.deliveryStatus === 'PENDING').length;
+    const isRelaunch = pendingCount === 0;
+
+    if (isRelaunch) {
+      await this.prisma.emailCampaignContact.updateMany({
+        where: { campaignId: id },
+        data: {
+          deliveryStatus: 'PENDING',
+          sentTime: null,
+          subject: null,
+          bodyHtml: null,
+          bodyText: null,
+          openStatus: false,
+          replyStatus: false,
+          errorMessage: null,
+        },
+      });
     }
 
     // Set campaign status to RUNNING
@@ -148,7 +171,12 @@ export class EmailCampaignsService {
     // Execute sending in the background
     this.runBackgroundSending(campaign.id);
 
-    return { success: true, message: 'Campaign execution started in background' };
+    return {
+      success: true,
+      message: isRelaunch
+        ? 'Campaign relaunched. All recipients were queued again.'
+        : 'Campaign execution started in background',
+    };
   }
 
   private async runBackgroundSending(campaignId: string) {
@@ -192,8 +220,21 @@ export class EmailCampaignsService {
         const subject = this.interpolate(template.subject, contact);
         const bodyHtml = this.interpolate(template.bodyHtml, contact);
         const bodyText = this.interpolate(template.bodyText, contact);
+        const messageBody: { Html?: { Data: string }; Text?: { Data: string } } = {};
+
+        if (bodyHtml.trim()) {
+          messageBody.Html = { Data: bodyHtml };
+        }
+
+        if (bodyText.trim()) {
+          messageBody.Text = { Data: bodyText };
+        }
 
         try {
+          if (!messageBody.Html && !messageBody.Text) {
+            throw new Error('Template has no email body content');
+          }
+
           if (isMockSes || !client || !settings) {
             // Simulated delay and random response for Mock mode
             await new Promise(r => setTimeout(r, 1000));
@@ -215,16 +256,13 @@ export class EmailCampaignsService {
             }
           } else {
             const command = new SendEmailCommand({
-              Source: settings.awsSenderEmail,
+              Source: SENDER_SOURCE,
               Destination: {
                 ToAddresses: [contact.email],
               },
               Message: {
                 Subject: { Data: subject },
-                Body: {
-                  Html: { Data: bodyHtml },
-                  Text: { Data: bodyText },
-                },
+                Body: messageBody,
               },
             });
 

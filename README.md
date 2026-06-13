@@ -36,8 +36,14 @@ Ensure you have **Node.js 18+** and **npm** (or your preferred package manager) 
    Define your environment variables inside the `.env` file:
    ```env
    PORT=3001
-   DATABASE_URL=mongodb://localhost:27017/reachconvert
+   DATABASE_URL=mongodb+srv://USER:PASSWORD@HOST/DATABASE?retryWrites=true&w=majority
    JWT_SECRET=supersecretjwtkey
+   ```
+
+4. Generate the Prisma client and sync the MongoDB schema:
+   ```bash
+   npm run prisma:generate
+   npm run db:push
    ```
 
 ---
@@ -54,6 +60,9 @@ Starts the application in watch (development) mode. The server will auto-reload 
 
 ### `npm run build`
 Builds the application for production to the `dist` folder.
+
+### `npm run db:push`
+Syncs the Prisma MongoDB schema to the configured database.
 
 ### `npm run lint`
 Runs ESLint to check for syntax and style issues.

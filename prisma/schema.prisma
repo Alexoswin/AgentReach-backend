@@ -17,7 +17,7 @@ model SystemSettings {
   awsRegion          String   @default("")
   awsSenderEmail     String   @default("")
   openRouterApiKey   String   @default("")
-  openRouterModel    String   @default("meta-llama/llama-3-8b-instruct:free")
+  openRouterModel    String   @default("nex-agi/nex-n2-pro:free")
   updatedAt          DateTime @updatedAt
 }
 

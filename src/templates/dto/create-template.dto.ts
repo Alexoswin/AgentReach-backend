@@ -12,11 +12,13 @@ export class CreateTemplateDto {
 
   @ApiProperty()
   @IsString()
-  bodyHtml: string;
+  @IsOptional()
+  bodyHtml?: string;
 
   @ApiProperty()
   @IsString()
-  bodyText: string;
+  @IsOptional()
+  bodyText?: string;
 
   @ApiProperty({ enum: ['AI', 'PREDEFINED', 'CUSTOM'] })
   @IsString()

@@ -23,7 +23,7 @@ export class SystemSettings {
   @Prop({ default: '' })
   openRouterApiKey: string;
 
-  @Prop({ default: 'meta-llama/llama-3-8b-instruct:free' })
+  @Prop({ default: 'nex-agi/nex-n2-pro:free' })
   openRouterModel: string;
 }
 

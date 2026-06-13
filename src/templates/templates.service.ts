@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
+import { resolveOpenRouterModel } from '../config/openrouter';
 
 @Injectable()
 export class TemplatesService {
@@ -24,16 +25,20 @@ export class TemplatesService {
   }
 
   async create(dto: CreateTemplateDto) {
+    const data = this.normalizeTemplateBodies(dto);
+
     return this.prisma.template.create({
-      data: dto,
+      data,
     });
   }
 
   async update(id: string, dto: Partial<CreateTemplateDto>) {
     await this.findOne(id);
+    const data = this.normalizeTemplateBodies(dto, false);
+
     return this.prisma.template.update({
       where: { id },
-      data: dto,
+      data,
     });
   }
 
@@ -159,7 +164,7 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
           'X-Title': 'ReachConvert',
         },
         body: JSON.stringify({
-          model: settings.openRouterModel || 'meta-llama/llama-3-8b-instruct:free',
+          model: resolveOpenRouterModel(settings.openRouterModel),
           messages: [{ role: 'user', content: prompt }],
           response_format: { type: 'json_object' },
         }),
@@ -190,5 +195,44 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     } catch (error: any) {
       throw new BadRequestException('AI Generation failed: ' + error.message);
     }
+  }
+
+  private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml?: string; bodyText?: string } {
+    const hasBodyHtml = dto.bodyHtml !== undefined;
+    const hasBodyText = dto.bodyText !== undefined;
+
+    if (!requireBody && !hasBodyHtml && !hasBodyText) {
+      return dto;
+    }
+
+    const bodyHtml = dto.bodyHtml ?? '';
+    const bodyText = dto.bodyText ?? '';
+
+    if (requireBody && !bodyHtml.trim() && !bodyText.trim()) {
+      throw new BadRequestException('Template requires either HTML body or text body');
+    }
+
+    return {
+      ...dto,
+      bodyHtml,
+      bodyText: bodyText || this.htmlToText(bodyHtml),
+    };
+  }
+
+  private htmlToText(html: string) {
+    return html
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 }

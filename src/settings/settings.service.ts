@@ -2,6 +2,10 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { resolveOpenRouterModel } from '../config/openrouter';
+
+const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
+const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 
 @Injectable()
 export class SettingsService {
@@ -14,20 +18,27 @@ export class SettingsService {
   }
 
   async updateSettings(dto: UpdateSettingsDto) {
+    const data = {
+      ...dto,
+      ...(dto.openRouterModel !== undefined
+        ? { openRouterModel: resolveOpenRouterModel(dto.openRouterModel) }
+        : {}),
+    };
+
     return this.prisma.systemSettings.upsert({
       where: { id: 'default' },
-      update: dto,
+      update: data,
       create: {
         id: 'default',
-        ...dto,
+        ...data,
       },
     });
   }
 
   async testAwsSes() {
     const settings = await this.getSettings();
-    if (!settings || !settings.awsAccessKeyId || !settings.awsSecretAccessKey || !settings.awsSenderEmail) {
-      throw new BadRequestException('AWS SES is not fully configured (Key, Secret, and Sender Email are required).');
+    if (!settings || !settings.awsAccessKeyId || !settings.awsSecretAccessKey) {
+      throw new BadRequestException('AWS SES is not fully configured (Key and Secret are required).');
     }
 
     if (
@@ -49,9 +60,9 @@ export class SettingsService {
       });
 
       const command = new SendEmailCommand({
-        Source: settings.awsSenderEmail,
+        Source: SENDER_SOURCE,
         Destination: {
-          ToAddresses: [settings.awsSenderEmail],
+          ToAddresses: [SENDER_EMAIL],
         },
         Message: {
           Subject: { Data: 'ReachConvert Connection Test' },
@@ -62,7 +73,7 @@ export class SettingsService {
       });
 
       await client.send(command);
-      return { success: true, message: `AWS SES verified. Test email sent to ${settings.awsSenderEmail}` };
+      return { success: true, message: `AWS SES verified. Test email sent from ${SENDER_EMAIL}` };
     } catch (error: any) {
       return { success: false, error: error.message || 'Unknown AWS SES error' };
     }
@@ -88,7 +99,7 @@ export class SettingsService {
           'X-Title': 'ReachConvert',
         },
         body: JSON.stringify({
-          model: settings.openRouterModel || 'meta-llama/llama-3-8b-instruct:free',
+          model: resolveOpenRouterModel(settings.openRouterModel),
           messages: [{ role: 'user', content: 'respond with ok' }],
         }),
       });

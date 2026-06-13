@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { DEFAULT_OPENROUTER_MODEL } from './config/openrouter';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -17,6 +18,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
           awsAccessKeyId: process.env.AWS_KEY_ID || '',
           awsSecretAccessKey: process.env.AWS_KEY || '',
           openRouterApiKey: process.env.OPENROUTER_KEY || '',
+          openRouterModel: DEFAULT_OPENROUTER_MODEL,
         },
         create: {
           id: 'default',
@@ -25,7 +27,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
           awsRegion: 'us-east-1',
           awsSenderEmail: 'oswinalex@gmail.com',
           openRouterApiKey: process.env.OPENROUTER_KEY || '',
-          openRouterModel: 'meta-llama/llama-3-8b-instruct:free',
+          openRouterModel: DEFAULT_OPENROUTER_MODEL,
         },
       });
     } catch (e) {
