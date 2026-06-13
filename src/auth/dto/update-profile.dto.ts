@@ -1,6 +1,19 @@
 import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
+const THEME_VALUES = [
+  'dark-midnight',
+  'dark-slate',
+  'dark-graphite',
+  'dark-violet',
+  'light-cloud',
+  'light-paper',
+  'light-mint',
+  'light-rose',
+] as const;
+
+const ACCENT_VALUES = ['indigo', 'emerald', 'sky', 'rose', 'amber', 'violet'] as const;
+
 export class UpdateProfileDto {
   @ApiProperty({ required: false })
   @IsString()
@@ -32,11 +45,17 @@ export class UpdateProfileDto {
   @IsOptional()
   phone?: string;
 
-  @ApiProperty({ required: false, enum: ['dark', 'light'] })
+  @ApiProperty({ required: false, enum: THEME_VALUES })
   @IsString()
   @IsOptional()
-  @IsIn(['dark', 'light'])
-  theme?: 'dark' | 'light';
+  @IsIn(THEME_VALUES)
+  theme?: (typeof THEME_VALUES)[number];
+
+  @ApiProperty({ required: false, enum: ACCENT_VALUES })
+  @IsString()
+  @IsOptional()
+  @IsIn(ACCENT_VALUES)
+  accentColor?: (typeof ACCENT_VALUES)[number];
 
   @ApiProperty({ required: false, minLength: 8 })
   @IsString()

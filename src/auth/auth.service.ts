@@ -6,6 +6,19 @@ import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
+const THEME_VALUES = [
+  'dark-midnight',
+  'dark-slate',
+  'dark-graphite',
+  'dark-violet',
+  'light-cloud',
+  'light-paper',
+  'light-mint',
+  'light-rose',
+];
+
+const ACCENT_VALUES = ['indigo', 'emerald', 'sky', 'rose', 'amber', 'violet'];
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -64,6 +77,7 @@ export class AuthService {
       ...(dto.company !== undefined ? { company: dto.company.trim() } : {}),
       ...(dto.phone !== undefined ? { phone: dto.phone.trim() } : {}),
       ...(dto.theme !== undefined ? { theme: dto.theme } : {}),
+      ...(dto.accentColor !== undefined ? { accentColor: dto.accentColor } : {}),
     };
 
     if (dto.password) {
@@ -103,7 +117,7 @@ export class AuthService {
     return { success: true, message: 'Password reset successfully' };
   }
 
-  private async issueSession(user: { id: string; email: string; name: string; initials: string; title: string; company: string; phone: string; theme: string }) {
+  private async issueSession(user: UserProfile) {
     const accessToken = this.tokenService.signAccessToken(user);
     const refreshToken = this.tokenService.signRefreshToken(user);
 
@@ -121,7 +135,7 @@ export class AuthService {
     };
   }
 
-  private sanitizeUser(user: { id: string; email: string; name: string; initials: string; title: string; company: string; phone: string; theme: string }) {
+  private sanitizeUser(user: UserProfile) {
     return {
       id: user.id,
       email: user.email,
@@ -130,7 +144,30 @@ export class AuthService {
       title: user.title,
       company: user.company,
       phone: user.phone,
-      theme: user.theme,
+      theme: this.normalizeTheme(user.theme),
+      accentColor: this.normalizeAccent(user.accentColor),
     };
   }
+
+  private normalizeTheme(theme?: string) {
+    if (theme === 'dark') return 'dark-midnight';
+    if (theme === 'light') return 'light-cloud';
+    return theme && THEME_VALUES.includes(theme) ? theme : 'dark-midnight';
+  }
+
+  private normalizeAccent(accentColor?: string) {
+    return accentColor && ACCENT_VALUES.includes(accentColor) ? accentColor : 'indigo';
+  }
 }
+
+type UserProfile = {
+  id: string;
+  email: string;
+  name: string;
+  initials: string;
+  title: string;
+  company: string;
+  phone: string;
+  theme: string;
+  accentColor?: string;
+};

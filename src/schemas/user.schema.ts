@@ -33,8 +33,11 @@ export class User {
   @Prop({ default: '' })
   phone: string;
 
-  @Prop({ default: 'dark' })
+  @Prop({ default: 'dark-midnight' })
   theme: string;
+
+  @Prop({ default: 'indigo' })
+  accentColor: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

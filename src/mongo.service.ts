@@ -87,7 +87,16 @@ export class MongoService implements OnModuleInit {
           initials: 'OA',
           title: 'Founder',
           company: 'ReachConvert',
-          theme: 'dark',
+          theme: 'dark-midnight',
+          accentColor: 'indigo',
+        },
+      });
+    } else {
+      await this.user.update({
+        where: { id: existingUser.id },
+        data: {
+          theme: existingUser.theme === 'light' ? 'light-cloud' : existingUser.theme === 'dark' ? 'dark-midnight' : existingUser.theme || 'dark-midnight',
+          accentColor: existingUser.accentColor || 'indigo',
         },
       });
     }
