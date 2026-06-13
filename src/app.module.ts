@@ -10,11 +10,13 @@ import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
 import { CallingCampaignsModule } from './calling-campaigns/calling-campaigns.module';
 import { HistoryModule } from './history/history.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    AuthModule,
     SettingsModule,
     ContactsModule,
     TemplatesModule,
