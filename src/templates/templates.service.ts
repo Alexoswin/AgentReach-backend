@@ -109,6 +109,7 @@ export class TemplatesService {
   }
 
   async generateAiTemplate(dto: GenerateTemplateDto) {
+    const format = dto.format || 'HTML';
     const settings = await this.prisma.systemSettings.findUnique({
       where: { id: 'default' },
     });
@@ -124,7 +125,9 @@ export class TemplatesService {
       // Return highly relevant mock data on the fly
       const subject = `Opportunities in ${dto.audience} - Application/Intro`;
       const bodyText = `Hi {{firstName}},\n\nI am reaching out because my goal is to ${dto.goal}. I noticed you represent ${dto.audience} and wanted to introduce myself in a ${dto.tone} manner.\n\n${dto.instructions || ''}\n\nLooking forward to speaking,\n{{lastName}}`;
-      const bodyHtml = `<p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${dto.goal}</strong>. I noticed you represent <strong>${dto.audience}</strong> and wanted to introduce myself in a <em>${dto.tone}</em> manner.</p><p>${dto.instructions || ''}</p><p>Looking forward to speaking,<br/>{{lastName}}</p>`;
+      const bodyHtml = format === 'HTML'
+        ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${dto.goal}</strong>. I noticed you represent <strong>${dto.audience}</strong> and wanted to introduce myself in a <em>${dto.tone}</em> manner.</p><p>${dto.instructions || ''}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
+        : '';
 
       return {
         subject,
@@ -135,7 +138,13 @@ export class TemplatesService {
     }
 
     try {
-      const prompt = `You are an expert copywriter. Write a highly personalized outreach email campaign template based on:
+      const bodyInstructions = format === 'HTML'
+        ? `2. "bodyHtml" - A real HTML email body, not plain text. Use valid HTML tags such as <div>, <p>, <strong>, <a>, and <br>. Use simple inline styles that work in email clients. Do not wrap it in markdown or code fences.
+3. "bodyText" - The plain text fallback equivalent of the HTML body.`
+        : `2. "bodyHtml" - Return an empty string.
+3. "bodyText" - The plain text email body. Do not include HTML tags.`;
+
+      const prompt = `You are an expert copywriter. Write a highly personalized ${format} outreach email campaign template based on:
 Goal: ${dto.goal}
 Target Audience: ${dto.audience}
 Tone: ${dto.tone}
@@ -150,8 +159,7 @@ Variables available for personalization (use them exactly in double curly bracke
 
 You MUST return a JSON object with EXACTLY these three fields:
 1. "subject" - A catchy, highly relevant subject line.
-2. "bodyHtml" - The HTML formatted body of the email. Keep it modern, clean, using standard paragraphs and linebreaks.
-3. "bodyText" - The plain text equivalent of the body.
+${bodyInstructions}
 
 Do NOT write any preamble, explanation, or markdown backticks outside of the JSON. Return only the JSON object.`;
 
@@ -197,12 +205,12 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     }
   }
 
-  private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml?: string; bodyText?: string } {
+  private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml: string; bodyText: string } {
     const hasBodyHtml = dto.bodyHtml !== undefined;
     const hasBodyText = dto.bodyText !== undefined;
 
     if (!requireBody && !hasBodyHtml && !hasBodyText) {
-      return dto;
+      return dto as T & { bodyHtml: string; bodyText: string };
     }
 
     const bodyHtml = dto.bodyHtml ?? '';

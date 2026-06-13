@@ -1,4 +1,4 @@
-import { IsString, IsOptional } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class GenerateTemplateDto {
@@ -18,4 +18,10 @@ export class GenerateTemplateDto {
   @IsString()
   @IsOptional()
   instructions?: string;
+
+  @ApiProperty({ required: false, enum: ['HTML', 'TEXT'], default: 'HTML' })
+  @IsString()
+  @IsOptional()
+  @IsIn(['HTML', 'TEXT'])
+  format?: 'HTML' | 'TEXT';
 }
