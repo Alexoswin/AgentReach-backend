@@ -195,10 +195,12 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
       }
 
       const parsed = JSON.parse(cleanedJson);
+      const bodyText = parsed.bodyText || this.htmlToText(parsed.bodyHtml || '') || `Hi {{firstName}}, ...`;
+
       return {
         subject: parsed.subject || `Outreach to ${dto.audience}`,
-        bodyHtml: parsed.bodyHtml || `<p>Hi {{firstName}}, ...</p>`,
-        bodyText: parsed.bodyText || `Hi {{firstName}}, ...`,
+        bodyHtml: format === 'HTML' ? this.ensureHtmlBody(parsed.bodyHtml || '', bodyText) : '',
+        bodyText,
       };
     } catch (error: any) {
       throw new BadRequestException('AI Generation failed: ' + error.message);
@@ -242,5 +244,30 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
       .replace(/&#39;/g, "'")
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  private ensureHtmlBody(html: string, fallbackText: string) {
+    if (/<[a-z][\s\S]*>/i.test(html)) {
+      return html;
+    }
+
+    const sourceText = html || fallbackText;
+    const paragraphs = sourceText
+      .split(/\n{2,}/)
+      .map(paragraph => paragraph.trim())
+      .filter(Boolean);
+
+    return paragraphs.length > 0
+      ? paragraphs.map(paragraph => `<p>${this.escapeHtml(paragraph).replace(/\n/g, '<br/>')}</p>`).join('')
+      : '<p>Hi {{firstName}},</p>';
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 }
