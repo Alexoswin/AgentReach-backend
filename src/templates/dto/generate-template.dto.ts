@@ -19,6 +19,16 @@ export class GenerateTemplateDto {
   @IsOptional()
   instructions?: string;
 
+  @ApiProperty({ required: false, example: 'Resume or brochure text extracted from a reference PDF' })
+  @IsString()
+  @IsOptional()
+  referenceDocumentText?: string;
+
+  @ApiProperty({ required: false, example: 'resume.pdf' })
+  @IsString()
+  @IsOptional()
+  referenceDocumentName?: string;
+
   @ApiProperty({ required: false, enum: ['HTML', 'TEXT'], default: 'HTML' })
   @IsString()
   @IsOptional()

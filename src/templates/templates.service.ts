@@ -113,6 +113,7 @@ export class TemplatesService {
 
   async generateAiTemplate(dto: GenerateTemplateDto) {
     const format = dto.format || 'HTML';
+    const referenceContext = this.buildReferenceContext(dto.referenceDocumentText, dto.referenceDocumentName);
     const settings = await this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
@@ -127,9 +128,13 @@ export class TemplatesService {
     if (hasNoKey || isMockKey) {
       // Return highly relevant mock data on the fly
       const subject = `Opportunities in ${dto.audience} - Application/Intro`;
-      const bodyText = `Hi {{firstName}},\n\nI am reaching out because my goal is to ${dto.goal}. I noticed you represent ${dto.audience} and wanted to introduce myself in a ${dto.tone} manner.\n\n${dto.instructions || ''}\n\nLooking forward to speaking,\n{{lastName}}`;
+      const referenceLine = referenceContext
+        ? `\n\nI also wanted to highlight a relevant detail from my reference material: ${referenceContext.slice(0, 260)}`
+        : '';
+      const escapedReferenceLine = this.escapeHtml(referenceLine);
+      const bodyText = `Hi {{firstName}},\n\nI am reaching out because my goal is to ${dto.goal}. I noticed you represent ${dto.audience} and wanted to introduce myself in a ${dto.tone} manner.\n\n${dto.instructions || ''}${referenceLine}\n\nLooking forward to speaking,\n{{lastName}}`;
       const bodyHtml = format === 'HTML'
-        ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${dto.goal}</strong>. I noticed you represent <strong>${dto.audience}</strong> and wanted to introduce myself in a <em>${dto.tone}</em> manner.</p><p>${dto.instructions || ''}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
+        ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${this.escapeHtml(dto.goal)}</strong>. I noticed you represent <strong>${this.escapeHtml(dto.audience)}</strong> and wanted to introduce myself in a <em>${this.escapeHtml(dto.tone)}</em> manner.</p><p>${this.escapeHtml(dto.instructions || '')}${escapedReferenceLine}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
         : '';
 
       return {
@@ -152,6 +157,7 @@ Goal: ${dto.goal}
 Target Audience: ${dto.audience}
 Tone: ${dto.tone}
 Special Instructions: ${dto.instructions || 'None'}
+${referenceContext ? `\nReference PDF Context${dto.referenceDocumentName ? ` (${dto.referenceDocumentName})` : ''}:\n${referenceContext}\n` : ''}
 
 Variables available for personalization (use them exactly in double curly brackets, e.g. {{firstName}}):
 - {{firstName}}
@@ -221,6 +227,17 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     }
 
     return normalized;
+  }
+
+  private buildReferenceContext(referenceText?: string, referenceName?: string) {
+    const cleaned = (referenceText || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!cleaned) return '';
+
+    const capped = cleaned.slice(0, 8000);
+    return referenceName ? `Source: ${referenceName}\n${capped}` : capped;
   }
 
   private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml: string; bodyText: string } {
