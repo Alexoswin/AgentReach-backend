@@ -41,4 +41,5 @@ export class EmailCampaignContact {
   errorMessage?: string;
 }
 
-export const EmailCampaignContactSchema = SchemaFactory.createForClass(EmailCampaignContact);
+export const EmailCampaignContactSchema =
+  SchemaFactory.createForClass(EmailCampaignContact);

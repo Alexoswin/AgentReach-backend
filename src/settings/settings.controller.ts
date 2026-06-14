@@ -1,4 +1,12 @@
-import { Controller, Get, Patch, Post, Body, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Body,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';

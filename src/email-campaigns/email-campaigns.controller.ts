@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { EmailCampaignsService } from './email-campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
@@ -16,7 +26,9 @@ export class EmailCampaignsController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get details of a campaign (including contacts and templates)' })
+  @ApiOperation({
+    summary: 'Get details of a campaign (including contacts and templates)',
+  })
   async findOne(@Param('id') id: string) {
     return this.emailCampaignsService.findOne(id);
   }
@@ -31,7 +43,10 @@ export class EmailCampaignsController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update campaign properties' })
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateCampaignDto> & { status?: string }) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateCampaignDto> & { status?: string },
+  ) {
     return this.emailCampaignsService.update(id, dto);
   }
 
@@ -50,7 +65,10 @@ export class EmailCampaignsController {
 
   @Delete(':id/contacts/:contactId')
   @ApiOperation({ summary: 'Remove a contact from a campaign' })
-  async removeContact(@Param('id') id: string, @Param('contactId') contactId: string) {
+  async removeContact(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+  ) {
     return this.emailCampaignsService.removeContact(id, contactId);
   }
 

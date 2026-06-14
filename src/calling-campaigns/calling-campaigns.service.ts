@@ -14,7 +14,7 @@ export class CallingCampaignsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return campaigns.map(c => ({
+    return campaigns.map((c) => ({
       id: c.id,
       name: c.name,
       description: c.description,
@@ -26,7 +26,8 @@ export class CallingCampaignsService {
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       contactCount: c.calls.length,
-      answeredCount: c.calls.filter((call: any) => call.outcome === 'ANSWERED').length,
+      answeredCount: c.calls.filter((call: any) => call.outcome === 'ANSWERED')
+        .length,
     }));
   }
 
@@ -58,7 +59,9 @@ export class CallingCampaignsService {
     if (contactIds && contactIds.length > 0) {
       // Create initial pending CallHistory items
       for (const contactId of contactIds) {
-        const contact = await this.db.contact.findUnique({ where: { id: contactId } });
+        const contact = await this.db.contact.findUnique({
+          where: { id: contactId },
+        });
         if (!contact) continue;
 
         await this.db.callHistory.create({
@@ -75,7 +78,10 @@ export class CallingCampaignsService {
     return campaign;
   }
 
-  async update(id: string, dto: Partial<CreateCallingCampaignDto> & { status?: string }) {
+  async update(
+    id: string,
+    dto: Partial<CreateCallingCampaignDto> & { status?: string },
+  ) {
     const { contactIds, ...rest } = dto;
     const campaign = await this.db.callingCampaign.update({
       where: { id },
@@ -89,7 +95,9 @@ export class CallingCampaignsService {
       });
 
       for (const contactId of contactIds) {
-        const contact = await this.db.contact.findUnique({ where: { id: contactId } });
+        const contact = await this.db.contact.findUnique({
+          where: { id: contactId },
+        });
         if (!contact) continue;
 
         const existing = await this.db.callHistory.findFirst({
@@ -145,7 +153,10 @@ export class CallingCampaignsService {
     // Run calling simulation in background
     this.runCallSimulation(campaign.id);
 
-    return { success: true, message: 'Calling campaign started dialer simulation' };
+    return {
+      success: true,
+      message: 'Calling campaign started dialer simulation',
+    };
   }
 
   private async runCallSimulation(campaignId: string) {
@@ -162,7 +173,14 @@ export class CallingCampaignsService {
 
       if (!campaign) return;
 
-      const outcomes = ['ANSWERED', 'ANSWERED', 'ANSWERED', 'NO_ANSWER', 'BUSY', 'FAILED'];
+      const outcomes = [
+        'ANSWERED',
+        'ANSWERED',
+        'ANSWERED',
+        'NO_ANSWER',
+        'BUSY',
+        'FAILED',
+      ];
       const recordingUrls = [
         'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
         'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
@@ -172,11 +190,15 @@ export class CallingCampaignsService {
       for (const call of campaign.calls) {
         const contact = call.contact;
         // Wait 2 seconds between calls to simulate dialing
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
 
         const outcome = outcomes[Math.floor(Math.random() * outcomes.length)];
-        const duration = outcome === 'ANSWERED' ? Math.floor(Math.random() * 120) + 30 : 0;
-        const recordingUrl = outcome === 'ANSWERED' ? recordingUrls[Math.floor(Math.random() * recordingUrls.length)] : null;
+        const duration =
+          outcome === 'ANSWERED' ? Math.floor(Math.random() * 120) + 30 : 0;
+        const recordingUrl =
+          outcome === 'ANSWERED'
+            ? recordingUrls[Math.floor(Math.random() * recordingUrls.length)]
+            : null;
 
         let transcript = null;
         if (outcome === 'ANSWERED') {
@@ -221,9 +243,11 @@ Sarah: Thank you, have a great day!`;
     const calls = await this.db.callHistory.findMany();
 
     const totalCampaigns = campaigns.length;
-    const activeCampaigns = campaigns.filter(c => c.status === 'RUNNING').length;
-    const scheduledCalls = calls.filter(c => c.outcome === 'PENDING').length;
-    const completedCalls = calls.filter(c => c.outcome !== 'PENDING').length;
+    const activeCampaigns = campaigns.filter(
+      (c) => c.status === 'RUNNING',
+    ).length;
+    const scheduledCalls = calls.filter((c) => c.outcome === 'PENDING').length;
+    const completedCalls = calls.filter((c) => c.outcome !== 'PENDING').length;
 
     return {
       totalCampaigns,

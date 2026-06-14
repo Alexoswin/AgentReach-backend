@@ -16,24 +16,37 @@ export class AnalyticsService {
       },
     });
 
-    const sentCount = emailHistory.filter(h => this.isSent(h.deliveryStatus)).length;
-    const failedCount = emailHistory.filter(h => h.deliveryStatus === 'FAILED').length;
+    const sentCount = emailHistory.filter((h) =>
+      this.isSent(h.deliveryStatus),
+    ).length;
+    const failedCount = emailHistory.filter(
+      (h) => h.deliveryStatus === 'FAILED',
+    ).length;
     const totalEmailCount = emailHistory.length;
 
-    const openCount = emailHistory.filter(h => h.openStatus).length;
-    const replyCount = emailHistory.filter(h => h.replyStatus).length;
+    const openCount = emailHistory.filter((h) => h.openStatus).length;
+    const replyCount = emailHistory.filter((h) => h.replyStatus).length;
 
-    const openRate = sentCount > 0 ? Math.round((openCount / sentCount) * 100) : 0;
-    const replyRate = sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
+    const openRate =
+      sentCount > 0 ? Math.round((openCount / sentCount) * 100) : 0;
+    const replyRate =
+      sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
 
     // 2. Call Metrics
     const callHistory = await this.db.callHistory.findMany();
-    const callsMade = callHistory.filter(c => c.outcome !== 'PENDING').length;
-    const answeredCalls = callHistory.filter(c => c.outcome === 'ANSWERED').length;
-    const successRate = callsMade > 0 ? Math.round((answeredCalls / callsMade) * 100) : 0;
+    const callsMade = callHistory.filter((c) => c.outcome !== 'PENDING').length;
+    const answeredCalls = callHistory.filter(
+      (c) => c.outcome === 'ANSWERED',
+    ).length;
+    const successRate =
+      callsMade > 0 ? Math.round((answeredCalls / callsMade) * 100) : 0;
 
-    const totalDuration = callHistory.reduce((sum, c) => sum + (Number(c.duration) || 0), 0);
-    const averageDuration = answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0;
+    const totalDuration = callHistory.reduce(
+      (sum, c) => sum + (Number(c.duration) || 0),
+      0,
+    );
+    const averageDuration =
+      answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0;
 
     // 3. Campaign Performance Charts
     const campaigns = await this.db.emailCampaign.findMany({
@@ -42,12 +55,20 @@ export class AnalyticsService {
       },
     });
 
-    const campaignPerformance = campaigns.map(c => {
+    const campaignPerformance = campaigns.map((c) => {
       const campaignContacts = c.contacts || [];
-      const campaignSent = campaignContacts.filter((h: any) => this.isSent(h.deliveryStatus)).length;
-      const campaignFailed = campaignContacts.filter((h: any) => h.deliveryStatus === 'FAILED').length;
-      const campaignOpens = campaignContacts.filter((h: any) => h.openStatus).length;
-      const campaignReplies = campaignContacts.filter((h: any) => h.replyStatus).length;
+      const campaignSent = campaignContacts.filter((h: any) =>
+        this.isSent(h.deliveryStatus),
+      ).length;
+      const campaignFailed = campaignContacts.filter(
+        (h: any) => h.deliveryStatus === 'FAILED',
+      ).length;
+      const campaignOpens = campaignContacts.filter(
+        (h: any) => h.openStatus,
+      ).length;
+      const campaignReplies = campaignContacts.filter(
+        (h: any) => h.replyStatus,
+      ).length;
 
       return {
         name: c.name || 'Untitled Campaign',
@@ -60,12 +81,16 @@ export class AnalyticsService {
 
     // 4. Template Performance
     const templates = await this.db.template.findMany();
-    const templatePerformance = templates.map(t => {
+    const templatePerformance = templates.map((t) => {
       // Find history linked to campaigns using this template
-      const templateHistory = emailHistory.filter(h => h.campaign?.templateId === t.id);
-      const tSent = templateHistory.filter(h => this.isSent(h.deliveryStatus)).length;
-      const tOpens = templateHistory.filter(h => h.openStatus).length;
-      const tReplies = templateHistory.filter(h => h.replyStatus).length;
+      const templateHistory = emailHistory.filter(
+        (h) => h.campaign?.templateId === t.id,
+      );
+      const tSent = templateHistory.filter((h) =>
+        this.isSent(h.deliveryStatus),
+      ).length;
+      const tOpens = templateHistory.filter((h) => h.openStatus).length;
+      const tReplies = templateHistory.filter((h) => h.replyStatus).length;
       const tOpenRate = tSent > 0 ? Math.round((tOpens / tSent) * 100) : 0;
       const tReplyRate = tSent > 0 ? Math.round((tReplies / tSent) * 100) : 0;
 
@@ -79,9 +104,14 @@ export class AnalyticsService {
 
     // 5. Contact Segment Performance (grouped by company or job title)
     // Grouping by company
-    const companySegments: Record<string, { sent: number; opens: number; replies: number }> = {};
-    emailHistory.forEach(h => {
-      const companyName = h.contact?.company || (h.contact ? 'Unknown / Freelance' : 'Removed Contact');
+    const companySegments: Record<
+      string,
+      { sent: number; opens: number; replies: number }
+    > = {};
+    emailHistory.forEach((h) => {
+      const companyName =
+        h.contact?.company ||
+        (h.contact ? 'Unknown / Freelance' : 'Removed Contact');
       if (!companySegments[companyName]) {
         companySegments[companyName] = { sent: 0, opens: 0, replies: 0 };
       }
@@ -92,16 +122,21 @@ export class AnalyticsService {
       }
     });
 
-    const segmentPerformance = Object.entries(companySegments).map(([company, data]) => {
-      const openRate = data.sent > 0 ? Math.round((data.opens / data.sent) * 100) : 0;
-      const replyRate = data.sent > 0 ? Math.round((data.replies / data.sent) * 100) : 0;
-      return {
-        segment: company,
-        sent: data.sent,
-        openRate,
-        replyRate,
-      };
-    }).sort((a, b) => b.sent - a.sent).slice(0, 5);
+    const segmentPerformance = Object.entries(companySegments)
+      .map(([company, data]) => {
+        const openRate =
+          data.sent > 0 ? Math.round((data.opens / data.sent) * 100) : 0;
+        const replyRate =
+          data.sent > 0 ? Math.round((data.replies / data.sent) * 100) : 0;
+        return {
+          segment: company,
+          sent: data.sent,
+          openRate,
+          replyRate,
+        };
+      })
+      .sort((a, b) => b.sent - a.sent)
+      .slice(0, 5);
 
     // Seed mock data for chart visuals if database is completely empty
     if (totalEmailCount === 0 && callsMade === 0) {
@@ -122,7 +157,7 @@ export class AnalyticsService {
         averageDuration,
       },
       campaignPerformance,
-      templatePerformance: templatePerformance.filter(t => t.sent > 0),
+      templatePerformance: templatePerformance.filter((t) => t.sent > 0),
       segmentPerformance,
     };
   }
@@ -142,14 +177,42 @@ export class AnalyticsService {
         averageDuration: 84, // seconds
       },
       campaignPerformance: [
-        { name: 'SaaS Founder Outreach', sent: 50, failed: 2, opens: 38, replies: 12 },
-        { name: 'Hiring Manager Pitch', sent: 40, failed: 1, opens: 28, replies: 9 },
-        { name: 'Follow Up Sequence', sent: 38, failed: 1, opens: 18, replies: 7 },
+        {
+          name: 'SaaS Founder Outreach',
+          sent: 50,
+          failed: 2,
+          opens: 38,
+          replies: 12,
+        },
+        {
+          name: 'Hiring Manager Pitch',
+          sent: 40,
+          failed: 1,
+          opens: 28,
+          replies: 9,
+        },
+        {
+          name: 'Follow Up Sequence',
+          sent: 38,
+          failed: 1,
+          opens: 18,
+          replies: 7,
+        },
       ],
       templatePerformance: [
-        { name: 'Standard Job Application', sent: 50, openRate: 76, replyRate: 24 },
+        {
+          name: 'Standard Job Application',
+          sent: 50,
+          openRate: 76,
+          replyRate: 24,
+        },
         { name: 'Recruiter Connect', sent: 40, openRate: 70, replyRate: 22 },
-        { name: 'Hiring Manager Quick Pitch', sent: 38, openRate: 47, replyRate: 18 },
+        {
+          name: 'Hiring Manager Quick Pitch',
+          sent: 38,
+          openRate: 47,
+          replyRate: 18,
+        },
       ],
       segmentPerformance: [
         { segment: 'Google', sent: 20, openRate: 85, replyRate: 40 },

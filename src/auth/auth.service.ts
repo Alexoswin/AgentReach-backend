@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { hashPassword, verifyPassword } from './password';
 import { TokenService } from './token.service';
@@ -71,13 +75,19 @@ export class AuthService {
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const data: any = {
       ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-      ...(dto.email !== undefined ? { email: dto.email.trim().toLowerCase() } : {}),
-      ...(dto.initials !== undefined ? { initials: dto.initials.trim().slice(0, 3).toUpperCase() } : {}),
+      ...(dto.email !== undefined
+        ? { email: dto.email.trim().toLowerCase() }
+        : {}),
+      ...(dto.initials !== undefined
+        ? { initials: dto.initials.trim().slice(0, 3).toUpperCase() }
+        : {}),
       ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
       ...(dto.company !== undefined ? { company: dto.company.trim() } : {}),
       ...(dto.phone !== undefined ? { phone: dto.phone.trim() } : {}),
       ...(dto.theme !== undefined ? { theme: dto.theme } : {}),
-      ...(dto.accentColor !== undefined ? { accentColor: dto.accentColor } : {}),
+      ...(dto.accentColor !== undefined
+        ? { accentColor: dto.accentColor }
+        : {}),
     };
 
     if (dto.password) {
@@ -93,7 +103,9 @@ export class AuthService {
 
       return this.sanitizeUser(user);
     } catch {
-      throw new BadRequestException('Could not update profile. The email may already be in use.');
+      throw new BadRequestException(
+        'Could not update profile. The email may already be in use.',
+      );
     }
   }
 
@@ -156,7 +168,9 @@ export class AuthService {
   }
 
   private normalizeAccent(accentColor?: string) {
-    return accentColor && ACCENT_VALUES.includes(accentColor) ? accentColor : 'indigo';
+    return accentColor && ACCENT_VALUES.includes(accentColor)
+      ? accentColor
+      : 'indigo';
   }
 }
 

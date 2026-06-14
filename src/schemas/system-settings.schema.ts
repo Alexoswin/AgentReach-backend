@@ -27,4 +27,5 @@ export class SystemSettings {
   openRouterModel: string;
 }
 
-export const SystemSettingsSchema = SchemaFactory.createForClass(SystemSettings);
+export const SystemSettingsSchema =
+  SchemaFactory.createForClass(SystemSettings);

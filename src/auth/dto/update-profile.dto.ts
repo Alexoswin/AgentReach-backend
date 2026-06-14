@@ -1,4 +1,10 @@
-import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsIn,
+  IsOptional,
+  IsString,
+  MinLength,
+} from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 const THEME_VALUES = [
@@ -12,7 +18,14 @@ const THEME_VALUES = [
   'light-rose',
 ] as const;
 
-const ACCENT_VALUES = ['indigo', 'emerald', 'sky', 'rose', 'amber', 'violet'] as const;
+const ACCENT_VALUES = [
+  'indigo',
+  'emerald',
+  'sky',
+  'rose',
+  'amber',
+  'violet',
+] as const;
 
 export class UpdateProfileDto {
   @ApiProperty({ required: false })

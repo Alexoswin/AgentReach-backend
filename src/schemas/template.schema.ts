@@ -34,7 +34,11 @@ export class Template {
   bodyText: string;
 
   // 'AI', 'PREDEFINED', 'CUSTOM'
-  @Prop({ required: true, enum: ['AI', 'PREDEFINED', 'CUSTOM'], default: 'CUSTOM' })
+  @Prop({
+    required: true,
+    enum: ['AI', 'PREDEFINED', 'CUSTOM'],
+    default: 'CUSTOM',
+  })
   type: string;
 
   @Prop()

@@ -8,7 +8,9 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get unified email and calling analytics for the dashboard' })
+  @ApiOperation({
+    summary: 'Get unified email and calling analytics for the dashboard',
+  })
   async getDashboardAnalytics() {
     return this.analyticsService.getDashboardAnalytics();
   }

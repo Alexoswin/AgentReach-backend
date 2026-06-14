@@ -22,12 +22,15 @@ export class ContactsService {
       orderBy: { createdAt: 'asc' },
     });
     const contacts = await this.db.contact.findMany();
-    const counts = contacts.reduce((acc: Record<string, number>, contact: any) => {
-      if (contact.directoryId) {
-        acc[contact.directoryId] = (acc[contact.directoryId] || 0) + 1;
-      }
-      return acc;
-    }, {});
+    const counts = contacts.reduce(
+      (acc: Record<string, number>, contact: any) => {
+        if (contact.directoryId) {
+          acc[contact.directoryId] = (acc[contact.directoryId] || 0) + 1;
+        }
+        return acc;
+      },
+      {},
+    );
 
     return directories.map((directory: any) => ({
       ...directory,
@@ -41,9 +44,13 @@ export class ContactsService {
       throw new BadRequestException('Directory name is required');
     }
 
-    const existing = await this.db.contactDirectory.findFirst({ where: { name } });
+    const existing = await this.db.contactDirectory.findFirst({
+      where: { name },
+    });
     if (existing) {
-      throw new BadRequestException('A directory with this name already exists');
+      throw new BadRequestException(
+        'A directory with this name already exists',
+      );
     }
 
     return this.db.contactDirectory.create({
@@ -64,9 +71,13 @@ export class ContactsService {
         throw new BadRequestException('Directory name is required');
       }
 
-      const existing = await this.db.contactDirectory.findFirst({ where: { name } });
+      const existing = await this.db.contactDirectory.findFirst({
+        where: { name },
+      });
       if (existing && existing.id !== id) {
-        throw new BadRequestException('A directory with this name already exists');
+        throw new BadRequestException(
+          'A directory with this name already exists',
+        );
       }
       data.name = name;
     }
@@ -128,7 +139,9 @@ export class ContactsService {
         where: { email: dto.email },
       });
       if (existing && existing.id !== id) {
-        throw new BadRequestException('A contact with this email already exists');
+        throw new BadRequestException(
+          'A contact with this email already exists',
+        );
       }
     }
 
@@ -152,7 +165,12 @@ export class ContactsService {
     });
   }
 
-  async parseFile(file: Express.Multer.File): Promise<{ headers: string[]; previewRows: any[]; totalRows: number; allRows: any[] }> {
+  async parseFile(file: Express.Multer.File): Promise<{
+    headers: string[];
+    previewRows: any[];
+    totalRows: number;
+    allRows: any[];
+  }> {
     if (!file) {
       throw new BadRequestException('No file provided');
     }
@@ -161,10 +179,15 @@ export class ContactsService {
 
     if (file.originalname.endsWith('.csv')) {
       result = await this.parseCsv(file.buffer);
-    } else if (file.originalname.endsWith('.xlsx') || file.originalname.endsWith('.xls')) {
+    } else if (
+      file.originalname.endsWith('.xlsx') ||
+      file.originalname.endsWith('.xls')
+    ) {
       result = this.parseXlsx(file.buffer);
     } else {
-      throw new BadRequestException('Unsupported file format. Please upload CSV or XLSX.');
+      throw new BadRequestException(
+        'Unsupported file format. Please upload CSV or XLSX.',
+      );
     }
 
     return {
@@ -175,16 +198,25 @@ export class ContactsService {
     };
   }
 
-  private parseCsv(buffer: Buffer): Promise<{ headers: string[]; rows: any[] }> {
+  private parseCsv(
+    buffer: Buffer,
+  ): Promise<{ headers: string[]; rows: any[] }> {
     return new Promise((resolve, reject) => {
-      parse(buffer, { columns: true, skip_empty_lines: true, trim: true }, (err, records: any) => {
-        if (err) return reject(new BadRequestException('Error parsing CSV file: ' + err.message));
-        if (!records || records.length === 0) {
-          return resolve({ headers: [], rows: [] });
-        }
-        const headers = Object.keys(records[0]);
-        resolve({ headers, rows: records });
-      });
+      parse(
+        buffer,
+        { columns: true, skip_empty_lines: true, trim: true },
+        (err, records: any) => {
+          if (err)
+            return reject(
+              new BadRequestException('Error parsing CSV file: ' + err.message),
+            );
+          if (!records || records.length === 0) {
+            return resolve({ headers: [], rows: [] });
+          }
+          const headers = Object.keys(records[0]);
+          resolve({ headers, rows: records });
+        },
+      );
     });
   }
 
@@ -196,11 +228,17 @@ export class ContactsService {
         throw new Error('Workbook contains no sheets');
       }
       const sheet = workbook.Sheets[sheetName];
-      const records = XLSX.utils.sheet_to_json(sheet, { defval: '' }) as any[];
+      const records: Record<string, unknown>[] = XLSX.utils.sheet_to_json(
+        sheet,
+        {
+          defval: '',
+        },
+      );
       if (records.length === 0) {
         return { headers: [], rows: [] };
       }
-      const headers = Object.keys(records[0]);
+      const firstRecord = records[0];
+      const headers = Object.keys(firstRecord);
       return { headers, rows: records };
     } catch (err: any) {
       throw new BadRequestException('Error parsing XLSX file: ' + err.message);
@@ -243,16 +281,35 @@ export class ContactsService {
           continue;
         }
 
-        const company = mapping['company'] ? row[mapping['company']]?.toString().trim() : null;
-        const jobTitle = mapping['jobTitle'] ? row[mapping['jobTitle']]?.toString().trim() : null;
-        const linkedinUrl = mapping['linkedinUrl'] ? row[mapping['linkedinUrl']]?.toString().trim() : null;
-        const phoneNumber = mapping['phoneNumber'] ? row[mapping['phoneNumber']]?.toString().trim() : null;
-        const notes = mapping['notes'] ? row[mapping['notes']]?.toString().trim() : null;
+        const company = mapping['company']
+          ? row[mapping['company']]?.toString().trim()
+          : null;
+        const jobTitle = mapping['jobTitle']
+          ? row[mapping['jobTitle']]?.toString().trim()
+          : null;
+        const linkedinUrl = mapping['linkedinUrl']
+          ? row[mapping['linkedinUrl']]?.toString().trim()
+          : null;
+        const phoneNumber = mapping['phoneNumber']
+          ? row[mapping['phoneNumber']]?.toString().trim()
+          : null;
+        const notes = mapping['notes']
+          ? row[mapping['notes']]?.toString().trim()
+          : null;
 
         // Custom fields map all non-standard fields that have mapping configurations
         const customFields: Record<string, any> = {};
         for (const [fieldKey, fileCol] of Object.entries(mapping)) {
-          const standardFields = ['firstName', 'lastName', 'email', 'company', 'jobTitle', 'linkedinUrl', 'phoneNumber', 'notes'];
+          const standardFields = [
+            'firstName',
+            'lastName',
+            'email',
+            'company',
+            'jobTitle',
+            'linkedinUrl',
+            'phoneNumber',
+            'notes',
+          ];
           if (!standardFields.includes(fieldKey) && fileCol) {
             customFields[fieldKey] = row[fileCol];
           }
@@ -271,7 +328,10 @@ export class ContactsService {
           phoneNumber,
           notes,
           directoryId: directoryId || null,
-          customFields: Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null,
+          customFields:
+            Object.keys(customFields).length > 0
+              ? JSON.stringify(customFields)
+              : null,
         };
 
         if (existing) {

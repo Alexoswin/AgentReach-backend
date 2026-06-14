@@ -31,4 +31,5 @@ export class CallingCampaign {
   status: string;
 }
 
-export const CallingCampaignSchema = SchemaFactory.createForClass(CallingCampaign);
+export const CallingCampaignSchema =
+  SchemaFactory.createForClass(CallingCampaign);

@@ -46,12 +46,17 @@ export class ContactsController {
   @Patch('directories/:id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a contact directory' })
-  async updateDirectory(@Param('id') id: string, @Body() dto: UpdateContactDirectoryDto) {
+  async updateDirectory(
+    @Param('id') id: string,
+    @Body() dto: UpdateContactDirectoryDto,
+  ) {
     return this.contactsService.updateDirectory(id, dto);
   }
 
   @Delete('directories/:id')
-  @ApiOperation({ summary: 'Delete a contact directory and unassign its contacts' })
+  @ApiOperation({
+    summary: 'Delete a contact directory and unassign its contacts',
+  })
   async removeDirectory(@Param('id') id: string) {
     return this.contactsService.removeDirectory(id);
   }
@@ -72,7 +77,10 @@ export class ContactsController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update contact details' })
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateContactDto>) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateContactDto>,
+  ) {
     return this.contactsService.update(id, dto);
   }
 
@@ -85,7 +93,9 @@ export class ContactsController {
   @Post('parse-file')
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Upload and parse CSV or XLSX contacts file for column mapping' })
+  @ApiOperation({
+    summary: 'Upload and parse CSV or XLSX contacts file for column mapping',
+  })
   @ApiBody({
     schema: {
       type: 'object',

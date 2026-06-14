@@ -1,14 +1,33 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
+import { PDFParse } from 'pdf-parse';
 
 const MAX_TEMPLATE_ATTACHMENTS = 5;
 const MAX_TEMPLATE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_REFERENCE_PDF_BYTES = 8 * 1024 * 1024;
+
+type TemplateGenerationJob = {
+  id: string;
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  result?: {
+    subject: string;
+    bodyHtml: string;
+    bodyText: string;
+    generatedByMock?: boolean;
+  };
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 @Injectable()
 export class TemplatesService {
+  private generationJobs = new Map<string, TemplateGenerationJob>();
+
   constructor(private db: MongoService) {}
 
   async findAll() {
@@ -52,6 +71,76 @@ export class TemplatesService {
     });
   }
 
+  async parseReferencePdf(file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No PDF file provided');
+    }
+
+    const isPdf =
+      file.mimetype === 'application/pdf' ||
+      file.originalname.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      throw new BadRequestException('Reference file must be a PDF');
+    }
+
+    if (file.size > MAX_REFERENCE_PDF_BYTES) {
+      throw new BadRequestException('Reference PDF must be 8 MB or smaller');
+    }
+
+    const parser = new PDFParse({ data: file.buffer });
+    try {
+      const parsed = await parser.getText();
+      const text = this.cleanReferenceText(parsed.text || '');
+
+      if (text.length < 40) {
+        throw new BadRequestException(
+          'We could not read enough text from this PDF. Try exporting it as a text-based PDF.',
+        );
+      }
+
+      return {
+        name: file.originalname,
+        text: text.slice(0, 12000),
+        characters: text.length,
+        pages: parsed.total || 0,
+      };
+    } catch (error: any) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        error.message || 'We could not read that PDF. Please try another file.',
+      );
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  startAiTemplateGeneration(dto: GenerateTemplateDto) {
+    const now = new Date().toISOString();
+    const job: TemplateGenerationJob = {
+      id: randomUUID(),
+      status: 'PENDING',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.generationJobs.set(job.id, job);
+
+    void this.runTemplateGenerationJob(job.id, dto);
+
+    return job;
+  }
+
+  getAiTemplateGenerationStatus(id: string) {
+    const job = this.generationJobs.get(id);
+    if (!job) {
+      throw new BadRequestException('Template generation job not found');
+    }
+    return job;
+  }
+
   getPredefinedTemplates() {
     return [
       {
@@ -59,8 +148,10 @@ export class TemplatesService {
         name: 'Standard Job Application',
         category: 'Job Application',
         subject: 'Application for {{jobTitle}} - {{firstName}} {{lastName}}',
-        bodyText: 'Dear hiring team at {{company}},\n\nI am writing to express my interest in the {{jobTitle}} position at your company. With my background in software engineering, I am confident I can make an immediate contribution to your team.\n\nBest regards,\n{{lastName}}',
-        bodyHtml: '<p>Dear hiring team at {{company}},</p><p>I am writing to express my interest in the <strong>{{jobTitle}}</strong> position at your company. With my background in software engineering, I am confident I can make an immediate contribution to your team.</p><p>Best regards,<br/>{{lastName}}</p>',
+        bodyText:
+          'Dear hiring team at {{company}},\n\nI am writing to express my interest in the {{jobTitle}} position at your company. With my background in software engineering, I am confident I can make an immediate contribution to your team.\n\nBest regards,\n{{lastName}}',
+        bodyHtml:
+          '<p>Dear hiring team at {{company}},</p><p>I am writing to express my interest in the <strong>{{jobTitle}}</strong> position at your company. With my background in software engineering, I am confident I can make an immediate contribution to your team.</p><p>Best regards,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
       {
@@ -68,8 +159,10 @@ export class TemplatesService {
         name: 'Recruiter Outreach',
         category: 'Recruiter Outreach',
         subject: 'Experienced {{jobTitle}} open to new roles',
-        bodyText: 'Hi {{firstName}},\n\nI saw that you recruit for {{jobTitle}} roles at {{company}}. I am currently exploring new opportunities and would love to see if my background matches any active roles you are sourcing for.\n\nBest,\n{{lastName}}',
-        bodyHtml: '<p>Hi {{firstName}},</p><p>I saw that you recruit for <strong>{{jobTitle}}</strong> roles at {{company}}. I am currently exploring new opportunities and would love to see if my background matches any active roles you are sourcing for.</p><p>Best,<br/>{{lastName}}</p>',
+        bodyText:
+          'Hi {{firstName}},\n\nI saw that you recruit for {{jobTitle}} roles at {{company}}. I am currently exploring new opportunities and would love to see if my background matches any active roles you are sourcing for.\n\nBest,\n{{lastName}}',
+        bodyHtml:
+          '<p>Hi {{firstName}},</p><p>I saw that you recruit for <strong>{{jobTitle}}</strong> roles at {{company}}. I am currently exploring new opportunities and would love to see if my background matches any active roles you are sourcing for.</p><p>Best,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
       {
@@ -77,8 +170,10 @@ export class TemplatesService {
         name: 'Hiring Manager Quick Pitch',
         category: 'Hiring Manager Outreach',
         subject: 'Quick question regarding {{jobTitle}} at {{company}}',
-        bodyText: 'Hi {{firstName}},\n\nI saw you lead the engineering team at {{company}}. I noticed you are hiring a {{jobTitle}} and wanted to reach out directly to highlight my experience with systems design and React.\n\nWould you be open to a quick 5-minute chat next week?\n\nThanks,\n{{lastName}}',
-        bodyHtml: '<p>Hi {{firstName}},</p><p>I saw you lead the engineering team at {{company}}. I noticed you are hiring a <strong>{{jobTitle}}</strong> and wanted to reach out directly to highlight my experience with systems design and React.</p><p>Would you be open to a quick 5-minute chat next week?</p><p>Thanks,<br/>{{lastName}}</p>',
+        bodyText:
+          'Hi {{firstName}},\n\nI saw you lead the engineering team at {{company}}. I noticed you are hiring a {{jobTitle}} and wanted to reach out directly to highlight my experience with systems design and React.\n\nWould you be open to a quick 5-minute chat next week?\n\nThanks,\n{{lastName}}',
+        bodyHtml:
+          '<p>Hi {{firstName}},</p><p>I saw you lead the engineering team at {{company}}. I noticed you are hiring a <strong>{{jobTitle}}</strong> and wanted to reach out directly to highlight my experience with systems design and React.</p><p>Would you be open to a quick 5-minute chat next week?</p><p>Thanks,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
       {
@@ -86,8 +181,10 @@ export class TemplatesService {
         name: 'Informational Interview Request',
         category: 'Networking',
         subject: 'Learning from your career path at {{company}}',
-        bodyText: 'Hi {{firstName}},\n\nI came across your profile and was very impressed by your journey as a {{jobTitle}} at {{company}}. I am looking to grow my career in the same space and would love to buy you a virtual coffee to ask a few questions about your career path.\n\nSincerely,\n{{lastName}}',
-        bodyHtml: '<p>Hi {{firstName}},</p><p>I came across your profile and was very impressed by your journey as a <strong>{{jobTitle}}</strong> at {{company}}. I am looking to grow my career in the same space and would love to buy you a virtual coffee to ask a few questions about your career path.</p><p>Sincerely,<br/>{{lastName}}</p>',
+        bodyText:
+          'Hi {{firstName}},\n\nI came across your profile and was very impressed by your journey as a {{jobTitle}} at {{company}}. I am looking to grow my career in the same space and would love to buy you a virtual coffee to ask a few questions about your career path.\n\nSincerely,\n{{lastName}}',
+        bodyHtml:
+          '<p>Hi {{firstName}},</p><p>I came across your profile and was very impressed by your journey as a <strong>{{jobTitle}}</strong> at {{company}}. I am looking to grow my career in the same space and would love to buy you a virtual coffee to ask a few questions about your career path.</p><p>Sincerely,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
       {
@@ -95,8 +192,10 @@ export class TemplatesService {
         name: 'Follow Up After Application',
         category: 'Follow Up',
         subject: 'Following up on application: {{jobTitle}} role',
-        bodyText: 'Hi {{firstName}},\n\nI hope you are having a great week. I wanted to follow up on the {{jobTitle}} role at {{company}} that I applied for last week. I remain highly interested and wanted to see if you have any updates on the timeline.\n\nWarmly,\n{{lastName}}',
-        bodyHtml: '<p>Hi {{firstName}},</p><p>I hope you are having a great week. I wanted to follow up on the <strong>{{jobTitle}}</strong> role at {{company}} that I applied for last week. I remain highly interested and wanted to see if you have any updates on the timeline.</p><p>Warmly,<br/>{{lastName}}</p>',
+        bodyText:
+          'Hi {{firstName}},\n\nI hope you are having a great week. I wanted to follow up on the {{jobTitle}} role at {{company}} that I applied for last week. I remain highly interested and wanted to see if you have any updates on the timeline.\n\nWarmly,\n{{lastName}}',
+        bodyHtml:
+          '<p>Hi {{firstName}},</p><p>I hope you are having a great week. I wanted to follow up on the <strong>{{jobTitle}}</strong> role at {{company}} that I applied for last week. I remain highly interested and wanted to see if you have any updates on the timeline.</p><p>Warmly,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
       {
@@ -104,26 +203,31 @@ export class TemplatesService {
         name: 'Partnership Outreach',
         category: 'Partnership Outreach',
         subject: 'Exploring synergies between our teams',
-        bodyText: 'Hi {{firstName}},\n\nI hope this email finds you well. As the {{jobTitle}} at {{company}}, I wanted to reach out regarding a potential collaboration. We help companies scale their operations and I believe there is a strong synergy between our offerings.\n\nLet me know if you are open to discussing this.\n\nBest,\n{{lastName}}',
-        bodyHtml: '<p>Hi {{firstName}},</p><p>I hope this email finds you well. As the <strong>{{jobTitle}}</strong> at {{company}}, I wanted to reach out regarding a potential collaboration. We help companies scale their operations and I believe there is a strong synergy between our offerings.</p><p>Let me know if you are open to discussing this.</p><p>Best,<br/>{{lastName}}</p>',
+        bodyText:
+          'Hi {{firstName}},\n\nI hope this email finds you well. As the {{jobTitle}} at {{company}}, I wanted to reach out regarding a potential collaboration. We help companies scale their operations and I believe there is a strong synergy between our offerings.\n\nLet me know if you are open to discussing this.\n\nBest,\n{{lastName}}',
+        bodyHtml:
+          '<p>Hi {{firstName}},</p><p>I hope this email finds you well. As the <strong>{{jobTitle}}</strong> at {{company}}, I wanted to reach out regarding a potential collaboration. We help companies scale their operations and I believe there is a strong synergy between our offerings.</p><p>Let me know if you are open to discussing this.</p><p>Best,<br/>{{lastName}}</p>',
         type: 'PREDEFINED',
       },
     ];
   }
 
   async generateAiTemplate(dto: GenerateTemplateDto) {
-    const format = dto.format || 'HTML';
-    const referenceContext = this.buildReferenceContext(dto.referenceDocumentText, dto.referenceDocumentName);
+    const format = dto.format === 'TEXT' ? 'TEXT' : 'HTML';
+    const referenceContext = this.buildReferenceContext(
+      dto.referenceDocumentText,
+      dto.referenceDocumentName,
+    );
     const settings = await this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
 
     const hasNoKey = !settings || !settings.openRouterApiKey;
-    const isMockKey = settings && (
-      settings.openRouterApiKey.toLowerCase().includes('mock') ||
-      settings.openRouterApiKey.toLowerCase().includes('test') ||
-      settings.openRouterApiKey === ''
-    );
+    const isMockKey =
+      settings &&
+      (settings.openRouterApiKey.toLowerCase().includes('mock') ||
+        settings.openRouterApiKey.toLowerCase().includes('test') ||
+        settings.openRouterApiKey === '');
 
     if (hasNoKey || isMockKey) {
       // Return highly relevant mock data on the fly
@@ -133,9 +237,10 @@ export class TemplatesService {
         : '';
       const escapedReferenceLine = this.escapeHtml(referenceLine);
       const bodyText = `Hi {{firstName}},\n\nI am reaching out because my goal is to ${dto.goal}. I noticed you represent ${dto.audience} and wanted to introduce myself in a ${dto.tone} manner.\n\n${dto.instructions || ''}${referenceLine}\n\nLooking forward to speaking,\n{{lastName}}`;
-      const bodyHtml = format === 'HTML'
-        ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${this.escapeHtml(dto.goal)}</strong>. I noticed you represent <strong>${this.escapeHtml(dto.audience)}</strong> and wanted to introduce myself in a <em>${this.escapeHtml(dto.tone)}</em> manner.</p><p>${this.escapeHtml(dto.instructions || '')}${escapedReferenceLine}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
-        : '';
+      const bodyHtml =
+        format === 'HTML'
+          ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${this.escapeHtml(dto.goal)}</strong>. I noticed you represent <strong>${this.escapeHtml(dto.audience)}</strong> and wanted to introduce myself in a <em>${this.escapeHtml(dto.tone)}</em> manner.</p><p>${this.escapeHtml(dto.instructions || '')}${escapedReferenceLine}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
+          : '';
 
       return {
         subject,
@@ -146,10 +251,11 @@ export class TemplatesService {
     }
 
     try {
-      const bodyInstructions = format === 'HTML'
-        ? `2. "bodyHtml" - A real HTML email body, not plain text. Use valid HTML tags such as <div>, <p>, <strong>, <a>, and <br>. Use simple inline styles that work in email clients. Do not wrap it in markdown or code fences.
+      const bodyInstructions =
+        format === 'HTML'
+          ? `2. "bodyHtml" - A real HTML email body, not plain text. It must be non-empty and include valid HTML tags such as <div>, <p>, <strong>, <a>, and <br>. Use simple inline styles that work in email clients. Do not wrap it in markdown or code fences.
 3. "bodyText" - The plain text fallback equivalent of the HTML body.`
-        : `2. "bodyHtml" - Return an empty string.
+          : `2. "bodyHtml" - Return an empty string.
 3. "bodyText" - The plain text email body. Do not include HTML tags.`;
 
       const prompt = `You are an expert copywriter. Write a highly personalized ${format} outreach email campaign template based on:
@@ -172,22 +278,25 @@ ${bodyInstructions}
 
 Do NOT write any preamble, explanation, or markdown backticks outside of the JSON. Return only the JSON object.`;
 
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${settings.openRouterApiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://reachconvert.com',
-          'X-Title': 'ReachConvert',
+      const response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${settings.openRouterApiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reachconvert.com',
+            'X-Title': 'ReachConvert',
+          },
+          body: JSON.stringify({
+            model: resolveOpenRouterModel(settings.openRouterModel),
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+          }),
         },
-        body: JSON.stringify({
-          model: resolveOpenRouterModel(settings.openRouterModel),
-          messages: [{ role: 'user', content: prompt }],
-          response_format: { type: 'json_object' },
-        }),
-      });
+      );
 
-      const data = (await response.json()) as any;
+      const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error?.message || response.statusText);
       }
@@ -200,15 +309,30 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
       // Handle raw markdown wrappers in response if any
       let cleanedJson = contentString.trim();
       if (cleanedJson.startsWith('```')) {
-        cleanedJson = cleanedJson.replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '').trim();
+        cleanedJson = cleanedJson
+          .replace(/^```json/, '')
+          .replace(/^```/, '')
+          .replace(/```$/, '')
+          .trim();
       }
 
       const parsed = JSON.parse(cleanedJson);
-      const bodyText = parsed.bodyText || this.htmlToText(parsed.bodyHtml || '') || `Hi {{firstName}}, ...`;
+      const parsedBodyHtml =
+        typeof parsed.bodyHtml === 'string' ? parsed.bodyHtml : '';
+      const parsedBodyText =
+        typeof parsed.bodyText === 'string' ? parsed.bodyText : '';
+      const bodyHtml =
+        format === 'HTML'
+          ? this.ensureHtmlBody(parsedBodyHtml, parsedBodyText)
+          : '';
+      const bodyText =
+        parsedBodyText ||
+        this.htmlToText(bodyHtml || parsedBodyHtml) ||
+        `Hi {{firstName}}, ...`;
 
       return {
         subject: parsed.subject || `Outreach to ${dto.audience}`,
-        bodyHtml: format === 'HTML' ? this.ensureHtmlBody(parsed.bodyHtml || '', bodyText) : '',
+        bodyHtml,
         bodyText,
       };
     } catch (error: any) {
@@ -216,7 +340,39 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     }
   }
 
-  private normalizeTemplate<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true) {
+  private async runTemplateGenerationJob(id: string, dto: GenerateTemplateDto) {
+    const started = new Date().toISOString();
+    const current = this.generationJobs.get(id);
+    if (!current) return;
+
+    this.generationJobs.set(id, {
+      ...current,
+      status: 'PROCESSING',
+      updatedAt: started,
+    });
+
+    try {
+      const result = await this.generateAiTemplate(dto);
+      this.generationJobs.set(id, {
+        ...this.generationJobs.get(id)!,
+        status: 'COMPLETED',
+        result,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      this.generationJobs.set(id, {
+        ...this.generationJobs.get(id)!,
+        status: 'FAILED',
+        error: error.message || 'Template generation failed',
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  private normalizeTemplate<T extends Partial<CreateTemplateDto>>(
+    dto: T,
+    requireBody = true,
+  ) {
     const normalized = this.normalizeTemplateBodies(dto, requireBody);
 
     if (dto.attachments !== undefined) {
@@ -229,10 +385,11 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     return normalized;
   }
 
-  private buildReferenceContext(referenceText?: string, referenceName?: string) {
-    const cleaned = (referenceText || '')
-      .replace(/\s+/g, ' ')
-      .trim();
+  private buildReferenceContext(
+    referenceText?: string,
+    referenceName?: string,
+  ) {
+    const cleaned = this.cleanReferenceText(referenceText || '');
 
     if (!cleaned) return '';
 
@@ -240,7 +397,14 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     return referenceName ? `Source: ${referenceName}\n${capped}` : capped;
   }
 
-  private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml: string; bodyText: string } {
+  private cleanReferenceText(value: string) {
+    return value.replace(/\s+/g, ' ').replaceAll('\u0000', '').trim();
+  }
+
+  private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(
+    dto: T,
+    requireBody = true,
+  ): T & { bodyHtml: string; bodyText: string } {
     const hasBodyHtml = dto.bodyHtml !== undefined;
     const hasBodyText = dto.bodyText !== undefined;
 
@@ -252,7 +416,9 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     const bodyText = dto.bodyText ?? '';
 
     if (requireBody && !bodyHtml.trim() && !bodyText.trim()) {
-      throw new BadRequestException('Template requires either HTML body or text body');
+      throw new BadRequestException(
+        'Template requires either HTML body or text body',
+      );
     }
 
     return {
@@ -262,27 +428,38 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     };
   }
 
-  private normalizeAttachments(attachments: CreateTemplateDto['attachments'] = []) {
+  private normalizeAttachments(
+    attachments: CreateTemplateDto['attachments'] = [],
+  ) {
     if (attachments.length > MAX_TEMPLATE_ATTACHMENTS) {
-      throw new BadRequestException(`Templates can include up to ${MAX_TEMPLATE_ATTACHMENTS} attachments`);
+      throw new BadRequestException(
+        `Templates can include up to ${MAX_TEMPLATE_ATTACHMENTS} attachments`,
+      );
     }
 
     return attachments.map((attachment, index) => {
       const name = attachment.name?.trim();
       const contentBase64 = attachment.contentBase64?.trim();
-      const contentType = attachment.contentType?.trim() || 'application/octet-stream';
+      const contentType =
+        attachment.contentType?.trim() || 'application/octet-stream';
       const size = Number(attachment.size) || 0;
 
       if (!name) {
-        throw new BadRequestException(`Attachment ${index + 1} needs a file name`);
+        throw new BadRequestException(
+          `Attachment ${index + 1} needs a file name`,
+        );
       }
 
       if (!contentBase64) {
-        throw new BadRequestException(`Attachment ${name} is missing file content`);
+        throw new BadRequestException(
+          `Attachment ${name} is missing file content`,
+        );
       }
 
       if (size <= 0 || size > MAX_TEMPLATE_ATTACHMENT_BYTES) {
-        throw new BadRequestException(`Attachment ${name} must be 5 MB or smaller`);
+        throw new BadRequestException(
+          `Attachment ${name} must be 5 MB or smaller`,
+        );
       }
 
       return {
@@ -320,11 +497,16 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     const sourceText = html || fallbackText;
     const paragraphs = sourceText
       .split(/\n{2,}/)
-      .map(paragraph => paragraph.trim())
+      .map((paragraph) => paragraph.trim())
       .filter(Boolean);
 
     return paragraphs.length > 0
-      ? paragraphs.map(paragraph => `<p>${this.escapeHtml(paragraph).replace(/\n/g, '<br/>')}</p>`).join('')
+      ? paragraphs
+          .map(
+            (paragraph) =>
+              `<p>${this.escapeHtml(paragraph).replace(/\n/g, '<br/>')}</p>`,
+          )
+          .join('')
       : '<p>Hi {{firstName}},</p>';
   }
 

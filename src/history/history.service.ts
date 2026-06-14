@@ -5,7 +5,12 @@ import { MongoService } from '../mongo.service';
 export class HistoryService {
   constructor(private db: MongoService) {}
 
-  async getEmailHistory(filters: { startDate?: string; endDate?: string; campaignId?: string; status?: string }) {
+  async getEmailHistory(filters: {
+    startDate?: string;
+    endDate?: string;
+    campaignId?: string;
+    status?: string;
+  }) {
     const where: any = {};
 
     if (filters.campaignId) {
@@ -36,7 +41,12 @@ export class HistoryService {
     });
   }
 
-  async getCallHistory(filters: { startDate?: string; endDate?: string; campaignId?: string; outcome?: string }) {
+  async getCallHistory(filters: {
+    startDate?: string;
+    endDate?: string;
+    campaignId?: string;
+    outcome?: string;
+  }) {
     const where: any = {};
 
     if (filters.campaignId) {

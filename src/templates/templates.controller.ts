@@ -1,8 +1,21 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  UploadedFile,
+  UseInterceptors,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { TemplatesService } from './templates.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
 @ApiTags('templates')
 @Controller('templates')
@@ -16,16 +29,55 @@ export class TemplatesController {
   }
 
   @Get('predefined')
-  @ApiOperation({ summary: 'Get list of predefined templates across categories' })
+  @ApiOperation({
+    summary: 'Get list of predefined templates across categories',
+  })
   getPredefinedTemplates() {
     return this.templatesService.getPredefinedTemplates();
   }
 
   @Post('generate')
   @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({ summary: 'Generate a personalized template using OpenRouter AI' })
+  @ApiOperation({
+    summary: 'Generate a personalized template using OpenRouter AI',
+  })
   async generateTemplate(@Body() dto: GenerateTemplateDto) {
     return this.templatesService.generateAiTemplate(dto);
+  }
+
+  @Post('generate-jobs')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Start AI template generation as a pollable job' })
+  async startGenerateTemplate(@Body() dto: GenerateTemplateDto) {
+    return this.templatesService.startAiTemplateGeneration(dto);
+  }
+
+  @Get('generate-jobs/:id')
+  @ApiOperation({ summary: 'Get AI template generation job status' })
+  async getGenerateTemplateStatus(@Param('id') id: string) {
+    return this.templatesService.getAiTemplateGenerationStatus(id);
+  }
+
+  @Post('reference-pdf')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary:
+      'Extract text from a PDF reference file for AI template generation',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  async parseReferencePdf(@UploadedFile() file: Express.Multer.File) {
+    return this.templatesService.parseReferencePdf(file);
   }
 
   @Get(':id')
@@ -44,7 +96,10 @@ export class TemplatesController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a template' })
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateTemplateDto>) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateTemplateDto>,
+  ) {
     return this.templatesService.update(id, dto);
   }
 

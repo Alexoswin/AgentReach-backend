@@ -2,7 +2,9 @@ import { IsString, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class GenerateTemplateDto {
-  @ApiProperty({ example: 'Reach out to hiring managers for software engineering roles' })
+  @ApiProperty({
+    example: 'Reach out to hiring managers for software engineering roles',
+  })
   @IsString()
   goal: string;
 
@@ -14,12 +16,18 @@ export class GenerateTemplateDto {
   @IsString()
   tone: string;
 
-  @ApiProperty({ required: false, example: 'Mention my 5 years experience with Node.js and React' })
+  @ApiProperty({
+    required: false,
+    example: 'Mention my 5 years experience with Node.js and React',
+  })
   @IsString()
   @IsOptional()
   instructions?: string;
 
-  @ApiProperty({ required: false, example: 'Resume or brochure text extracted from a reference PDF' })
+  @ApiProperty({
+    required: false,
+    example: 'Resume or brochure text extracted from a reference PDF',
+  })
   @IsString()
   @IsOptional()
   referenceDocumentText?: string;

@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Patch, Post, Req, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Req,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -23,7 +32,9 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({ summary: 'Rotate refresh token and receive a new access token' })
+  @ApiOperation({
+    summary: 'Rotate refresh token and receive a new access token',
+  })
   refresh(@Body() dto: RefreshTokenDto) {
     return this.authService.refresh(dto.refreshToken);
   }

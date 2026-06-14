@@ -19,7 +19,9 @@ import { AuthModule } from './auth/auth.module';
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        uri: configService.get<string>('DATABASE_URL') || 'mongodb://localhost:27017/reachconvert',
+        uri:
+          configService.get<string>('DATABASE_URL') ||
+          'mongodb://localhost:27017/reachconvert',
       }),
     }),
     MongoModule,

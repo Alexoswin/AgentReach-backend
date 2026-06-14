@@ -16,4 +16,5 @@ export class ContactDirectory {
   description?: string;
 }
 
-export const ContactDirectorySchema = SchemaFactory.createForClass(ContactDirectory);
+export const ContactDirectorySchema =
+  SchemaFactory.createForClass(ContactDirectory);

@@ -35,7 +35,9 @@ export class TokenService {
       throw new UnauthorizedException('Invalid token signature');
     }
 
-    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as TokenPayload;
+    const payload = JSON.parse(
+      Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+    ) as TokenPayload;
     if (payload.type !== type) {
       throw new UnauthorizedException('Invalid token type');
     }
@@ -51,7 +53,11 @@ export class TokenService {
     return createHmac('sha256', this.getSecret()).update(token).digest('hex');
   }
 
-  private signToken(user: { id: string; email: string }, type: TokenType, ttlSeconds: number) {
+  private signToken(
+    user: { id: string; email: string },
+    type: TokenType,
+    ttlSeconds: number,
+  ) {
     const header = this.encode({ alg: 'HS256', typ: 'JWT' });
     const payload = this.encode({
       sub: user.id,
@@ -65,7 +71,9 @@ export class TokenService {
   }
 
   private sign(value: string) {
-    return createHmac('sha256', this.getSecret()).update(value).digest('base64url');
+    return createHmac('sha256', this.getSecret())
+      .update(value)
+      .digest('base64url');
   }
 
   private encode(value: Record<string, unknown>) {
@@ -73,6 +81,9 @@ export class TokenService {
   }
 
   private getSecret() {
-    return this.configService.get<string>('JWT_SECRET') || 'reachconvert-local-dev-secret';
+    return (
+      this.configService.get<string>('JWT_SECRET') ||
+      'reachconvert-local-dev-secret'
+    );
   }
 }

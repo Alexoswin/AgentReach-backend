@@ -2,7 +2,11 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
-import { SESClient, SendEmailCommand, SendRawEmailCommand } from '@aws-sdk/client-ses';
+import {
+  SESClient,
+  SendEmailCommand,
+  SendRawEmailCommand,
+} from '@aws-sdk/client-ses';
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
@@ -20,7 +24,7 @@ export class EmailCampaignsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return campaigns.map(c => ({
+    return campaigns.map((c) => ({
       id: c.id,
       name: c.name,
       status: c.status,
@@ -57,7 +61,10 @@ export class EmailCampaignsService {
     });
   }
 
-  async update(id: string, dto: Partial<CreateCampaignDto> & { status?: string }) {
+  async update(
+    id: string,
+    dto: Partial<CreateCampaignDto> & { status?: string },
+  ) {
     return this.db.emailCampaign.update({
       where: { id },
       data: dto,
@@ -81,7 +88,9 @@ export class EmailCampaignsService {
     let addedCount = 0;
     for (const contactId of dto.contactIds) {
       // Check if contact exists
-      const contact = await this.db.contact.findUnique({ where: { id: contactId } });
+      const contact = await this.db.contact.findUnique({
+        where: { id: contactId },
+      });
       if (!contact) continue;
 
       // Check if contact already in campaign
@@ -110,7 +119,9 @@ export class EmailCampaignsService {
     });
 
     if (!record) {
-      throw new BadRequestException('Contact not associated with this campaign');
+      throw new BadRequestException(
+        'Contact not associated with this campaign',
+      );
     }
 
     return this.db.emailCampaignContact.delete({
@@ -132,7 +143,9 @@ export class EmailCampaignsService {
     }
 
     if (!campaign.template) {
-      throw new BadRequestException('Cannot launch a campaign without an email template');
+      throw new BadRequestException(
+        'Cannot launch a campaign without an email template',
+      );
     }
 
     if (campaign.status === 'RUNNING') {
@@ -143,7 +156,9 @@ export class EmailCampaignsService {
       throw new BadRequestException('No contacts in this campaign');
     }
 
-    const pendingCount = campaign.contacts.filter((contact: any) => contact.deliveryStatus === 'PENDING').length;
+    const pendingCount = campaign.contacts.filter(
+      (contact: any) => contact.deliveryStatus === 'PENDING',
+    ).length;
     const isRelaunch = pendingCount === 0;
 
     if (isRelaunch) {
@@ -199,9 +214,10 @@ export class EmailCampaignsService {
       if (!campaign || !campaign.template) return;
 
       const template = campaign.template;
-      const isMockSes = !settings || 
-        !settings.awsAccessKeyId || 
-        settings.awsAccessKeyId.toLowerCase().includes('mock') || 
+      const isMockSes =
+        !settings ||
+        !settings.awsAccessKeyId ||
+        settings.awsAccessKeyId.toLowerCase().includes('mock') ||
         settings.awsAccessKeyId.toLowerCase().includes('test');
 
       let client: SESClient | null = null;
@@ -232,8 +248,14 @@ export class EmailCampaignsService {
         const subject = this.interpolate(template.subject, contact);
         const bodyHtml = this.interpolate(template.bodyHtml, contact);
         const bodyText = this.interpolate(template.bodyText, contact);
-        const attachments = this.normalizeTemplateAttachments(template.attachments, contact);
-        const messageBody: { Html?: { Data: string }; Text?: { Data: string } } = {};
+        const attachments = this.normalizeTemplateAttachments(
+          template.attachments,
+          contact,
+        );
+        const messageBody: {
+          Html?: { Data: string };
+          Text?: { Data: string };
+        } = {};
 
         if (bodyHtml.trim()) {
           messageBody.Html = { Data: bodyHtml };
@@ -250,7 +272,7 @@ export class EmailCampaignsService {
 
           if (isMockSes || !client || !settings) {
             // Simulated delay and random response for Mock mode
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 1000));
             // Simulate 90% success, 10% failure
             const isSuccess = Math.random() > 0.1;
             if (isSuccess) {
@@ -271,13 +293,15 @@ export class EmailCampaignsService {
             if (attachments.length > 0) {
               const command = new SendRawEmailCommand({
                 RawMessage: {
-                  Data: Buffer.from(this.buildRawEmail({
-                    to: contact.email,
-                    subject,
-                    bodyHtml,
-                    bodyText,
-                    attachments,
-                  })),
+                  Data: Buffer.from(
+                    this.buildRawEmail({
+                      to: contact.email,
+                      subject,
+                      bodyHtml,
+                      bodyText,
+                      attachments,
+                    }),
+                  ),
                 },
               });
 
@@ -354,7 +378,7 @@ export class EmailCampaignsService {
           const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
           result = result.replace(regex, (value as string) || '');
         }
-      } catch (e) {
+      } catch {
         // Ignore JSON errors
       }
     }
@@ -366,8 +390,8 @@ export class EmailCampaignsService {
 
   private normalizeTemplateAttachments(attachments: any[] = [], contact: any) {
     return attachments
-      .filter(attachment => attachment?.name && attachment?.contentBase64)
-      .map(attachment => ({
+      .filter((attachment) => attachment?.name && attachment?.contentBase64)
+      .map((attachment) => ({
         name: this.interpolate(attachment.name, contact),
         contentType: attachment.contentType || 'application/octet-stream',
         contentBase64: attachment.contentBase64,
@@ -425,7 +449,7 @@ export class EmailCampaignsService {
 
     lines.push(`--${altBoundary}--`, '');
 
-    attachments.forEach(attachment => {
+    attachments.forEach((attachment) => {
       const fileName = this.escapeMimeParameter(attachment.name);
       lines.push(
         `--${mixedBoundary}`,
@@ -443,7 +467,12 @@ export class EmailCampaignsService {
   }
 
   private chunkBase64(value: string) {
-    return value.replace(/\s/g, '').match(/.{1,76}/g)?.join('\r\n') || '';
+    return (
+      value
+        .replace(/\s/g, '')
+        .match(/.{1,76}/g)
+        ?.join('\r\n') || ''
+    );
   }
 
   private encodeMimeHeader(value: string) {
@@ -451,8 +480,6 @@ export class EmailCampaignsService {
   }
 
   private escapeMimeParameter(value: string) {
-    return (value || 'attachment')
-      .replace(/[\r\n"]/g, '_')
-      .slice(0, 180);
+    return (value || 'attachment').replace(/[\r\n"]/g, '_').slice(0, 180);
   }
 }

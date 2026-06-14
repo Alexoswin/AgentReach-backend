@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -6,7 +16,9 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 @ApiTags('calling-campaigns')
 @Controller('calling-campaigns')
 export class CallingCampaignsController {
-  constructor(private readonly callingCampaignsService: CallingCampaignsService) {}
+  constructor(
+    private readonly callingCampaignsService: CallingCampaignsService,
+  ) {}
 
   @Get('dashboard')
   @ApiOperation({ summary: 'Get AI Calling dashboard metrics' })
@@ -36,7 +48,10 @@ export class CallingCampaignsController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update an AI calling campaign' })
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateCallingCampaignDto> & { status?: string }) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateCallingCampaignDto> & { status?: string },
+  ) {
     return this.callingCampaignsService.update(id, dto);
   }
 
