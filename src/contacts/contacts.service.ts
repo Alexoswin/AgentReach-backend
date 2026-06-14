@@ -2,6 +2,8 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { ImportContactsDto } from './dto/import-contacts.dto';
+import { CreateContactDirectoryDto } from './dto/create-contact-directory.dto';
+import { UpdateContactDirectoryDto } from './dto/update-contact-directory.dto';
 import { parse } from 'csv-parse';
 import * as XLSX from 'xlsx';
 
@@ -12,6 +14,81 @@ export class ContactsService {
   async findAll() {
     return this.db.contact.findMany({
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async findDirectories() {
+    const directories = await this.db.contactDirectory.findMany({
+      orderBy: { createdAt: 'asc' },
+    });
+    const contacts = await this.db.contact.findMany();
+    const counts = contacts.reduce((acc: Record<string, number>, contact: any) => {
+      if (contact.directoryId) {
+        acc[contact.directoryId] = (acc[contact.directoryId] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    return directories.map((directory: any) => ({
+      ...directory,
+      contactCount: counts[directory.id] || 0,
+    }));
+  }
+
+  async createDirectory(dto: CreateContactDirectoryDto) {
+    const name = dto.name.trim();
+    if (!name) {
+      throw new BadRequestException('Directory name is required');
+    }
+
+    const existing = await this.db.contactDirectory.findFirst({ where: { name } });
+    if (existing) {
+      throw new BadRequestException('A directory with this name already exists');
+    }
+
+    return this.db.contactDirectory.create({
+      data: {
+        name,
+        description: dto.description?.trim() || null,
+      },
+    });
+  }
+
+  async updateDirectory(id: string, dto: UpdateContactDirectoryDto) {
+    await this.findDirectory(id);
+    const data: Record<string, any> = {};
+
+    if (dto.name !== undefined) {
+      const name = dto.name.trim();
+      if (!name) {
+        throw new BadRequestException('Directory name is required');
+      }
+
+      const existing = await this.db.contactDirectory.findFirst({ where: { name } });
+      if (existing && existing.id !== id) {
+        throw new BadRequestException('A directory with this name already exists');
+      }
+      data.name = name;
+    }
+
+    if (dto.description !== undefined) {
+      data.description = dto.description?.trim() || null;
+    }
+
+    return this.db.contactDirectory.update({
+      where: { id },
+      data,
+    });
+  }
+
+  async removeDirectory(id: string) {
+    await this.findDirectory(id);
+    await this.db.contact.updateMany({
+      where: { directoryId: id },
+      data: { directoryId: null },
+    });
+    return this.db.contactDirectory.delete({
+      where: { id },
     });
   }
 
@@ -33,10 +110,12 @@ export class ContactsService {
       throw new BadRequestException('A contact with this email already exists');
     }
 
+    await this.ensureDirectoryExists(dto.directoryId);
     const { customFields, ...rest } = dto;
     return this.db.contact.create({
       data: {
         ...rest,
+        directoryId: rest.directoryId || null,
         customFields: customFields ? JSON.stringify(customFields) : null,
       },
     });
@@ -53,6 +132,7 @@ export class ContactsService {
       }
     }
 
+    await this.ensureDirectoryExists(dto.directoryId);
     const { customFields, ...rest } = dto;
     return this.db.contact.update({
       where: { id },
@@ -128,7 +208,8 @@ export class ContactsService {
   }
 
   async importContacts(dto: ImportContactsDto) {
-    const { rows, mapping, duplicateStrategy = 'SKIP' } = dto;
+    const { rows, mapping, duplicateStrategy = 'SKIP', directoryId } = dto;
+    await this.ensureDirectoryExists(directoryId);
     let importedCount = 0;
     let skippedCount = 0;
     let updatedCount = 0;
@@ -189,6 +270,7 @@ export class ContactsService {
           linkedinUrl,
           phoneNumber,
           notes,
+          directoryId: directoryId || null,
           customFields: Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null,
         };
 
@@ -226,5 +308,20 @@ export class ContactsService {
       updatedCount,
       errors,
     };
+  }
+
+  private async findDirectory(id: string) {
+    const directory = await this.db.contactDirectory.findUnique({
+      where: { id },
+    });
+    if (!directory) {
+      throw new BadRequestException('Directory not found');
+    }
+    return directory;
+  }
+
+  private async ensureDirectoryExists(directoryId?: string | null) {
+    if (!directoryId) return;
+    await this.findDirectory(directoryId);
   }
 }

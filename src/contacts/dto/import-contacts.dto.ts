@@ -15,4 +15,9 @@ export class ImportContactsDto {
   @IsIn(['SKIP', 'OVERWRITE'])
   @IsOptional()
   duplicateStrategy?: 'SKIP' | 'OVERWRITE';
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  directoryId?: string;
 }

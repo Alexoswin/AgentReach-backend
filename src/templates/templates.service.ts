@@ -4,6 +4,9 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
 
+const MAX_TEMPLATE_ATTACHMENTS = 5;
+const MAX_TEMPLATE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
 @Injectable()
 export class TemplatesService {
   constructor(private db: MongoService) {}
@@ -25,7 +28,7 @@ export class TemplatesService {
   }
 
   async create(dto: CreateTemplateDto) {
-    const data = this.normalizeTemplateBodies(dto);
+    const data = this.normalizeTemplate(dto);
 
     return this.db.template.create({
       data,
@@ -34,7 +37,7 @@ export class TemplatesService {
 
   async update(id: string, dto: Partial<CreateTemplateDto>) {
     await this.findOne(id);
-    const data = this.normalizeTemplateBodies(dto, false);
+    const data = this.normalizeTemplate(dto, false);
 
     return this.db.template.update({
       where: { id },
@@ -207,6 +210,19 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     }
   }
 
+  private normalizeTemplate<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true) {
+    const normalized = this.normalizeTemplateBodies(dto, requireBody);
+
+    if (dto.attachments !== undefined) {
+      return {
+        ...normalized,
+        attachments: this.normalizeAttachments(dto.attachments),
+      };
+    }
+
+    return normalized;
+  }
+
   private normalizeTemplateBodies<T extends Partial<CreateTemplateDto>>(dto: T, requireBody = true): T & { bodyHtml: string; bodyText: string } {
     const hasBodyHtml = dto.bodyHtml !== undefined;
     const hasBodyText = dto.bodyText !== undefined;
@@ -227,6 +243,39 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
       bodyHtml,
       bodyText: bodyText || this.htmlToText(bodyHtml),
     };
+  }
+
+  private normalizeAttachments(attachments: CreateTemplateDto['attachments'] = []) {
+    if (attachments.length > MAX_TEMPLATE_ATTACHMENTS) {
+      throw new BadRequestException(`Templates can include up to ${MAX_TEMPLATE_ATTACHMENTS} attachments`);
+    }
+
+    return attachments.map((attachment, index) => {
+      const name = attachment.name?.trim();
+      const contentBase64 = attachment.contentBase64?.trim();
+      const contentType = attachment.contentType?.trim() || 'application/octet-stream';
+      const size = Number(attachment.size) || 0;
+
+      if (!name) {
+        throw new BadRequestException(`Attachment ${index + 1} needs a file name`);
+      }
+
+      if (!contentBase64) {
+        throw new BadRequestException(`Attachment ${name} is missing file content`);
+      }
+
+      if (size <= 0 || size > MAX_TEMPLATE_ATTACHMENT_BYTES) {
+        throw new BadRequestException(`Attachment ${name} must be 5 MB or smaller`);
+      }
+
+      return {
+        id: attachment.id || `attachment-${Date.now()}-${index}`,
+        name,
+        contentType,
+        size,
+        contentBase64,
+      };
+    });
   }
 
   private htmlToText(html: string) {

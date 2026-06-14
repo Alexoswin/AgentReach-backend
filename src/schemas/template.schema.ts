@@ -39,6 +39,15 @@ export class Template {
 
   @Prop()
   category?: string;
+
+  @Prop({ type: Array, default: [] })
+  attachments?: {
+    id: string;
+    name: string;
+    contentType: string;
+    size: number;
+    contentBase64: string;
+  }[];
 }
 
 export const TemplateSchema = SchemaFactory.createForClass(Template);

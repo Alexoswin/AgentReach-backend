@@ -15,6 +15,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ContactsService } from './contacts.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { ImportContactsDto } from './dto/import-contacts.dto';
+import { CreateContactDirectoryDto } from './dto/create-contact-directory.dto';
+import { UpdateContactDirectoryDto } from './dto/update-contact-directory.dto';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
 @ApiTags('contacts')
@@ -26,6 +28,32 @@ export class ContactsController {
   @ApiOperation({ summary: 'Get all contacts' })
   async findAll() {
     return this.contactsService.findAll();
+  }
+
+  @Get('directories')
+  @ApiOperation({ summary: 'Get contact directories' })
+  async findDirectories() {
+    return this.contactsService.findDirectories();
+  }
+
+  @Post('directories')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Create a contact directory' })
+  async createDirectory(@Body() dto: CreateContactDirectoryDto) {
+    return this.contactsService.createDirectory(dto);
+  }
+
+  @Patch('directories/:id')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Update a contact directory' })
+  async updateDirectory(@Param('id') id: string, @Body() dto: UpdateContactDirectoryDto) {
+    return this.contactsService.updateDirectory(id, dto);
+  }
+
+  @Delete('directories/:id')
+  @ApiOperation({ summary: 'Delete a contact directory and unassign its contacts' })
+  async removeDirectory(@Param('id') id: string) {
+    return this.contactsService.removeDirectory(id);
   }
 
   @Get(':id')

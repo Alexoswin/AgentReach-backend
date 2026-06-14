@@ -6,6 +6,7 @@ import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
 import { SystemSettings } from './schemas/system-settings.schema';
 import { Contact } from './schemas/contact.schema';
+import { ContactDirectory } from './schemas/contact-directory.schema';
 import { Template } from './schemas/template.schema';
 import { EmailCampaign } from './schemas/email-campaign.schema';
 import { EmailCampaignContact } from './schemas/email-campaign-contact.schema';
@@ -19,6 +20,7 @@ export class MongoService implements OnModuleInit {
   user: MongoDelegate;
   systemSettings: MongoDelegate;
   contact: MongoDelegate;
+  contactDirectory: MongoDelegate;
   template: MongoDelegate;
   emailCampaign: MongoDelegate;
   emailCampaignContact: MongoDelegate;
@@ -29,6 +31,7 @@ export class MongoService implements OnModuleInit {
     @InjectModel(User.name) private userModel: AnyModel,
     @InjectModel(SystemSettings.name) private systemSettingsModel: AnyModel,
     @InjectModel(Contact.name) private contactModel: AnyModel,
+    @InjectModel(ContactDirectory.name) private contactDirectoryModel: AnyModel,
     @InjectModel(Template.name) private templateModel: AnyModel,
     @InjectModel(EmailCampaign.name) private emailCampaignModel: AnyModel,
     @InjectModel(EmailCampaignContact.name) private emailCampaignContactModel: AnyModel,
@@ -39,6 +42,7 @@ export class MongoService implements OnModuleInit {
       user: this.userModel,
       systemSettings: this.systemSettingsModel,
       contact: this.contactModel,
+      contactDirectory: this.contactDirectoryModel,
       template: this.templateModel,
       emailCampaign: this.emailCampaignModel,
       emailCampaignContact: this.emailCampaignContactModel,
@@ -49,6 +53,7 @@ export class MongoService implements OnModuleInit {
     this.user = new MongoDelegate('user', this.userModel, models);
     this.systemSettings = new MongoDelegate('systemSettings', this.systemSettingsModel, models);
     this.contact = new MongoDelegate('contact', this.contactModel, models);
+    this.contactDirectory = new MongoDelegate('contactDirectory', this.contactDirectoryModel, models);
     this.template = new MongoDelegate('template', this.templateModel, models);
     this.emailCampaign = new MongoDelegate('emailCampaign', this.emailCampaignModel, models);
     this.emailCampaignContact = new MongoDelegate('emailCampaignContact', this.emailCampaignContactModel, models);

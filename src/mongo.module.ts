@@ -4,6 +4,7 @@ import { MongoService } from './mongo.service';
 import { User, UserSchema } from './schemas/user.schema';
 import { SystemSettings, SystemSettingsSchema } from './schemas/system-settings.schema';
 import { Contact, ContactSchema } from './schemas/contact.schema';
+import { ContactDirectory, ContactDirectorySchema } from './schemas/contact-directory.schema';
 import { Template, TemplateSchema } from './schemas/template.schema';
 import { EmailCampaign, EmailCampaignSchema } from './schemas/email-campaign.schema';
 import { EmailCampaignContact, EmailCampaignContactSchema } from './schemas/email-campaign-contact.schema';
@@ -17,6 +18,7 @@ import { CallHistory, CallHistorySchema } from './schemas/call-history.schema';
       { name: User.name, schema: UserSchema },
       { name: SystemSettings.name, schema: SystemSettingsSchema },
       { name: Contact.name, schema: ContactSchema },
+      { name: ContactDirectory.name, schema: ContactDirectorySchema },
       { name: Template.name, schema: TemplateSchema },
       { name: EmailCampaign.name, schema: EmailCampaignSchema },
       { name: EmailCampaignContact.name, schema: EmailCampaignContactSchema },

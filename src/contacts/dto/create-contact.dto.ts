@@ -40,6 +40,11 @@ export class CreateContactDto {
   notes?: string;
 
   @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  directoryId?: string;
+
+  @ApiProperty({ required: false })
   @IsObject()
   @IsOptional()
   customFields?: Record<string, any>;

@@ -33,6 +33,9 @@ export class Contact {
   @Prop()
   notes?: string;
 
+  @Prop({ type: String, ref: 'ContactDirectory', index: true })
+  directoryId?: string;
+
   // Stored as a JSON string for compatibility with the current import/interpolation code.
   @Prop()
   customFields?: string;

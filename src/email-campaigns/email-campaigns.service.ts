@@ -2,7 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
-import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { SESClient, SendEmailCommand, SendRawEmailCommand } from '@aws-sdk/client-ses';
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
@@ -217,9 +217,22 @@ export class EmailCampaignsService {
 
       for (const campaignContact of campaign.contacts) {
         const contact = campaignContact.contact;
+        if (!contact) {
+          await this.db.emailCampaignContact.update({
+            where: { id: campaignContact.id },
+            data: {
+              deliveryStatus: 'FAILED',
+              sentTime: new Date(),
+              errorMessage: 'Contact no longer exists',
+            },
+          });
+          continue;
+        }
+
         const subject = this.interpolate(template.subject, contact);
         const bodyHtml = this.interpolate(template.bodyHtml, contact);
         const bodyText = this.interpolate(template.bodyText, contact);
+        const attachments = this.normalizeTemplateAttachments(template.attachments, contact);
         const messageBody: { Html?: { Data: string }; Text?: { Data: string } } = {};
 
         if (bodyHtml.trim()) {
@@ -255,18 +268,34 @@ export class EmailCampaignsService {
               throw new Error('Simulated AWS SES delivery throttling error');
             }
           } else {
-            const command = new SendEmailCommand({
-              Source: SENDER_SOURCE,
-              Destination: {
-                ToAddresses: [contact.email],
-              },
-              Message: {
-                Subject: { Data: subject },
-                Body: messageBody,
-              },
-            });
+            if (attachments.length > 0) {
+              const command = new SendRawEmailCommand({
+                RawMessage: {
+                  Data: Buffer.from(this.buildRawEmail({
+                    to: contact.email,
+                    subject,
+                    bodyHtml,
+                    bodyText,
+                    attachments,
+                  })),
+                },
+              });
 
-            await client.send(command);
+              await client.send(command);
+            } else {
+              const command = new SendEmailCommand({
+                Source: SENDER_SOURCE,
+                Destination: {
+                  ToAddresses: [contact.email],
+                },
+                Message: {
+                  Subject: { Data: subject },
+                  Body: messageBody,
+                },
+              });
+
+              await client.send(command);
+            }
 
             await this.db.emailCampaignContact.update({
               where: { id: campaignContact.id },
@@ -333,5 +362,97 @@ export class EmailCampaignsService {
     // Replace any leftover placeholders
     result = result.replace(/\{\{.*?\}\}/g, '');
     return result;
+  }
+
+  private normalizeTemplateAttachments(attachments: any[] = [], contact: any) {
+    return attachments
+      .filter(attachment => attachment?.name && attachment?.contentBase64)
+      .map(attachment => ({
+        name: this.interpolate(attachment.name, contact),
+        contentType: attachment.contentType || 'application/octet-stream',
+        contentBase64: attachment.contentBase64,
+      }));
+  }
+
+  private buildRawEmail({
+    to,
+    subject,
+    bodyHtml,
+    bodyText,
+    attachments,
+  }: {
+    to: string;
+    subject: string;
+    bodyHtml: string;
+    bodyText: string;
+    attachments: { name: string; contentType: string; contentBase64: string }[];
+  }) {
+    const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const lines: string[] = [
+      `From: ${SENDER_SOURCE}`,
+      `To: ${to}`,
+      `Subject: ${this.encodeMimeHeader(subject)}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+      '',
+      `--${mixedBoundary}`,
+      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+      '',
+    ];
+
+    if (bodyText.trim()) {
+      lines.push(
+        `--${altBoundary}`,
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        this.chunkBase64(Buffer.from(bodyText, 'utf8').toString('base64')),
+        '',
+      );
+    }
+
+    if (bodyHtml.trim()) {
+      lines.push(
+        `--${altBoundary}`,
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        this.chunkBase64(Buffer.from(bodyHtml, 'utf8').toString('base64')),
+        '',
+      );
+    }
+
+    lines.push(`--${altBoundary}--`, '');
+
+    attachments.forEach(attachment => {
+      const fileName = this.escapeMimeParameter(attachment.name);
+      lines.push(
+        `--${mixedBoundary}`,
+        `Content-Type: ${attachment.contentType}; name="${fileName}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${fileName}"`,
+        '',
+        this.chunkBase64(attachment.contentBase64),
+        '',
+      );
+    });
+
+    lines.push(`--${mixedBoundary}--`, '');
+    return lines.join('\r\n');
+  }
+
+  private chunkBase64(value: string) {
+    return value.replace(/\s/g, '').match(/.{1,76}/g)?.join('\r\n') || '';
+  }
+
+  private encodeMimeHeader(value: string) {
+    return `=?UTF-8?B?${Buffer.from(value || '', 'utf8').toString('base64')}?=`;
+  }
+
+  private escapeMimeParameter(value: string) {
+    return (value || 'attachment')
+      .replace(/[\r\n"]/g, '_')
+      .slice(0, 180);
   }
 }
