@@ -298,7 +298,8 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error?.message || response.statusText);
+        const detail = data.error?.metadata?.raw || data.error?.message || response.statusText;
+        throw new Error(detail);
       }
 
       const contentString = data.choices?.[0]?.message?.content;
