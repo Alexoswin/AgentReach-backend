@@ -1444,19 +1444,18 @@ Return ONLY valid JSON with exactly these fields:
 
   private buildLiveOpeningScript(campaign: any, contact: any, botProfile: any) {
     const greeting = this.applyBotVariables(
-      botProfile.greeting ||
-        `Hi {{firstName}}, this is ${botProfile.name}.`,
+      botProfile.greeting || `Hi {{firstName}}, this is ${botProfile.name}.`,
       contact,
       campaign,
       botProfile,
     );
     const firstSentence = this.firstSentence(greeting);
-    const objective = campaign.objective
-      ? `about ${this.compactForSpeech(campaign.objective, 80)}`
-      : 'about a quick follow-up';
+    const objective = this.stripSentenceEnding(
+      this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
+    );
 
     return this.compactForSpeech(
-      `${firstSentence} I am calling ${objective}. Is now okay for one quick question?`,
+      `${firstSentence} I am calling about ${objective}. Is now okay for one quick question?`,
       220,
     );
   }
@@ -1892,6 +1891,10 @@ Return JSON with exactly:
     if (sentenceEnd > 80) return shortened.slice(0, sentenceEnd + 1);
     const space = shortened.lastIndexOf(' ');
     return `${shortened.slice(0, space > 80 ? space : maxLength - 3)}...`;
+  }
+
+  private stripSentenceEnding(value: string) {
+    return value.replace(/(\.\.\.|[.!?])+$/g, '').trim();
   }
 
   private resolveTwilioVoice(voice?: string, language?: string) {
