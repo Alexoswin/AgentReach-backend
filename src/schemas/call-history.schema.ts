@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { Document, Schema as MongooseSchema } from 'mongoose';
 import { randomUUID } from 'crypto';
 
 export type CallHistoryDocument = CallHistory & Document;
@@ -18,8 +18,38 @@ export class CallHistory {
   @Prop({ default: 0 })
   duration: number;
 
+  @Prop({ default: 'pending' })
+  sessionStatus: string;
+
+  @Prop({ default: 'phone_call' })
+  callType: string;
+
+  @Prop()
+  selectedLanguage?: string;
+
+  @Prop()
+  selectedVoice?: string;
+
+  @Prop()
+  startedAt?: Date;
+
+  @Prop()
+  connectedAt?: Date;
+
+  @Prop()
+  endedAt?: Date;
+
+  @Prop()
+  startupTime?: number;
+
+  @Prop()
+  totalTime?: number;
+
   @Prop({ default: 'PENDING' })
   outcome: string;
+
+  @Prop({ type: [Object], default: [] })
+  scripts?: Array<Record<string, unknown>>;
 
   @Prop()
   transcript?: string;
@@ -38,6 +68,21 @@ export class CallHistory {
 
   @Prop()
   keyOutcomes?: string;
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  analysis?: Record<string, unknown>;
+
+  @Prop({ type: [String], default: [] })
+  topicsCovered?: string[];
+
+  @Prop()
+  endCallReason?: string;
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  deviceLogs?: Record<string, unknown>;
+
+  @Prop({ type: [Object], default: [] })
+  sessionErrors?: Array<Record<string, unknown>>;
 
   @Prop({ default: 'PENDING' })
   status: string;

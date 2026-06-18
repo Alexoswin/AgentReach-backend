@@ -27,6 +27,27 @@ export class CallingCampaign {
   @Prop()
   language?: string;
 
+  @Prop()
+  botName?: string;
+
+  @Prop()
+  botRole?: string;
+
+  @Prop()
+  botPersonality?: string;
+
+  @Prop()
+  botKnowledge?: string;
+
+  @Prop()
+  botRules?: string;
+
+  @Prop()
+  botObjectionHandling?: string;
+
+  @Prop()
+  botGreeting?: string;
+
   @Prop({ default: 'DRAFT' })
   status: string;
 

@@ -1,6 +1,9 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
+import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
+import { resolveOpenRouterModel } from '../config/openrouter';
 
 type TwilioSettings = {
   twilioAccountSid?: string;
@@ -9,9 +12,34 @@ type TwilioSettings = {
   twilioStatus?: string;
 };
 
+type GeneratedCallingCampaign = {
+  name: string;
+  objective: string;
+  prompt: string;
+  botName: string;
+  botRole: string;
+  botPersonality: string;
+  botKnowledge: string;
+  botRules: string;
+  botObjectionHandling: string;
+  botGreeting: string;
+  voice: string;
+  language: string;
+};
+
+type CallingCampaignGenerationJob = {
+  id: string;
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  result?: GeneratedCallingCampaign;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 @Injectable()
 export class CallingCampaignsService {
   private readonly logger = new Logger(CallingCampaignsService.name);
+  private generationJobs = new Map<string, CallingCampaignGenerationJob>();
 
   constructor(private db: MongoService) {}
 
@@ -31,6 +59,13 @@ export class CallingCampaignsService {
       prompt: c.prompt,
       voice: c.voice,
       language: c.language,
+      botName: c.botName,
+      botRole: c.botRole,
+      botPersonality: c.botPersonality,
+      botKnowledge: c.botKnowledge,
+      botRules: c.botRules,
+      botObjectionHandling: c.botObjectionHandling,
+      botGreeting: c.botGreeting,
       status: c.status,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
@@ -83,6 +118,143 @@ export class CallingCampaignsService {
     }
 
     return campaign;
+  }
+
+  startCampaignGeneration(dto: GenerateCallingCampaignDto) {
+    const now = new Date().toISOString();
+    const job: CallingCampaignGenerationJob = {
+      id: randomUUID(),
+      status: 'PENDING',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.generationJobs.set(job.id, job);
+    void this.runCampaignGenerationJob(job.id, dto);
+
+    return job;
+  }
+
+  getCampaignGenerationStatus(id: string) {
+    const job = this.generationJobs.get(id);
+    if (!job) {
+      throw new BadRequestException(
+        'Calling campaign generation job not found',
+      );
+    }
+    return job;
+  }
+
+  async generateCampaign(dto: GenerateCallingCampaignDto) {
+    const userPrompt = dto.prompt?.trim();
+    if (!userPrompt) {
+      throw new BadRequestException('Prompt is required.');
+    }
+
+    const settings = await this.db.systemSettings.findUnique({
+      where: { id: 'default' },
+    });
+    const tone = dto.tone?.trim() || 'warm, natural, concise, and helpful';
+
+    if (
+      !settings?.openRouterApiKey ||
+      settings.openRouterApiKey.toLowerCase().includes('mock') ||
+      settings.openRouterApiKey.toLowerCase().includes('test')
+    ) {
+      return this.buildMockGeneratedCampaign(userPrompt, tone);
+    }
+
+    const prompt = `You are an expert AI calling campaign designer. Create a complete outbound AI calling campaign from this user request:
+
+USER REQUEST:
+${userPrompt}
+
+TONE:
+${tone}
+
+The calling agent must act like a real person, not like a prompt reader. It should ask permission, listen first, handle objections briefly, and capture a clear next step.
+
+Return ONLY valid JSON with exactly these fields:
+{
+  "name": "Short campaign name",
+  "objective": "One sentence goal",
+  "prompt": "Campaign context and call instructions",
+  "botName": "Human first name",
+  "botRole": "Human role for the caller",
+  "botPersonality": "Natural persona instructions",
+  "botKnowledge": "Facts, offer details, qualification points, and context the bot should know",
+  "botRules": "Rules the bot must follow",
+  "botObjectionHandling": "How to respond to common objections",
+  "botGreeting": "Opening line using {{firstName}} and {{botName}} variables",
+  "voice": "One Gemini voice from: Kore, Puck, Zephyr, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat",
+  "language": "BCP-47 language code such as en-IN or en"
+}`;
+
+    const response = await fetch(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${settings.openRouterApiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://reachconvert.com',
+          'X-Title': 'ReachConvert',
+        },
+        body: JSON.stringify({
+          model: resolveOpenRouterModel(settings.openRouterModel),
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+        }),
+      },
+    );
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new BadRequestException(
+        data?.error?.metadata?.raw ||
+          data?.error?.message ||
+          'AI campaign generation failed.',
+      );
+    }
+
+    const contentString = data?.choices?.[0]?.message?.content;
+    if (!contentString) {
+      throw new BadRequestException('Empty AI campaign response.');
+    }
+
+    const parsed = this.parseJsonObject(contentString);
+    return this.normalizeGeneratedCampaign(parsed, userPrompt, tone);
+  }
+
+  private async runCampaignGenerationJob(
+    id: string,
+    dto: GenerateCallingCampaignDto,
+  ) {
+    const current = this.generationJobs.get(id);
+    if (!current) return;
+
+    this.generationJobs.set(id, {
+      ...current,
+      status: 'PROCESSING',
+      updatedAt: new Date().toISOString(),
+    });
+
+    try {
+      const result = await this.generateCampaign(dto);
+      this.generationJobs.set(id, {
+        ...this.generationJobs.get(id)!,
+        status: 'COMPLETED',
+        result,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      this.generationJobs.set(id, {
+        ...this.generationJobs.get(id)!,
+        status: 'FAILED',
+        error: error.message || 'AI calling campaign generation failed.',
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
 
   async update(
@@ -243,6 +415,13 @@ export class CallingCampaignsService {
         this.logger.debug(
           `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
         );
+        const botProfile = this.buildBotProfile(campaign);
+        const openingScript = this.buildOpeningScript(
+          campaign,
+          contact,
+          botProfile,
+        );
+        const openingTranscript = `AI Agent: ${openingScript}`;
 
         await this.db.callHistory.update({
           where: { id: call.id },
@@ -250,6 +429,25 @@ export class CallingCampaignsService {
             provider: 'TWILIO',
             status: 'QUEUING',
             outcome: 'QUEUING',
+            sessionStatus: 'inprogress',
+            callType: 'phone_call',
+            selectedLanguage: campaign.language || 'en-IN',
+            selectedVoice: campaign.voice || 'Kore',
+            startedAt: new Date(),
+            scripts: this.transcriptToScripts(openingTranscript),
+            transcript: openingTranscript,
+            summary: `${botProfile.name} queued an outbound call for ${contact.firstName || 'the contact'} about ${campaign.objective || 'the campaign objective'}.`,
+            analysis: {
+              intent: 'queued_outbound_call',
+              agentPersona: {
+                name: botProfile.name,
+                role: botProfile.role,
+                personality: botProfile.personality,
+              },
+              topicsCovered: this.buildTopicsCovered(campaign, botProfile),
+            },
+            topicsCovered: this.buildTopicsCovered(campaign, botProfile),
+            sessionErrors: [],
             errorMessage: null,
           },
         });
@@ -272,6 +470,7 @@ export class CallingCampaignsService {
               providerStatus: result.status,
               status: 'QUEUED',
               outcome: 'QUEUED',
+              sessionStatus: 'inprogress',
               timestamp: new Date(),
             },
           });
@@ -287,6 +486,15 @@ export class CallingCampaignsService {
               providerStatus: 'FAILED',
               status: 'FAILED',
               outcome: 'FAILED',
+              sessionStatus: 'failed',
+              endedAt: new Date(),
+              endCallReason: 'Provider rejected the outbound call.',
+              sessionErrors: [
+                {
+                  errorCode: 'TWILIO_REJECTED',
+                  errorMessage: result.error,
+                },
+              ],
               errorMessage: result.error,
               timestamp: new Date(),
             },
@@ -360,6 +568,7 @@ export class CallingCampaignsService {
         this.logger.debug(
           `Dialing call ${call.id} for ${contact.firstName} ${contact.lastName} at ${this.maskPhoneNumber(contact.phoneNumber)}`,
         );
+        const startedAt = new Date();
 
         // 1. DIALING
         await this.db.callHistory.update({
@@ -368,6 +577,13 @@ export class CallingCampaignsService {
             provider: 'SIMULATION',
             status: 'DIALING',
             outcome: 'DIALING',
+            sessionStatus: 'inprogress',
+            callType: 'phone_call',
+            selectedLanguage: campaign.language || 'en-IN',
+            selectedVoice: campaign.voice || 'Kore',
+            startedAt,
+            scripts: [],
+            sessionErrors: [],
           },
         });
         await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -375,7 +591,11 @@ export class CallingCampaignsService {
         // 2. RINGING
         await this.db.callHistory.update({
           where: { id: call.id },
-          data: { status: 'RINGING', outcome: 'RINGING' },
+          data: {
+            status: 'RINGING',
+            outcome: 'RINGING',
+            startupTime: Date.now() - startedAt.getTime(),
+          },
         });
         await new Promise((resolve) => setTimeout(resolve, 1200));
 
@@ -383,9 +603,16 @@ export class CallingCampaignsService {
 
         if (outcome === 'ANSWERED') {
           // 3. CONNECTED / IN PROGRESS
+          const connectedAt = new Date();
           await this.db.callHistory.update({
             where: { id: call.id },
-            data: { status: 'CONNECTED', outcome: 'CONNECTED' },
+            data: {
+              status: 'CONNECTED',
+              outcome: 'CONNECTED',
+              sessionStatus: 'connected',
+              connectedAt,
+              startupTime: connectedAt.getTime() - startedAt.getTime(),
+            },
           });
           await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -399,31 +626,42 @@ export class CallingCampaignsService {
           const recordingUrl =
             recordingUrls[Math.floor(Math.random() * recordingUrls.length)];
           const sentimentScore = parseFloat((Math.random() * 3 + 7).toFixed(1)); // positive 7.0 - 10.0
-          const summary = `Evaluated candidate ${contact.firstName} for software engineering. Strong skills in Next.js and NestJS, eager to join.`;
-          const keyOutcomes =
-            'Scheduled candidate for next round; sent confirmation email.';
-
-          const transcript = `AI Agent: Hello, am I speaking with ${contact.firstName}?
-Customer: Yes, this is ${contact.firstName} speaking. Who is this?
-AI Agent: Hi ${contact.firstName}, my name is Sarah calling from ReachConvert. I saw your application for the Software Engineer role and wanted to schedule a quick conversation.
-Customer: Oh, awesome! Yes, I am definitely interested.
-AI Agent: Great! I see you have experience with NestJS and Next.js. Could you tell me a bit about your last project?
-Customer: Sure, in my last role at ${contact.company || 'my previous company'}, I built a SaaS platform using Next.js on the frontend and NestJS on the backend, complete with MongoDB...
-AI Agent: That sounds exactly like what we are looking for. I will pass your details to the hiring manager and we will follow up with an email to schedule a technical round.
-Customer: Sounds perfect, thank you Sarah!
-AI Agent: Thank you, have a great day!`;
+          const botProfile = this.buildBotProfile(campaign);
+          const summary = `${botProfile.name} spoke with ${contact.firstName} about ${campaign.objective || 'the campaign objective'} and captured the next step.`;
+          const keyOutcomes = this.buildKeyOutcomes(campaign);
+          const transcript = this.buildSimulatedTranscript(
+            campaign,
+            contact,
+            botProfile,
+          );
+          const scripts = this.transcriptToScripts(transcript);
+          const analysis = this.buildCallAnalysis(
+            campaign,
+            contact,
+            botProfile,
+            sentimentScore,
+          );
+          const topicsCovered = this.buildTopicsCovered(campaign, botProfile);
+          const endedAt = new Date();
 
           await this.db.callHistory.update({
             where: { id: call.id },
             data: {
               outcome: 'ANSWERED',
               status: 'COMPLETED',
+              sessionStatus: 'completed',
               duration,
+              endedAt,
+              totalTime: endedAt.getTime() - startedAt.getTime(),
               recordingUrl,
+              scripts,
               transcript,
               summary,
               sentimentScore,
               keyOutcomes,
+              analysis,
+              topicsCovered,
+              endCallReason: 'The contact requested details and follow-up.',
               timestamp: new Date(),
             },
           });
@@ -436,6 +674,7 @@ AI Agent: Thank you, have a great day!`;
             where: { id: call.id },
             data: {
               outcome,
+              sessionStatus: outcome === 'FAILED' ? 'failed' : 'completed',
               status:
                 outcome === 'NO_ANSWER'
                   ? 'NO_ANSWER'
@@ -443,6 +682,23 @@ AI Agent: Thank you, have a great day!`;
                     ? 'BUSY'
                     : 'FAILED',
               duration: 0,
+              endedAt: new Date(),
+              totalTime: Date.now() - startedAt.getTime(),
+              endCallReason:
+                outcome === 'NO_ANSWER'
+                  ? 'Contact did not answer.'
+                  : outcome === 'BUSY'
+                    ? 'Contact line was busy.'
+                    : 'Simulation marked the call as failed.',
+              sessionErrors:
+                outcome === 'FAILED'
+                  ? [
+                      {
+                        errorCode: 'SIMULATION_FAILED',
+                        errorMessage: 'Simulated call failure.',
+                      },
+                    ]
+                  : [],
               timestamp: new Date(),
             },
           });
@@ -528,13 +784,130 @@ AI Agent: Thank you, have a great day!`;
           campaignId,
           contactId,
           outcome: 'PENDING',
+          status: 'PENDING',
+          sessionStatus: 'pending',
+          callType: 'phone_call',
           duration: 0,
+          scripts: [],
+          topicsCovered: [],
+          sessionErrors: [],
         },
       });
       added++;
     }
 
     return { added, skipped };
+  }
+
+  private buildMockGeneratedCampaign(userPrompt: string, tone: string) {
+    return this.normalizeGeneratedCampaign(
+      {
+        name: 'AI Calling Campaign',
+        objective:
+          'Call selected contacts, qualify interest, and capture the next best follow-up.',
+        prompt: userPrompt,
+        botName: 'Alex',
+        botRole: 'calling specialist',
+        botPersonality: tone,
+        botKnowledge: userPrompt,
+        botRules:
+          'Ask permission before continuing. Keep the call brief. Do not overpromise. Confirm the next step before ending.',
+        botObjectionHandling:
+          'If they are busy, ask for a better callback time. If they are unsure, offer to send details. If they are not interested, thank them politely and close.',
+        botGreeting:
+          'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
+        voice: 'Kore',
+        language: 'en-IN',
+      },
+      userPrompt,
+      tone,
+    );
+  }
+
+  private normalizeGeneratedCampaign(
+    value: Record<string, any>,
+    userPrompt: string,
+    tone: string,
+  ) {
+    const allowedVoices = new Set([
+      'Kore',
+      'Puck',
+      'Zephyr',
+      'Charon',
+      'Fenrir',
+      'Leda',
+      'Orus',
+      'Aoede',
+      'Callirrhoe',
+      'Autonoe',
+      'Enceladus',
+      'Iapetus',
+      'Umbriel',
+      'Algieba',
+      'Despina',
+      'Erinome',
+      'Algenib',
+      'Rasalgethi',
+      'Laomedeia',
+      'Achernar',
+      'Alnilam',
+      'Schedar',
+      'Gacrux',
+      'Pulcherrima',
+      'Achird',
+      'Zubenelgenubi',
+      'Vindemiatrix',
+      'Sadachbia',
+      'Sadaltager',
+      'Sulafat',
+    ]);
+
+    const pick = (key: string, fallback: string) => {
+      const text = typeof value?.[key] === 'string' ? value[key].trim() : '';
+      return text || fallback;
+    };
+    const voice = pick('voice', 'Kore');
+    const language = pick('language', 'en-IN');
+
+    return {
+      name: pick('name', 'AI Calling Campaign').slice(0, 90),
+      objective: pick(
+        'objective',
+        'Call contacts, qualify interest, and capture the next step.',
+      ),
+      prompt: pick('prompt', userPrompt),
+      botName: pick('botName', 'Alex'),
+      botRole: pick('botRole', 'calling specialist'),
+      botPersonality: pick('botPersonality', tone),
+      botKnowledge: pick('botKnowledge', userPrompt),
+      botRules: pick(
+        'botRules',
+        'Ask permission before continuing. Keep the call brief. Do not overpromise.',
+      ),
+      botObjectionHandling: pick(
+        'botObjectionHandling',
+        'If they are busy, ask for a better callback time. If they are unsure, offer to send details.',
+      ),
+      botGreeting: pick(
+        'botGreeting',
+        'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
+      ),
+      voice: allowedVoices.has(voice) ? voice : 'Kore',
+      language: /^[a-z]{2,3}(-[A-Z]{2})?$/.test(language) ? language : 'en-IN',
+    };
+  }
+
+  private parseJsonObject(content: string) {
+    let cleanedJson = content.trim();
+    if (cleanedJson.startsWith('```')) {
+      cleanedJson = cleanedJson
+        .replace(/^```json/, '')
+        .replace(/^```/, '')
+        .replace(/```$/, '')
+        .trim();
+    }
+
+    return JSON.parse(cleanedJson);
   }
 
   private async resetCallsForRelaunch(calls: any[]) {
@@ -547,9 +920,23 @@ AI Agent: Thank you, have a great day!`;
           status: 'PENDING',
           transcript: null,
           recordingUrl: null,
+          scripts: [],
           summary: null,
           sentimentScore: 5.0,
           keyOutcomes: null,
+          analysis: null,
+          topicsCovered: [],
+          endCallReason: null,
+          sessionStatus: 'pending',
+          selectedLanguage: null,
+          selectedVoice: null,
+          startedAt: null,
+          connectedAt: null,
+          endedAt: null,
+          startupTime: null,
+          totalTime: null,
+          sessionErrors: [],
+          deviceLogs: null,
           provider: null,
           providerCallSid: null,
           providerStatus: null,
@@ -629,18 +1016,207 @@ AI Agent: Thank you, have a great day!`;
   }
 
   private buildCallTwiml(campaign: any, contact: any) {
-    const firstName = contact.firstName || 'there';
+    const botProfile = this.buildBotProfile(campaign);
+    const message = this.buildOpeningScript(campaign, contact, botProfile);
+    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
+    const twilioVoice = this.resolveTwilioVoice(campaign.voice, language);
+
+    return `<Response><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="${twilioVoice}" language="${language}">Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
+  }
+
+  private buildBotProfile(campaign: any) {
+    return {
+      name: campaign.botName?.trim() || 'Alex',
+      role: campaign.botRole?.trim() || 'calling specialist',
+      personality:
+        campaign.botPersonality?.trim() ||
+        'warm, concise, calm, and naturally conversational',
+      knowledge: campaign.botKnowledge?.trim() || campaign.prompt?.trim() || '',
+      rules:
+        campaign.botRules?.trim() ||
+        'ask permission before continuing, listen first, keep the call brief, and never overpromise',
+      objections:
+        campaign.botObjectionHandling?.trim() ||
+        'if the contact is busy, ask for a better callback time; if they are unsure, offer to send details',
+      greeting: campaign.botGreeting?.trim() || '',
+    };
+  }
+
+  private buildOpeningScript(campaign: any, contact: any, botProfile: any) {
+    const company = contact.company || 'your team';
     const objective =
       campaign.objective ||
-      'follow up with you and understand whether this is a good time to talk';
-    const prompt = campaign.prompt
-      ? ` The campaign instructions are: ${campaign.prompt}`
-      : '';
-    const message = `Hello ${firstName}. This is ReachConvert calling about ${objective}.${prompt} This first live calling version can place the outbound call and read this opening message. Please follow up from the ReachConvert dashboard for the full call result.`;
+      'check whether this is relevant and find the best next step';
+    const greeting = this.applyBotVariables(
+      botProfile.greeting ||
+        `Hi {{firstName}}, this is ${botProfile.name}. I know this is a cold call, so I will be brief.`,
+      contact,
+      campaign,
+      botProfile,
+    );
+    const context = this.sentenceFromText(
+      botProfile.knowledge ||
+        campaign.prompt ||
+        'I am calling with a quick update that may be useful.',
+    );
+    const rules = this.sentenceFromText(botProfile.rules);
 
-    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
+    return [
+      greeting,
+      `I am a ${botProfile.role}, calling about ${objective}.`,
+      `I will keep this ${this.sentenceFromText(botProfile.personality).toLowerCase()}`,
+      `I wanted to see if this is relevant for ${company} and ask one or two quick questions before suggesting a next step.`,
+      context,
+      `If now is not a good time, no problem. I can note a better callback time or send the details instead.`,
+      rules ? `I will keep this simple: ${rules}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
 
-    return `<Response><Say voice="alice" language="${language}">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="alice" language="${language}">Thank you. Goodbye.</Say></Response>`;
+  private buildSimulatedTranscript(
+    campaign: any,
+    contact: any,
+    botProfile: any,
+  ) {
+    const firstName = contact.firstName || 'there';
+    const objective =
+      campaign.objective || 'understanding whether there is a useful next step';
+    const knowledge =
+      botProfile.knowledge ||
+      'the offer, qualification criteria, and follow-up process';
+    const objections = this.sentenceFromText(botProfile.objections);
+    const personality = this.sentenceFromText(botProfile.personality);
+
+    return `AI Agent: ${this.buildOpeningScript(campaign, contact, botProfile)}
+Customer: Hi ${botProfile.name}. I have a minute. What is this about?
+AI Agent: Thanks, ${firstName}. I will keep the tone ${personality.toLowerCase()} In short, I am calling about ${objective}. Before I explain more, can I ask what matters most to you right now?
+Customer: Sure. I mainly want to understand whether this is relevant for me.
+AI Agent: That makes sense. Based on what I have here, the important context is ${knowledge}. Does that sound close to what you are looking for?
+Customer: It could be. I would need more details before deciding.
+AI Agent: Absolutely. ${objections} I can send the details and mark you for a follow-up, or we can schedule a short next call.
+Customer: Please send the details and follow up later.
+AI Agent: Done. I will share the context with the team and make sure the next message is specific to what we discussed. Thanks for taking the call.`;
+  }
+
+  private transcriptToScripts(transcript: string) {
+    return transcript
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => {
+        const [speakerLabel, ...rest] = line.split(':');
+        const speaker =
+          speakerLabel === 'Customer'
+            ? 'contact'
+            : speakerLabel.includes('Agent')
+              ? 'agent'
+              : 'system';
+
+        return {
+          turn: index + 1,
+          speaker,
+          label: speakerLabel,
+          text: rest.join(':').trim() || line,
+          timestamp: new Date().toISOString(),
+        };
+      });
+  }
+
+  private buildCallAnalysis(
+    campaign: any,
+    contact: any,
+    botProfile: any,
+    sentimentScore: number,
+  ) {
+    const objective = campaign.objective || 'campaign follow-up';
+    const topicsCovered = this.buildTopicsCovered(campaign, botProfile);
+
+    return {
+      engagement_score: Math.round(sentimentScore * 10),
+      intent: 'interested_follow_up',
+      contactName:
+        `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
+      agentPersona: {
+        name: botProfile.name,
+        role: botProfile.role,
+        personality: botProfile.personality,
+      },
+      objective,
+      strengths: [
+        'Opened with context and permission.',
+        'Kept the call concise.',
+        'Offered a clear next step.',
+      ],
+      areasImprove: [
+        'Confirm exact callback timing on live calls.',
+        'Capture any objection in the CRM notes.',
+      ],
+      topicsCovered,
+      nextBestAction: 'Send details and schedule a follow-up.',
+    };
+  }
+
+  private buildTopicsCovered(campaign: any, botProfile: any) {
+    return [
+      campaign.objective ? 'Objective' : '',
+      botProfile.knowledge ? 'Knowledge base' : '',
+      botProfile.rules ? 'Conversation rules' : '',
+      botProfile.objections ? 'Objection handling' : '',
+      'Follow-up',
+    ].filter(Boolean);
+  }
+
+  private buildKeyOutcomes(campaign: any) {
+    const objections = campaign.botObjectionHandling?.trim();
+    if (objections) {
+      return `Captured interest level, handled objections using bot training, and marked contact for follow-up.`;
+    }
+
+    return 'Captured interest level and marked contact for follow-up.';
+  }
+
+  private applyBotVariables(
+    value: string,
+    contact: any,
+    campaign: any,
+    botProfile: any,
+  ) {
+    const variables: Record<string, string> = {
+      firstName: contact.firstName || 'there',
+      lastName: contact.lastName || '',
+      companyName: contact.company || 'your team',
+      contactCompany: contact.company || 'your team',
+      botName: botProfile.name,
+      botRole: botProfile.role,
+      objective: campaign.objective || '',
+    };
+
+    return value.replace(/\{\{(\w+)\}\}/g, (_, key) => variables[key] || '');
+  }
+
+  private sentenceFromText(value?: string) {
+    const text = value?.replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    const shortened = text.length > 260 ? `${text.slice(0, 257)}...` : text;
+    return /[.!?]$/.test(shortened) ? shortened : `${shortened}.`;
+  }
+
+  private resolveTwilioVoice(voice?: string, language?: string) {
+    if (language === 'en-IN') return 'Polly.Aditi';
+
+    const supportedVoices: Record<string, string> = {
+      Kore: 'Polly.Matthew',
+      Puck: 'Polly.Justin',
+      Zephyr: 'Polly.Joanna',
+      Charon: 'Polly.Brian',
+      Iapetus: 'Polly.Matthew',
+      Achernar: 'Polly.Amy',
+      Achird: 'Polly.Joey',
+      Sulafat: 'Polly.Joanna',
+    };
+
+    return supportedVoices[voice || ''] || 'Polly.Joanna';
   }
 
   private escapeXml(value: string) {

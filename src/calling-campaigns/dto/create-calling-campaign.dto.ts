@@ -40,6 +40,56 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   language?: string;
 
+  @ApiProperty({ required: false, example: 'Sarah' })
+  @IsString()
+  @IsOptional()
+  botName?: string;
+
+  @ApiProperty({ required: false, example: 'Senior recruiter' })
+  @IsString()
+  @IsOptional()
+  botRole?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Warm, curious, concise, and naturally conversational',
+  })
+  @IsString()
+  @IsOptional()
+  botPersonality?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Company background, offer details, qualification criteria',
+  })
+  @IsString()
+  @IsOptional()
+  botKnowledge?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Ask permission before pitching. Never overpromise.',
+  })
+  @IsString()
+  @IsOptional()
+  botRules?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'If the contact is busy, ask for a better callback time.',
+  })
+  @IsString()
+  @IsOptional()
+  botObjectionHandling?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Hi {{firstName}}, this is Sarah from ReachConvert.',
+  })
+  @IsString()
+  @IsOptional()
+  botGreeting?: string;
+
   @ApiProperty({ required: false, type: [String] })
   @IsArray()
   @IsString({ each: true })
