@@ -41,6 +41,18 @@ export class CallHistory {
 
   @Prop({ default: 'PENDING' })
   status: string;
+
+  @Prop()
+  provider?: string;
+
+  @Prop()
+  providerCallSid?: string;
+
+  @Prop()
+  providerStatus?: string;
+
+  @Prop()
+  errorMessage?: string;
 }
 
 export const CallHistorySchema = SchemaFactory.createForClass(CallHistory);

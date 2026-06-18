@@ -179,7 +179,12 @@ export class SettingsService {
 
   async testTwilio() {
     const settings = await this.getRawSettings();
-    if (!settings || !settings.twilioAccountSid || !settings.twilioAuthToken || !settings.twilioPhoneNumber) {
+    if (
+      !settings ||
+      !settings.twilioAccountSid ||
+      !settings.twilioAuthToken ||
+      !settings.twilioPhoneNumber
+    ) {
       throw new BadRequestException(
         'Twilio is not fully configured (Account SID, Auth Token, and Phone Number are required).',
       );
@@ -205,7 +210,9 @@ export class SettingsService {
     }
 
     try {
-      const auth = Buffer.from(`${settings.twilioAccountSid}:${settings.twilioAuthToken}`).toString('base64');
+      const auth = Buffer.from(
+        `${settings.twilioAccountSid}:${settings.twilioAuthToken}`,
+      ).toString('base64');
       const response = await fetch(
         `https://api.twilio.com/2010-04-01/Accounts/${settings.twilioAccountSid}.json`,
         {

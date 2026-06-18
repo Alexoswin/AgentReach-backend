@@ -46,7 +46,11 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   contactIds?: string[];
 
-  @ApiProperty({ required: false, type: [String], example: ['sales', 'lead-gen'] })
+  @ApiProperty({
+    required: false,
+    type: [String],
+    example: ['sales', 'lead-gen'],
+  })
   @IsArray()
   @IsOptional()
   tags?: string[];

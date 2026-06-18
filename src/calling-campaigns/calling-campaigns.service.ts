@@ -2,6 +2,13 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 
+type TwilioSettings = {
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioPhoneNumber?: string;
+  twilioStatus?: string;
+};
+
 @Injectable()
 export class CallingCampaignsService {
   private readonly logger = new Logger(CallingCampaignsService.name);
@@ -83,6 +90,9 @@ export class CallingCampaignsService {
     dto: Partial<CreateCallingCampaignDto> & { status?: string },
   ) {
     const { contactIds, ...rest } = dto;
+    this.logger.debug(
+      `Updating calling campaign ${id}; fields=${Object.keys(rest).join(',') || 'none'}; requestedContacts=${contactIds?.length || 0}`,
+    );
     const campaign = await this.db.callingCampaign.update({
       where: { id },
       data: rest,
@@ -99,6 +109,13 @@ export class CallingCampaignsService {
   }
 
   async remove(id: string) {
+    this.logger.debug(`Deleting calling campaign ${id} and related calls`);
+    const deletedCalls = await this.db.callHistory.deleteMany({
+      where: { campaignId: id },
+    });
+    this.logger.debug(
+      `Deleted ${deletedCalls.count} call history rows for campaign ${id}`,
+    );
     return this.db.callingCampaign.delete({
       where: { id },
     });
@@ -110,7 +127,6 @@ export class CallingCampaignsService {
       where: { id },
       include: {
         calls: {
-          where: { outcome: 'PENDING' },
           include: { contact: true },
         },
       },
@@ -121,20 +137,46 @@ export class CallingCampaignsService {
       throw new BadRequestException('Calling campaign not found');
     }
 
-    const callableCalls = campaign.calls.filter((call: any) =>
+    if (campaign.status === 'RUNNING') {
+      this.logger.warn(`Launch blocked for campaign ${id}: already running`);
+      throw new BadRequestException('Calling campaign is already running');
+    }
+
+    const settings = await this.db.systemSettings.findUnique({
+      where: { id: 'default' },
+    });
+    const hasTwilio = this.hasUsableTwilioSettings(settings);
+    const launchMode = hasTwilio ? 'twilio' : 'simulation';
+    this.logger.debug(
+      `Campaign ${id} launch provider check: Twilio status=${settings?.twilioStatus || 'DISCONNECTED'}, from=${settings?.twilioPhoneNumber || 'not configured'}; current mode=${launchMode}`,
+    );
+
+    const callableCalls = (campaign.calls || []).filter((call: any) =>
       this.hasCallablePhone(call.contact),
+    );
+    const pendingCallableCalls = callableCalls.filter(
+      (call: any) => call.outcome === 'PENDING',
     );
     const skippedCalls = campaign.calls.length - callableCalls.length;
 
     this.logger.debug(
-      `Campaign ${id} launch check: ${campaign.calls.length} pending calls, ${callableCalls.length} with phone numbers, ${skippedCalls} skipped`,
+      `Campaign ${id} launch check: ${campaign.calls.length} total call rows, ${pendingCallableCalls.length} pending callable rows, ${callableCalls.length} total callable rows, ${skippedCalls} rows missing phone numbers`,
     );
 
     if (callableCalls.length === 0) {
       this.logger.warn(
-        `Launch blocked for campaign ${id}: no pending calls with phone numbers`,
+        `Launch blocked for campaign ${id}: no contacts with phone numbers`,
       );
-      throw new BadRequestException('No pending calls in this campaign');
+      throw new BadRequestException(
+        'No contacts with phone numbers in this campaign',
+      );
+    }
+
+    if (pendingCallableCalls.length === 0) {
+      this.logger.debug(
+        `Relaunch requested for campaign ${id}; resetting ${callableCalls.length} previous calls to PENDING`,
+      );
+      await this.resetCallsForRelaunch(callableCalls);
     }
 
     await this.db.callingCampaign.update({
@@ -142,13 +184,134 @@ export class CallingCampaignsService {
       data: { status: 'RUNNING' },
     });
 
-    // Run calling simulation in background
-    this.runCallSimulation(campaign.id);
+    if (hasTwilio) {
+      this.runTwilioOutboundCalls(campaign.id, settings);
+    } else {
+      this.logger.warn(
+        `Campaign ${id} is using simulation because Twilio is not fully connected`,
+      );
+      this.runCallSimulation(campaign.id);
+    }
 
     return {
       success: true,
-      message: 'Calling campaign started dialer simulation',
+      message:
+        pendingCallableCalls.length === 0
+          ? `Calling campaign relaunched in ${launchMode} mode`
+          : `Calling campaign started in ${launchMode} mode`,
     };
+  }
+
+  private async runTwilioOutboundCalls(
+    campaignId: string,
+    settings: TwilioSettings,
+  ) {
+    try {
+      this.logger.debug(
+        `Starting Twilio outbound calls for campaign ${campaignId}`,
+      );
+      const campaign = await this.db.callingCampaign.findUnique({
+        where: { id: campaignId },
+        include: {
+          calls: {
+            where: { outcome: 'PENDING' },
+            include: { contact: true },
+          },
+        },
+      });
+
+      if (!campaign) {
+        this.logger.warn(
+          `Twilio calling stopped: campaign ${campaignId} was not found`,
+        );
+        return;
+      }
+
+      let placed = 0;
+      let failed = 0;
+
+      for (const call of campaign.calls) {
+        const contact = call.contact;
+        if (!this.hasCallablePhone(contact)) {
+          failed++;
+          this.logger.warn(
+            `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
+          );
+          continue;
+        }
+
+        this.logger.debug(
+          `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
+        );
+
+        await this.db.callHistory.update({
+          where: { id: call.id },
+          data: {
+            provider: 'TWILIO',
+            status: 'QUEUING',
+            outcome: 'QUEUING',
+            errorMessage: null,
+          },
+        });
+
+        const result = await this.createTwilioCall({
+          accountSid: settings.twilioAccountSid || '',
+          authToken: settings.twilioAuthToken || '',
+          from: settings.twilioPhoneNumber || '',
+          to: contact.phoneNumber,
+          twiml: this.buildCallTwiml(campaign, contact),
+        });
+
+        if (result.ok) {
+          placed++;
+          await this.db.callHistory.update({
+            where: { id: call.id },
+            data: {
+              provider: 'TWILIO',
+              providerCallSid: result.sid,
+              providerStatus: result.status,
+              status: 'QUEUED',
+              outcome: 'QUEUED',
+              timestamp: new Date(),
+            },
+          });
+          this.logger.debug(
+            `Twilio accepted call ${call.id}; sid=${result.sid}; status=${result.status}`,
+          );
+        } else {
+          failed++;
+          await this.db.callHistory.update({
+            where: { id: call.id },
+            data: {
+              provider: 'TWILIO',
+              providerStatus: 'FAILED',
+              status: 'FAILED',
+              outcome: 'FAILED',
+              errorMessage: result.error,
+              timestamp: new Date(),
+            },
+          });
+          this.logger.error(`Twilio rejected call ${call.id}: ${result.error}`);
+        }
+      }
+
+      await this.db.callingCampaign.update({
+        where: { id: campaignId },
+        data: { status: failed > 0 && placed === 0 ? 'FAILED' : 'COMPLETED' },
+      });
+      this.logger.debug(
+        `Twilio campaign ${campaignId} finished queueing: ${placed} accepted, ${failed} failed`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Twilio calling error for campaign ${campaignId}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      await this.db.callingCampaign.update({
+        where: { id: campaignId },
+        data: { status: 'FAILED' },
+      });
+    }
   }
 
   private async runCallSimulation(campaignId: string) {
@@ -195,13 +358,17 @@ export class CallingCampaignsService {
         }
 
         this.logger.debug(
-          `Dialing call ${call.id} for ${contact.firstName} ${contact.lastName} at ${contact.phoneNumber}`,
+          `Dialing call ${call.id} for ${contact.firstName} ${contact.lastName} at ${this.maskPhoneNumber(contact.phoneNumber)}`,
         );
 
         // 1. DIALING
         await this.db.callHistory.update({
           where: { id: call.id },
-          data: { status: 'DIALING', outcome: 'DIALING' },
+          data: {
+            provider: 'SIMULATION',
+            status: 'DIALING',
+            outcome: 'DIALING',
+          },
         });
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -229,10 +396,12 @@ export class CallingCampaignsService {
           await new Promise((resolve) => setTimeout(resolve, 2000));
 
           const duration = Math.floor(Math.random() * 120) + 30;
-          const recordingUrl = recordingUrls[Math.floor(Math.random() * recordingUrls.length)];
+          const recordingUrl =
+            recordingUrls[Math.floor(Math.random() * recordingUrls.length)];
           const sentimentScore = parseFloat((Math.random() * 3 + 7).toFixed(1)); // positive 7.0 - 10.0
           const summary = `Evaluated candidate ${contact.firstName} for software engineering. Strong skills in Next.js and NestJS, eager to join.`;
-          const keyOutcomes = 'Scheduled candidate for next round; sent confirmation email.';
+          const keyOutcomes =
+            'Scheduled candidate for next round; sent confirmation email.';
 
           const transcript = `AI Agent: Hello, am I speaking with ${contact.firstName}?
 Customer: Yes, this is ${contact.firstName} speaking. Who is this?
@@ -267,7 +436,12 @@ AI Agent: Thank you, have a great day!`;
             where: { id: call.id },
             data: {
               outcome,
-              status: outcome === 'NO_ANSWER' ? 'NO_ANSWER' : outcome === 'BUSY' ? 'BUSY' : 'FAILED',
+              status:
+                outcome === 'NO_ANSWER'
+                  ? 'NO_ANSWER'
+                  : outcome === 'BUSY'
+                    ? 'BUSY'
+                    : 'FAILED',
               duration: 0,
               timestamp: new Date(),
             },
@@ -363,7 +537,126 @@ AI Agent: Thank you, have a great day!`;
     return { added, skipped };
   }
 
+  private async resetCallsForRelaunch(calls: any[]) {
+    for (const call of calls) {
+      await this.db.callHistory.update({
+        where: { id: call.id },
+        data: {
+          duration: 0,
+          outcome: 'PENDING',
+          status: 'PENDING',
+          transcript: null,
+          recordingUrl: null,
+          summary: null,
+          sentimentScore: 5.0,
+          keyOutcomes: null,
+          provider: null,
+          providerCallSid: null,
+          providerStatus: null,
+          errorMessage: null,
+          timestamp: new Date(),
+        },
+      });
+    }
+  }
+
+  private hasUsableTwilioSettings(settings?: TwilioSettings | null) {
+    return Boolean(
+      settings?.twilioStatus === 'CONNECTED' &&
+      settings.twilioAccountSid?.trim() &&
+      settings.twilioAuthToken?.trim() &&
+      settings.twilioPhoneNumber?.trim(),
+    );
+  }
+
+  private async createTwilioCall({
+    accountSid,
+    authToken,
+    from,
+    to,
+    twiml,
+  }: {
+    accountSid: string;
+    authToken: string;
+    from: string;
+    to: string;
+    twiml: string;
+  }): Promise<
+    { ok: true; sid: string; status: string } | { ok: false; error: string }
+  > {
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const body = new URLSearchParams({
+      To: to,
+      From: from,
+      Twiml: twiml,
+    });
+
+    try {
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body,
+        },
+      );
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          error:
+            data?.message ||
+            data?.error_message ||
+            `Twilio API error ${response.status} ${response.statusText}`,
+        };
+      }
+
+      return {
+        ok: true,
+        sid: data?.sid || '',
+        status: data?.status || 'queued',
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private buildCallTwiml(campaign: any, contact: any) {
+    const firstName = contact.firstName || 'there';
+    const objective =
+      campaign.objective ||
+      'follow up with you and understand whether this is a good time to talk';
+    const prompt = campaign.prompt
+      ? ` The campaign instructions are: ${campaign.prompt}`
+      : '';
+    const message = `Hello ${firstName}. This is ReachConvert calling about ${objective}.${prompt} This first live calling version can place the outbound call and read this opening message. Please follow up from the ReachConvert dashboard for the full call result.`;
+
+    return `<Response><Say voice="alice">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="alice">Thank you. Goodbye.</Say></Response>`;
+  }
+
+  private escapeXml(value: string) {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
   private hasCallablePhone(contact: any) {
     return Boolean(contact?.phoneNumber?.trim());
+  }
+
+  private maskPhoneNumber(phoneNumber?: string) {
+    const digits = phoneNumber?.replace(/\D/g, '') || '';
+    if (digits.length <= 4) return phoneNumber || 'missing';
+    return `${phoneNumber?.startsWith('+') ? '+' : ''}***${digits.slice(-4)}`;
   }
 }
