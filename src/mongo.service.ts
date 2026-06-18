@@ -229,7 +229,7 @@ class MongoDelegate {
         .findOneAndUpdate(
           query,
           { $set: this.toMongoData(args.update) },
-          { new: true },
+          { returnDocument: 'after' },
         )
         .lean();
       return this.toApi(updated);
