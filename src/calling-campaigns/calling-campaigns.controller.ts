@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Header,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Public } from '../auth/public.decorator';
 
 @ApiTags('calling-campaigns')
 @Controller('calling-campaigns')
@@ -53,6 +55,36 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Get AI calling campaign generation status' })
   async generationStatus(@Param('id') id: string) {
     return this.callingCampaignsService.getCampaignGenerationStatus(id);
+  }
+
+  @Post('twilio/answer/:callId')
+  @Public()
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Twilio AI calling answer webhook' })
+  async twilioAnswer(@Param('callId') callId: string, @Body() body: any) {
+    return this.callingCampaignsService.handleTwilioAnswer(callId, body);
+  }
+
+  @Post('twilio/respond/:callId')
+  @Public()
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Twilio AI calling speech response webhook' })
+  async twilioRespond(@Param('callId') callId: string, @Body() body: any) {
+    return this.callingCampaignsService.handleTwilioResponse(callId, body);
+  }
+
+  @Post('twilio/status/:callId')
+  @Public()
+  @ApiOperation({ summary: 'Twilio AI calling status webhook' })
+  async twilioStatus(@Param('callId') callId: string, @Body() body: any) {
+    return this.callingCampaignsService.handleTwilioStatus(callId, body);
+  }
+
+  @Post('twilio/recording/:callId')
+  @Public()
+  @ApiOperation({ summary: 'Twilio AI calling recording webhook' })
+  async twilioRecording(@Param('callId') callId: string, @Body() body: any) {
+    return this.callingCampaignsService.handleTwilioRecording(callId, body);
   }
 
   @Get(':id')

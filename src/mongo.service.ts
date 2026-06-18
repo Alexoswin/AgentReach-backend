@@ -192,7 +192,7 @@ class MongoDelegate {
       .findOneAndUpdate(
         this.toMongoWhere(args.where),
         { $set: this.toMongoData(args.data) },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .lean();
 

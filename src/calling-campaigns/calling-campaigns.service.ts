@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
@@ -36,12 +37,31 @@ type CallingCampaignGenerationJob = {
   updatedAt: string;
 };
 
+type TwilioQueueResult = {
+  placed: number;
+  failed: number;
+  errors: string[];
+};
+
+type ConversationGeneration = {
+  reply: string;
+  shouldEnd: boolean;
+  endReason: string;
+  collectedData: Record<string, unknown>;
+  sentimentScore: number;
+  keyOutcomes: string;
+  topicsCovered: string[];
+};
+
 @Injectable()
 export class CallingCampaignsService {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
 
-  constructor(private db: MongoService) {}
+  constructor(
+    private db: MongoService,
+    private configService: ConfigService,
+  ) {}
 
   async findAll() {
     const campaigns = await this.db.callingCampaign.findMany({
@@ -351,13 +371,21 @@ Return ONLY valid JSON with exactly these fields:
       await this.resetCallsForRelaunch(callableCalls);
     }
 
+    if (hasTwilio) {
+      this.assertPublicTwilioWebhookUrl();
+    }
+
     await this.db.callingCampaign.update({
       where: { id },
       data: { status: 'RUNNING' },
     });
 
+    let twilioQueueResult: TwilioQueueResult | null = null;
     if (hasTwilio) {
-      this.runTwilioOutboundCalls(campaign.id, settings);
+      twilioQueueResult = await this.runTwilioOutboundCalls(
+        campaign.id,
+        settings,
+      );
     } else {
       this.logger.warn(
         `Campaign ${id} is using simulation because Twilio is not fully connected`,
@@ -371,13 +399,20 @@ Return ONLY valid JSON with exactly these fields:
         pendingCallableCalls.length === 0
           ? `Calling campaign relaunched in ${launchMode} mode`
           : `Calling campaign started in ${launchMode} mode`,
+      twilio: twilioQueueResult,
     };
   }
 
   private async runTwilioOutboundCalls(
     campaignId: string,
     settings: TwilioSettings,
-  ) {
+  ): Promise<TwilioQueueResult> {
+    const resultSummary: TwilioQueueResult = {
+      placed: 0,
+      failed: 0,
+      errors: [],
+    };
+
     try {
       this.logger.debug(
         `Starting Twilio outbound calls for campaign ${campaignId}`,
@@ -396,7 +431,8 @@ Return ONLY valid JSON with exactly these fields:
         this.logger.warn(
           `Twilio calling stopped: campaign ${campaignId} was not found`,
         );
-        return;
+        resultSummary.errors.push('Campaign not found.');
+        return resultSummary;
       }
 
       let placed = 0;
@@ -406,6 +442,7 @@ Return ONLY valid JSON with exactly these fields:
         const contact = call.contact;
         if (!this.hasCallablePhone(contact)) {
           failed++;
+          resultSummary.failed++;
           this.logger.warn(
             `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
           );
@@ -416,7 +453,7 @@ Return ONLY valid JSON with exactly these fields:
           `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
         );
         const botProfile = this.buildBotProfile(campaign);
-        const openingScript = this.buildOpeningScript(
+        const openingScript = this.buildLiveOpeningScript(
           campaign,
           contact,
           botProfile,
@@ -457,11 +494,17 @@ Return ONLY valid JSON with exactly these fields:
           authToken: settings.twilioAuthToken || '',
           from: settings.twilioPhoneNumber || '',
           to: contact.phoneNumber,
-          twiml: this.buildCallTwiml(campaign, contact),
+          url: this.getTwilioWebhookUrl('answer', call.id),
+          statusCallback: this.getTwilioWebhookUrl('status', call.id),
+          recordingStatusCallback: this.getTwilioWebhookUrl(
+            'recording',
+            call.id,
+          ),
         });
 
         if (result.ok) {
           placed++;
+          resultSummary.placed++;
           await this.db.callHistory.update({
             where: { id: call.id },
             data: {
@@ -479,6 +522,8 @@ Return ONLY valid JSON with exactly these fields:
           );
         } else {
           failed++;
+          resultSummary.failed++;
+          resultSummary.errors.push(result.error);
           await this.db.callHistory.update({
             where: { id: call.id },
             data: {
@@ -510,7 +555,10 @@ Return ONLY valid JSON with exactly these fields:
       this.logger.debug(
         `Twilio campaign ${campaignId} finished queueing: ${placed} accepted, ${failed} failed`,
       );
+      return resultSummary;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      resultSummary.errors.push(message);
       this.logger.error(
         `Twilio calling error for campaign ${campaignId}`,
         err instanceof Error ? err.stack : String(err),
@@ -519,6 +567,7 @@ Return ONLY valid JSON with exactly these fields:
         where: { id: campaignId },
         data: { status: 'FAILED' },
       });
+      return resultSummary;
     }
   }
 
@@ -742,6 +791,247 @@ Return ONLY valid JSON with exactly these fields:
     };
   }
 
+  async handleTwilioAnswer(callId: string, body: any = {}) {
+    const call = await this.getCallWithContext(callId);
+    if (!call) {
+      return this.buildTwilioSayHangup('Sorry, this call could not be found.');
+    }
+
+    const botProfile = this.buildBotProfile(call.campaign);
+    const opening = this.buildLiveOpeningScript(
+      call.campaign,
+      call.contact,
+      botProfile,
+    );
+    const scripts = this.ensureScripts(call.scripts);
+    const nextScripts = scripts.length
+      ? scripts
+      : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
+    const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
+
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data: {
+        provider: 'TWILIO',
+        providerCallSid: body.CallSid || call.providerCallSid || null,
+        providerStatus: body.CallStatus || call.providerStatus || 'answered',
+        status: 'IN_PROGRESS',
+        outcome: 'IN_PROGRESS',
+        sessionStatus: 'connected',
+        startedAt,
+        connectedAt: call.connectedAt || new Date(),
+        selectedLanguage: call.campaign.language || 'en-IN',
+        selectedVoice: call.campaign.voice || 'Kore',
+        scripts: nextScripts,
+        transcript: this.scriptsToTranscript(nextScripts),
+        summary: `${botProfile.name} opened a live AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
+        topicsCovered: this.buildTopicsCovered(call.campaign, botProfile),
+        analysis: {
+          intent: 'live_ai_call_started',
+          agentPersona: {
+            name: botProfile.name,
+            role: botProfile.role,
+            personality: botProfile.personality,
+          },
+          guardrails: this.buildConversationGuardrails(
+            call.campaign,
+            botProfile,
+          ),
+        },
+        timestamp: new Date(),
+      },
+    });
+
+    return this.buildTwilioGather(call.campaign, opening, callId);
+  }
+
+  async handleTwilioResponse(callId: string, body: any = {}) {
+    const call = await this.getCallWithContext(callId);
+    if (!call) {
+      return this.buildTwilioSayHangup('Sorry, this call could not be found.');
+    }
+
+    const speech = String(body.SpeechResult || '').trim();
+    const scripts = this.ensureScripts(call.scripts);
+    const userTurnCount = this.countScriptTurns(scripts, 'contact');
+    const noInputCount = Number(call.analysis?.noInputCount || 0);
+
+    if (!speech) {
+      const nextNoInputCount = noInputCount + 1;
+      if (nextNoInputCount >= 2) {
+        const closing =
+          'I could not hear you clearly, so I will end the call for now. Thank you for your time.';
+        const endedScripts = this.appendScriptTurn(
+          scripts,
+          'agent',
+          'AI Agent',
+          closing,
+        );
+        await this.completeTwilioConversation(call, endedScripts, {
+          reply: closing,
+          shouldEnd: true,
+          endReason: 'No speech detected after repeated prompts.',
+          collectedData: {},
+          sentimentScore: 5,
+          keyOutcomes: 'Call ended because no clear speech was detected.',
+          topicsCovered: this.buildTopicsCovered(
+            call.campaign,
+            this.buildBotProfile(call.campaign),
+          ),
+        });
+        return this.buildTwilioSayHangup(closing, call.campaign);
+      }
+
+      await this.db.callHistory.update({
+        where: { id: callId },
+        data: {
+          analysis: {
+            ...(call.analysis || {}),
+            noInputCount: nextNoInputCount,
+          },
+          timestamp: new Date(),
+        },
+      });
+      return this.buildTwilioGather(
+        call.campaign,
+        'Sorry, I did not catch that. Could you say that again?',
+        callId,
+      );
+    }
+
+    const withUserTurn = this.appendScriptTurn(
+      scripts,
+      'contact',
+      'Customer',
+      speech,
+    );
+    const generation = await this.generateNextCallingTurn(
+      call,
+      speech,
+      withUserTurn,
+    );
+    const nextScripts = this.appendScriptTurn(
+      withUserTurn,
+      'agent',
+      'AI Agent',
+      generation.reply,
+    );
+    const shouldEnd =
+      generation.shouldEnd &&
+      (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
+
+    if (shouldEnd) {
+      await this.completeTwilioConversation(call, nextScripts, generation);
+      return this.buildTwilioSayHangup(generation.reply, call.campaign);
+    }
+
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data: {
+        status: 'IN_PROGRESS',
+        outcome: 'IN_PROGRESS',
+        sessionStatus: 'connected',
+        scripts: nextScripts,
+        transcript: this.scriptsToTranscript(nextScripts),
+        summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
+        sentimentScore: generation.sentimentScore,
+        keyOutcomes: generation.keyOutcomes,
+        topicsCovered: generation.topicsCovered,
+        analysis: {
+          ...(call.analysis || {}),
+          noInputCount: 0,
+          collectedData: generation.collectedData,
+          lastAiDecision: {
+            shouldEnd: generation.shouldEnd,
+            endReason: generation.endReason,
+          },
+        },
+        timestamp: new Date(),
+      },
+    });
+
+    return this.buildTwilioGather(call.campaign, generation.reply, callId);
+  }
+
+  async handleTwilioStatus(callId: string, body: any = {}) {
+    const status = body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
+    const data: Record<string, unknown> = {
+      provider: 'TWILIO',
+      providerCallSid: body.CallSid || undefined,
+      providerStatus: status,
+      timestamp: new Date(),
+    };
+
+    if (status === 'ringing') {
+      data.status = 'RINGING';
+      data.outcome = 'RINGING';
+    } else if (status === 'in-progress' || status === 'answered') {
+      data.status = 'CONNECTED';
+      data.outcome = 'CONNECTED';
+      data.sessionStatus = 'connected';
+      data.connectedAt = new Date();
+    } else if (status === 'completed') {
+      const call = await this.db.callHistory.findUnique({
+        where: { id: callId },
+      });
+      data.endedAt = new Date();
+      data.duration = Number(body.CallDuration || call?.duration || 0);
+      data.totalTime = call?.startedAt
+        ? Date.now() - new Date(call.startedAt).getTime()
+        : undefined;
+      if (!['ANSWERED', 'COMPLETED'].includes(call?.outcome)) {
+        data.status = 'COMPLETED';
+        data.outcome = call?.transcript ? 'ANSWERED' : 'NO_ANSWER';
+        data.sessionStatus = 'completed';
+      }
+    } else if (['busy', 'failed', 'no-answer', 'canceled'].includes(status)) {
+      data.status =
+        status === 'busy'
+          ? 'BUSY'
+          : status === 'no-answer'
+            ? 'NO_ANSWER'
+            : 'FAILED';
+      data.outcome = data.status;
+      data.sessionStatus = status === 'failed' ? 'failed' : 'completed';
+      data.endedAt = new Date();
+      data.endCallReason = `Twilio call status: ${status}.`;
+      data.errorMessage = body.ErrorMessage || null;
+    }
+
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data,
+    });
+    return { success: true };
+  }
+
+  async handleTwilioRecording(callId: string, body: any = {}) {
+    const recordingUrl = body.RecordingUrl ? `${body.RecordingUrl}.mp3` : null;
+    const call = await this.db.callHistory.findUnique({
+      where: { id: callId },
+    });
+
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data: {
+        recordingUrl,
+        providerStatus:
+          body.RecordingStatus || call?.providerStatus || 'recorded',
+        duration: Number(body.RecordingDuration || call?.duration || 0),
+        analysis: {
+          ...(call?.analysis || {}),
+          recording: {
+            sid: body.RecordingSid,
+            status: body.RecordingStatus,
+            duration: Number(body.RecordingDuration || 0),
+          },
+        },
+        timestamp: new Date(),
+      },
+    });
+    return { success: true };
+  }
+
   private async addCallableContacts(campaignId: string, contactIds: string[]) {
     let added = 0;
     let skipped = 0;
@@ -961,13 +1251,17 @@ Return ONLY valid JSON with exactly these fields:
     authToken,
     from,
     to,
-    twiml,
+    url,
+    statusCallback,
+    recordingStatusCallback,
   }: {
     accountSid: string;
     authToken: string;
     from: string;
     to: string;
-    twiml: string;
+    url: string;
+    statusCallback: string;
+    recordingStatusCallback: string;
   }): Promise<
     { ok: true; sid: string; status: string } | { ok: false; error: string }
   > {
@@ -975,8 +1269,17 @@ Return ONLY valid JSON with exactly these fields:
     const body = new URLSearchParams({
       To: to,
       From: from,
-      Twiml: twiml,
+      Url: url,
+      Method: 'POST',
+      StatusCallback: statusCallback,
+      StatusCallbackMethod: 'POST',
+      Record: 'true',
+      RecordingStatusCallback: recordingStatusCallback,
+      RecordingStatusCallbackMethod: 'POST',
     });
+    ['initiated', 'ringing', 'answered', 'completed'].forEach((event) =>
+      body.append('StatusCallbackEvent', event),
+    );
 
     try {
       const response = await fetch(
@@ -1022,6 +1325,71 @@ Return ONLY valid JSON with exactly these fields:
     const twilioVoice = this.resolveTwilioVoice(campaign.voice, language);
 
     return `<Response><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="${twilioVoice}" language="${language}">Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
+  }
+
+  private async getCallWithContext(callId: string) {
+    return this.db.callHistory.findUnique({
+      where: { id: callId },
+      include: {
+        campaign: true,
+        contact: true,
+      },
+    });
+  }
+
+  private getPublicApiBaseUrl() {
+    const configured =
+      this.configService.get<string>('PUBLIC_API_URL') ||
+      this.configService.get<string>('BACKEND_PUBLIC_URL') ||
+      this.configService.get<string>('API_BASE_URL');
+    const base =
+      configured?.trim() ||
+      `http://localhost:${this.configService.get<number>('PORT', 3001)}`;
+    const withoutSlash = base.replace(/\/+$/, '');
+    return withoutSlash.endsWith('/api') ? withoutSlash : `${withoutSlash}/api`;
+  }
+
+  private assertPublicTwilioWebhookUrl() {
+    const webhookBaseUrl = this.getPublicApiBaseUrl();
+    if (this.isLocalWebhookUrl(webhookBaseUrl)) {
+      throw new BadRequestException(
+        `Twilio calling requires PUBLIC_API_URL to be a public HTTPS backend URL. Current webhook base is ${webhookBaseUrl}. For local testing, use an HTTPS tunnel such as ngrok and set PUBLIC_API_URL=https://your-tunnel-url/api.`,
+      );
+    }
+
+    if (!webhookBaseUrl.startsWith('https://')) {
+      throw new BadRequestException(
+        `Twilio calling requires PUBLIC_API_URL to use HTTPS. Current webhook base is ${webhookBaseUrl}.`,
+      );
+    }
+  }
+
+  private isLocalWebhookUrl(value: string) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(
+      value,
+    );
+  }
+
+  private getTwilioWebhookUrl(
+    type: 'answer' | 'respond' | 'status' | 'recording',
+    callId: string,
+  ) {
+    return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/${type}/${encodeURIComponent(callId)}`;
+  }
+
+  private buildTwilioGather(campaign: any, message: string, callId: string) {
+    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
+    const twilioVoice = this.resolveTwilioVoice(campaign.voice, language);
+    const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
+
+    return `<Response><Gather input="speech" action="${action}" method="POST" language="${language}" speechTimeout="1" timeout="4" enhanced="true"><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say></Gather><Redirect method="POST">${action}</Redirect></Response>`;
+  }
+
+  private buildTwilioSayHangup(message: string, campaign?: any) {
+    const language = campaign?.language === 'en-IN' ? 'en-IN' : 'en-US';
+    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+
+    return `<Response><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say><Hangup /></Response>`;
   }
 
   private buildBotProfile(campaign: any) {
@@ -1074,6 +1442,25 @@ Return ONLY valid JSON with exactly these fields:
       .join(' ');
   }
 
+  private buildLiveOpeningScript(campaign: any, contact: any, botProfile: any) {
+    const greeting = this.applyBotVariables(
+      botProfile.greeting ||
+        `Hi {{firstName}}, this is ${botProfile.name}.`,
+      contact,
+      campaign,
+      botProfile,
+    );
+    const firstSentence = this.firstSentence(greeting);
+    const objective = campaign.objective
+      ? `about ${this.compactForSpeech(campaign.objective, 80)}`
+      : 'about a quick follow-up';
+
+    return this.compactForSpeech(
+      `${firstSentence} I am calling ${objective}. Is now okay for one quick question?`,
+      220,
+    );
+  }
+
   private buildSimulatedTranscript(
     campaign: any,
     contact: any,
@@ -1121,6 +1508,291 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           timestamp: new Date().toISOString(),
         };
       });
+  }
+
+  private ensureScripts(value: any): Array<Record<string, any>> {
+    return Array.isArray(value) ? value : [];
+  }
+
+  private appendScriptTurn(
+    scripts: Array<Record<string, any>>,
+    speaker: 'agent' | 'contact',
+    label: 'AI Agent' | 'Customer',
+    text: string,
+  ) {
+    return [
+      ...scripts,
+      {
+        turn: scripts.length + 1,
+        speaker,
+        label,
+        text,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+  }
+
+  private countScriptTurns(
+    scripts: Array<Record<string, any>>,
+    speaker: 'agent' | 'contact',
+  ) {
+    return scripts.filter((script) => script.speaker === speaker).length;
+  }
+
+  private scriptsToTranscript(scripts: Array<Record<string, any>>) {
+    return scripts
+      .map((script) => `${script.label || 'System'}: ${script.text || ''}`)
+      .join('\n');
+  }
+
+  private buildConversationGuardrails(campaign: any, botProfile: any) {
+    return [
+      `Objective: ${campaign.objective || 'find the best next step'}`,
+      `Persona: ${botProfile.name}, ${botProfile.role}`,
+      `Knowledge: ${botProfile.knowledge || 'not provided'}`,
+      `Rules: ${botProfile.rules}`,
+      `Objections: ${botProfile.objections}`,
+      'Use only the provided campaign context. Do not invent facts. Ask one question at a time. Wait for the user after every reply.',
+    ];
+  }
+
+  private async generateNextCallingTurn(
+    call: any,
+    latestUserSpeech: string,
+    scripts: Array<Record<string, any>>,
+  ): Promise<ConversationGeneration> {
+    const settings = await this.db.systemSettings.findUnique({
+      where: { id: 'default' },
+    });
+    const botProfile = this.buildBotProfile(call.campaign);
+    const fallback = this.buildFallbackCallingTurn(
+      call,
+      latestUserSpeech,
+      scripts,
+    );
+
+    if (
+      !settings?.openRouterApiKey ||
+      settings.openRouterApiKey.toLowerCase().includes('mock') ||
+      settings.openRouterApiKey.toLowerCase().includes('test')
+    ) {
+      return fallback;
+    }
+
+    const transcript = this.scriptsToTranscript(scripts);
+    const prompt = `You are controlling a live outbound AI phone caller.
+
+STRICT RULES:
+- The AI must speak only one short conversational reply, maximum 2 spoken sentences.
+- End with at most one clear question or next step unless the call should end.
+- After this reply the system will listen to the user. Do not continue talking.
+- Use only the campaign context below. Do not invent facts, pricing, promises, or policies.
+- If the user asks something outside the context, briefly say you do not have that detail and redirect to the campaign objective.
+- The bot must wait after this reply. Do not write multiple turns.
+- Return only valid JSON.
+
+CAMPAIGN:
+Objective: ${call.campaign.objective || 'Find whether there is a useful next step.'}
+Prompt/context: ${call.campaign.prompt || ''}
+Bot name: ${botProfile.name}
+Bot role: ${botProfile.role}
+Personality: ${botProfile.personality}
+Knowledge: ${botProfile.knowledge}
+Rules: ${botProfile.rules}
+Objection handling: ${botProfile.objections}
+
+CONTACT:
+Name: ${`${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() || 'Unknown'}
+Company: ${call.contact.company || 'Unknown'}
+
+TRANSCRIPT SO FAR:
+${transcript}
+
+LATEST USER SPEECH:
+${latestUserSpeech}
+
+Return JSON with exactly:
+{
+  "reply": "short line the AI should speak now",
+  "shouldEnd": false,
+  "endReason": "",
+  "collectedData": {},
+  "sentimentScore": 7,
+  "keyOutcomes": "brief outcome",
+  "topicsCovered": ["Objective"]
+}`;
+
+    try {
+      const response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${settings.openRouterApiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reachconvert.com',
+            'X-Title': 'ReachConvert',
+          },
+          body: JSON.stringify({
+            model: resolveOpenRouterModel(settings.openRouterModel),
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.4,
+            max_tokens: 450,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) return fallback;
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) return fallback;
+      return this.normalizeConversationGeneration(
+        this.parseJsonObject(content),
+        fallback,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `AI calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return fallback;
+    }
+  }
+
+  private normalizeConversationGeneration(
+    value: any,
+    fallback: ConversationGeneration,
+  ): ConversationGeneration {
+    const reply =
+      typeof value?.reply === 'string' && value.reply.trim()
+        ? value.reply.trim()
+        : fallback.reply;
+    const compactReply = this.compactForSpeech(reply, 260);
+    return {
+      reply: compactReply,
+      shouldEnd:
+        typeof value?.shouldEnd === 'boolean'
+          ? value.shouldEnd
+          : fallback.shouldEnd,
+      endReason:
+        typeof value?.endReason === 'string'
+          ? value.endReason
+          : fallback.endReason,
+      collectedData:
+        value?.collectedData && typeof value.collectedData === 'object'
+          ? value.collectedData
+          : fallback.collectedData,
+      sentimentScore: Number.isFinite(Number(value?.sentimentScore))
+        ? Number(value.sentimentScore)
+        : fallback.sentimentScore,
+      keyOutcomes:
+        typeof value?.keyOutcomes === 'string'
+          ? value.keyOutcomes
+          : fallback.keyOutcomes,
+      topicsCovered: Array.isArray(value?.topicsCovered)
+        ? value.topicsCovered.map(String).filter(Boolean)
+        : fallback.topicsCovered,
+    };
+  }
+
+  private buildFallbackCallingTurn(
+    call: any,
+    latestUserSpeech: string,
+    scripts: Array<Record<string, any>>,
+  ): ConversationGeneration {
+    const botProfile = this.buildBotProfile(call.campaign);
+    const userTurns = this.countScriptTurns(scripts, 'contact');
+    const lower = latestUserSpeech.toLowerCase();
+    const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
+
+    if (this.isImmediateEndSpeech(latestUserSpeech)) {
+      return {
+        reply:
+          lower.includes('wrong number') || lower.includes('not interested')
+            ? 'Understood. I will not take more of your time. Thank you, and have a good day.'
+            : 'Thanks for your time. I will note that and let the team know. Goodbye.',
+        shouldEnd: true,
+        endReason:
+          'The contact declined, ended the call, or indicated a wrong number.',
+        collectedData: { latestUserSpeech },
+        sentimentScore: lower.includes('not interested') ? 4 : 6,
+        keyOutcomes: 'Contact ended or declined the conversation.',
+        topicsCovered,
+      };
+    }
+
+    if (userTurns >= 4) {
+      return {
+        reply:
+          'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
+        shouldEnd: true,
+        endReason: 'Maximum live call turns reached.',
+        collectedData: { latestUserSpeech },
+        sentimentScore: 7,
+        keyOutcomes: 'Captured call context and marked contact for follow-up.',
+        topicsCovered,
+      };
+    }
+
+    const outOfContext =
+      /(weather|politics|sports|movie|recipe|homework|capital of|stock price)/i.test(
+        latestUserSpeech,
+      );
+    const reply = outOfContext
+      ? `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
+      : userTurns <= 1
+        ? `Thanks, ${call.contact.firstName || 'there'}. What would you want to understand before deciding on a next step?`
+        : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
+
+    return {
+      reply: this.compactForSpeech(reply, 240),
+      shouldEnd: false,
+      endReason: '',
+      collectedData: { latestUserSpeech },
+      sentimentScore: 7,
+      keyOutcomes: 'Live conversation is in progress.',
+      topicsCovered,
+    };
+  }
+
+  private isImmediateEndSpeech(value: string) {
+    return /\b(bye|goodbye|not interested|wrong number|stop calling|remove me|don't call|do not call|no thanks|no thank you)\b/i.test(
+      value,
+    );
+  }
+
+  private async completeTwilioConversation(
+    call: any,
+    scripts: Array<Record<string, any>>,
+    generation: ConversationGeneration,
+  ) {
+    const endedAt = new Date();
+    const startedAt = call.startedAt ? new Date(call.startedAt) : endedAt;
+    await this.db.callHistory.update({
+      where: { id: call.id },
+      data: {
+        status: 'COMPLETED',
+        outcome: 'ANSWERED',
+        sessionStatus: 'completed',
+        scripts,
+        transcript: this.scriptsToTranscript(scripts),
+        summary: `${this.buildBotProfile(call.campaign).name} completed the AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
+        sentimentScore: generation.sentimentScore,
+        keyOutcomes: generation.keyOutcomes,
+        analysis: {
+          ...(call.analysis || {}),
+          collectedData: generation.collectedData,
+          finalDecision: {
+            shouldEnd: generation.shouldEnd,
+            endReason: generation.endReason,
+          },
+        },
+        topicsCovered: generation.topicsCovered,
+        endCallReason: generation.endReason || 'Conversation ended naturally.',
+        endedAt,
+        totalTime: endedAt.getTime() - startedAt.getTime(),
+        timestamp: new Date(),
+      },
+    });
   }
 
   private buildCallAnalysis(
@@ -1200,6 +1872,26 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     if (!text) return '';
     const shortened = text.length > 260 ? `${text.slice(0, 257)}...` : text;
     return /[.!?]$/.test(shortened) ? shortened : `${shortened}.`;
+  }
+
+  private firstSentence(value?: string) {
+    const text = value?.replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.match(/^[^.!?]+[.!?]?/)?.[0]?.trim() || text;
+  }
+
+  private compactForSpeech(value: string, maxLength = 260) {
+    const text = value.replace(/\s+/g, ' ').trim();
+    if (text.length <= maxLength) return text;
+    const shortened = text.slice(0, maxLength - 3);
+    const sentenceEnd = Math.max(
+      shortened.lastIndexOf('.'),
+      shortened.lastIndexOf('?'),
+      shortened.lastIndexOf('!'),
+    );
+    if (sentenceEnd > 80) return shortened.slice(0, sentenceEnd + 1);
+    const space = shortened.lastIndexOf(' ');
+    return `${shortened.slice(0, space > 80 ? space : maxLength - 3)}...`;
   }
 
   private resolveTwilioVoice(voice?: string, language?: string) {
