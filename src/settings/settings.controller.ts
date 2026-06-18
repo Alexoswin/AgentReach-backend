@@ -54,4 +54,12 @@ export class SettingsController {
   async testGemini() {
     return this.settingsService.testGemini();
   }
+
+  @Post('preview-gemini-voice')
+  @ApiOperation({ summary: 'Generate a short Gemini TTS voice preview' })
+  async previewGeminiVoice(
+    @Body() dto: { voice: string; language?: string; text?: string },
+  ) {
+    return this.settingsService.previewGeminiVoice(dto);
+  }
 }

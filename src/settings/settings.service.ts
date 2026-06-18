@@ -6,6 +6,8 @@ import { resolveOpenRouterModel } from '../config/openrouter';
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
+const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+const GEMINI_TTS_SAMPLE_RATE = 24000;
 
 @Injectable()
 export class SettingsService {
@@ -320,5 +322,105 @@ export class SettingsService {
         error: error.message || 'Unknown Gemini error',
       };
     }
+  }
+
+  async previewGeminiVoice(dto: {
+    voice: string;
+    language?: string;
+    text?: string;
+  }) {
+    const settings = await this.getRawSettings();
+    if (!settings || !settings.geminiApiKey) {
+      throw new BadRequestException('Gemini API Key is missing.');
+    }
+
+    const voice = dto.voice?.trim();
+    if (!voice) {
+      throw new BadRequestException('Voice is required.');
+    }
+
+    if (
+      settings.geminiApiKey.toLowerCase().includes('mock') ||
+      settings.geminiApiKey.toLowerCase().includes('test')
+    ) {
+      throw new BadRequestException(
+        'Gemini voice preview requires a real Gemini API key.',
+      );
+    }
+
+    const languageHint =
+      dto.language === 'en-IN'
+        ? ' Speak naturally in Indian English with a clear, professional accent.'
+        : dto.language
+          ? ` Speak naturally in language code ${dto.language}.`
+          : '';
+    const text =
+      dto.text?.trim() ||
+      `Say warmly:${languageHint} Hello, this is a quick ReachConvert voice preview.`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${settings.geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voice,
+                },
+              },
+            },
+          },
+        }),
+      },
+    );
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new BadRequestException(
+        data?.error?.message || 'Gemini voice preview failed.',
+      );
+    }
+
+    const inlineData =
+      data?.candidates?.[0]?.content?.parts?.find(
+        (part: any) => part.inlineData,
+      )?.inlineData || data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+    const audioBase64 = inlineData?.data;
+    if (!audioBase64) {
+      throw new BadRequestException('Gemini did not return preview audio.');
+    }
+
+    return {
+      success: true,
+      voice,
+      mimeType: 'audio/wav',
+      audioDataUrl: `data:audio/wav;base64,${this.toWaveBase64(audioBase64)}`,
+    };
+  }
+
+  private toWaveBase64(pcmBase64: string) {
+    const pcm = Buffer.from(pcmBase64, 'base64');
+    const header = Buffer.alloc(44);
+
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(GEMINI_TTS_SAMPLE_RATE, 24);
+    header.writeUInt32LE(GEMINI_TTS_SAMPLE_RATE * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(pcm.length, 40);
+
+    return Buffer.concat([header, pcm]).toString('base64');
   }
 }

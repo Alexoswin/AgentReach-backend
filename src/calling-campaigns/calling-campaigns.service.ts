@@ -638,7 +638,9 @@ AI Agent: Thank you, have a great day!`;
       : '';
     const message = `Hello ${firstName}. This is ReachConvert calling about ${objective}.${prompt} This first live calling version can place the outbound call and read this opening message. Please follow up from the ReachConvert dashboard for the full call result.`;
 
-    return `<Response><Say voice="alice">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="alice">Thank you. Goodbye.</Say></Response>`;
+    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
+
+    return `<Response><Say voice="alice" language="${language}">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="alice" language="${language}">Thank you. Goodbye.</Say></Response>`;
   }
 
   private escapeXml(value: string) {
