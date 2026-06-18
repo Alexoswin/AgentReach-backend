@@ -114,8 +114,9 @@ export class ContactsService {
   }
 
   async create(dto: CreateContactDto) {
+    const email = dto.email.trim().toLowerCase();
     const existing = await this.db.contact.findUnique({
-      where: { email: dto.email },
+      where: { email },
     });
     if (existing) {
       throw new BadRequestException('A contact with this email already exists');
@@ -126,6 +127,8 @@ export class ContactsService {
     return this.db.contact.create({
       data: {
         ...rest,
+        email,
+        phoneNumber: this.normalizePhoneNumber(rest.phoneNumber),
         directoryId: rest.directoryId || null,
         customFields: customFields ? JSON.stringify(customFields) : null,
       },
@@ -147,14 +150,20 @@ export class ContactsService {
 
     await this.ensureDirectoryExists(dto.directoryId);
     const { customFields, ...rest } = dto;
+    const data = {
+      ...rest,
+      ...(rest.email ? { email: rest.email.trim().toLowerCase() } : {}),
+      ...(rest.phoneNumber !== undefined
+        ? { phoneNumber: this.normalizePhoneNumber(rest.phoneNumber) }
+        : {}),
+      ...(customFields !== undefined
+        ? { customFields: customFields ? JSON.stringify(customFields) : null }
+        : {}),
+    };
+
     return this.db.contact.update({
       where: { id },
-      data: {
-        ...rest,
-        ...(customFields !== undefined
-          ? { customFields: customFields ? JSON.stringify(customFields) : null }
-          : {}),
-      },
+      data,
     });
   }
 
@@ -290,9 +299,11 @@ export class ContactsService {
         const linkedinUrl = mapping['linkedinUrl']
           ? row[mapping['linkedinUrl']]?.toString().trim()
           : null;
-        const phoneNumber = mapping['phoneNumber']
-          ? row[mapping['phoneNumber']]?.toString().trim()
-          : null;
+        const phoneNumber = this.normalizePhoneNumber(
+          mapping['phoneNumber']
+            ? row[mapping['phoneNumber']]?.toString().trim()
+            : null,
+        );
         const notes = mapping['notes']
           ? row[mapping['notes']]?.toString().trim()
           : null;
@@ -383,5 +394,23 @@ export class ContactsService {
   private async ensureDirectoryExists(directoryId?: string | null) {
     if (!directoryId) return;
     await this.findDirectory(directoryId);
+  }
+
+  private normalizePhoneNumber(phoneNumber?: string | null) {
+    const raw = phoneNumber?.trim();
+    if (!raw) return null;
+
+    const hasInternationalPrefix = raw.startsWith('+');
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return null;
+
+    if (hasInternationalPrefix) return `+${digits}`;
+    if (digits.length === 10) return `+91${digits}`;
+    if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+    if (digits.length === 11 && digits.startsWith('0')) {
+      return `+91${digits.slice(1)}`;
+    }
+
+    return `+${digits}`;
   }
 }

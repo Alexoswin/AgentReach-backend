@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsArray, IsUUID } from 'class-validator';
+import { IsString, IsOptional, IsArray } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateCallingCampaignDto {
@@ -42,7 +42,39 @@ export class CreateCallingCampaignDto {
 
   @ApiProperty({ required: false, type: [String] })
   @IsArray()
-  @IsUUID('4', { each: true })
+  @IsString({ each: true })
   @IsOptional()
   contactIds?: string[];
+
+  @ApiProperty({ required: false, type: [String], example: ['sales', 'lead-gen'] })
+  @IsArray()
+  @IsOptional()
+  tags?: string[];
+
+  @ApiProperty({ required: false, example: 50 })
+  @IsOptional()
+  concurrencyLimit?: number;
+
+  @ApiProperty({ required: false, example: 'IMMEDIATE' })
+  @IsString()
+  @IsOptional()
+  scheduleType?: string;
+
+  @ApiProperty({ required: false, example: '2026-06-25T10:00:00Z' })
+  @IsString()
+  @IsOptional()
+  scheduledAt?: string;
+
+  @ApiProperty({ required: false, example: 'UTC' })
+  @IsString()
+  @IsOptional()
+  timezone?: string;
+
+  @ApiProperty({ required: false, example: 0.15 })
+  @IsOptional()
+  estimatedCost?: number;
+
+  @ApiProperty({ required: false, example: 120 })
+  @IsOptional()
+  estimatedDuration?: number;
 }

@@ -31,4 +31,34 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   openRouterModel?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  twilioAccountSid?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  twilioAuthToken?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  twilioPhoneNumber?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  geminiApiKey?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  twilioStatus?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  geminiStatus?: string;
 }

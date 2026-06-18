@@ -25,6 +25,30 @@ export class SystemSettings {
 
   @Prop({ default: 'nex-agi/nex-n2-pro:free' })
   openRouterModel: string;
+
+  @Prop({ default: '' })
+  twilioAccountSid: string;
+
+  @Prop({ default: '' })
+  twilioAuthToken: string;
+
+  @Prop({ default: '' })
+  twilioPhoneNumber: string;
+
+  @Prop({ default: '' })
+  geminiApiKey: string;
+
+  @Prop({ default: 'DISCONNECTED' })
+  twilioStatus: string;
+
+  @Prop({ default: 'DISCONNECTED' })
+  geminiStatus: string;
+
+  @Prop()
+  twilioLastVerified?: Date;
+
+  @Prop()
+  geminiLastVerified?: Date;
 }
 
 export const SystemSettingsSchema =

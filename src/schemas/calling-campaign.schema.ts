@@ -29,6 +29,27 @@ export class CallingCampaign {
 
   @Prop({ default: 'DRAFT' })
   status: string;
+
+  @Prop({ type: [String], default: [] })
+  tags: string[];
+
+  @Prop({ default: 50 })
+  concurrencyLimit: number;
+
+  @Prop({ default: 'IMMEDIATE' })
+  scheduleType: string;
+
+  @Prop()
+  scheduledAt?: Date;
+
+  @Prop({ default: 'UTC' })
+  timezone: string;
+
+  @Prop({ default: 0 })
+  estimatedCost: number;
+
+  @Prop({ default: 0 })
+  estimatedDuration: number;
 }
 
 export const CallingCampaignSchema =

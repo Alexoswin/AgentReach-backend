@@ -11,19 +11,48 @@ const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 export class SettingsService {
   constructor(private db: MongoService) {}
 
-  async getSettings() {
+  async getRawSettings() {
     return this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
   }
 
-  async updateSettings(dto: UpdateSettingsDto) {
-    const data = {
-      ...dto,
-      ...(dto.openRouterModel !== undefined
-        ? { openRouterModel: resolveOpenRouterModel(dto.openRouterModel) }
-        : {}),
+  async getSettings() {
+    const settings = await this.getRawSettings();
+    if (!settings) return null;
+    return {
+      ...settings,
+      awsSecretAccessKey: settings.awsSecretAccessKey ? '••••••••••••••••' : '',
+      openRouterApiKey: settings.openRouterApiKey ? '••••••••••••••••' : '',
+      twilioAuthToken: settings.twilioAuthToken ? '••••••••••••••••' : '',
+      geminiApiKey: settings.geminiApiKey ? '••••••••••••••••' : '',
     };
+  }
+
+  async updateSettings(dto: UpdateSettingsDto) {
+    const current = await this.getRawSettings();
+    const data: any = {};
+
+    const keysToMask = [
+      'awsSecretAccessKey',
+      'openRouterApiKey',
+      'twilioAuthToken',
+      'geminiApiKey',
+    ];
+
+    for (const [key, val] of Object.entries(dto)) {
+      if (keysToMask.includes(key) && val === '••••••••••••••••') {
+        if (current && current[key]) {
+          data[key] = current[key];
+        }
+      } else {
+        data[key] = val;
+      }
+    }
+
+    if (dto.openRouterModel !== undefined) {
+      data.openRouterModel = resolveOpenRouterModel(dto.openRouterModel);
+    }
 
     return this.db.systemSettings.upsert({
       where: { id: 'default' },
@@ -36,7 +65,7 @@ export class SettingsService {
   }
 
   async testAwsSes() {
-    const settings = await this.getSettings();
+    const settings = await this.getRawSettings();
     if (!settings || !settings.awsAccessKeyId || !settings.awsSecretAccessKey) {
       throw new BadRequestException(
         'AWS SES is not fully configured (Key and Secret are required).',
@@ -93,7 +122,7 @@ export class SettingsService {
   }
 
   async testOpenRouter() {
-    const settings = await this.getSettings();
+    const settings = await this.getRawSettings();
     if (!settings || !settings.openRouterApiKey) {
       throw new BadRequestException('OpenRouter API Key is missing.');
     }
@@ -144,6 +173,144 @@ export class SettingsService {
       return {
         success: false,
         error: error.message || 'Unknown OpenRouter error',
+      };
+    }
+  }
+
+  async testTwilio() {
+    const settings = await this.getRawSettings();
+    if (!settings || !settings.twilioAccountSid || !settings.twilioAuthToken || !settings.twilioPhoneNumber) {
+      throw new BadRequestException(
+        'Twilio is not fully configured (Account SID, Auth Token, and Phone Number are required).',
+      );
+    }
+
+    if (
+      settings.twilioAccountSid.toLowerCase().includes('mock') ||
+      settings.twilioAccountSid.toLowerCase().includes('test') ||
+      settings.twilioAuthToken.toLowerCase().includes('mock') ||
+      settings.twilioAuthToken.toLowerCase().includes('test')
+    ) {
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: {
+          twilioStatus: 'CONNECTED',
+          twilioLastVerified: new Date(),
+        },
+      });
+      return {
+        success: true,
+        message: 'Twilio connection verified successfully (Mock Mode).',
+      };
+    }
+
+    try {
+      const auth = Buffer.from(`${settings.twilioAccountSid}:${settings.twilioAuthToken}`).toString('base64');
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${settings.twilioAccountSid}.json`,
+        {
+          headers: {
+            Authorization: `Basic ${auth}`,
+          },
+        },
+      );
+
+      if (!response.ok) {
+        const errText = await response.text();
+        await this.db.systemSettings.update({
+          where: { id: 'default' },
+          data: { twilioStatus: 'FAILED' },
+        });
+        return {
+          success: false,
+          error: `Twilio API error: ${response.statusText} (${errText})`,
+        };
+      }
+
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: {
+          twilioStatus: 'CONNECTED',
+          twilioLastVerified: new Date(),
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Twilio connection verified successfully.',
+      };
+    } catch (error: any) {
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: { twilioStatus: 'FAILED' },
+      });
+      return {
+        success: false,
+        error: error.message || 'Unknown Twilio error',
+      };
+    }
+  }
+
+  async testGemini() {
+    const settings = await this.getRawSettings();
+    if (!settings || !settings.geminiApiKey) {
+      throw new BadRequestException('Gemini API Key is missing.');
+    }
+
+    if (
+      settings.geminiApiKey.toLowerCase().includes('mock') ||
+      settings.geminiApiKey.toLowerCase().includes('test')
+    ) {
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: {
+          geminiStatus: 'CONNECTED',
+          geminiLastVerified: new Date(),
+        },
+      });
+      return {
+        success: true,
+        message: 'Gemini connection verified successfully (Mock Mode).',
+      };
+    }
+
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${settings.geminiApiKey}`,
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        await this.db.systemSettings.update({
+          where: { id: 'default' },
+          data: { geminiStatus: 'FAILED' },
+        });
+        return {
+          success: false,
+          error: data.error?.message || response.statusText,
+        };
+      }
+
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: {
+          geminiStatus: 'CONNECTED',
+          geminiLastVerified: new Date(),
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Gemini connection verified successfully.',
+      };
+    } catch (error: any) {
+      await this.db.systemSettings.update({
+        where: { id: 'default' },
+        data: { geminiStatus: 'FAILED' },
+      });
+      return {
+        success: false,
+        error: error.message || 'Unknown Gemini error',
       };
     }
   }

@@ -42,4 +42,16 @@ export class SettingsController {
   async testOpenRouter() {
     return this.settingsService.testOpenRouter();
   }
+
+  @Post('test-twilio')
+  @ApiOperation({ summary: 'Test Twilio connection' })
+  async testTwilio() {
+    return this.settingsService.testTwilio();
+  }
+
+  @Post('test-gemini')
+  @ApiOperation({ summary: 'Test Gemini connection' })
+  async testGemini() {
+    return this.settingsService.testGemini();
+  }
 }

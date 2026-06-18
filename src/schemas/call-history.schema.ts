@@ -29,6 +29,18 @@ export class CallHistory {
 
   @Prop({ default: Date.now })
   timestamp: Date;
+
+  @Prop()
+  summary?: string;
+
+  @Prop({ default: 5.0 })
+  sentimentScore: number;
+
+  @Prop()
+  keyOutcomes?: string;
+
+  @Prop({ default: 'PENDING' })
+  status: string;
 }
 
 export const CallHistorySchema = SchemaFactory.createForClass(CallHistory);
