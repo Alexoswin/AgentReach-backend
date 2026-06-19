@@ -24,8 +24,8 @@ type GeneratedCallingCampaign = {
   botRules: string;
   botObjectionHandling: string;
   botGreeting: string;
-  voice: string;
-  language: string;
+  voice?: string;
+  language?: string;
 };
 
 type CallingCampaignGenerationJob = {
@@ -206,8 +206,8 @@ Return ONLY valid JSON with exactly these fields:
   "botRules": "Rules the bot must follow",
   "botObjectionHandling": "How to respond to common objections",
   "botGreeting": "Opening line using {{firstName}} and {{botName}} variables",
-  "voice": "One Gemini voice from: Kore, Puck, Zephyr, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat",
-  "language": "BCP-47 language code such as en-IN or en"
+  "voice": "One Gemini voice from: Kore, Puck, Zephyr, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat, Aditi_hi, Kajal_hi, Madhav_hi. (Select Hindi voices Aditi_hi, Kajal_hi, or Madhav_hi if the user request implies Hindi language)",
+  "language": "BCP-47 language code such as en-IN, en, or hi"
 }`;
 
     const response = await fetch(
@@ -468,8 +468,8 @@ Return ONLY valid JSON with exactly these fields:
             outcome: 'QUEUING',
             sessionStatus: 'inprogress',
             callType: 'phone_call',
-            selectedLanguage: campaign.language || 'en-IN',
-            selectedVoice: campaign.voice || 'Kore',
+            selectedLanguage: campaign.language ?? null,
+            selectedVoice: campaign.voice ?? null,
             startedAt: new Date(),
             scripts: this.transcriptToScripts(openingTranscript),
             transcript: openingTranscript,
@@ -628,8 +628,8 @@ Return ONLY valid JSON with exactly these fields:
             outcome: 'DIALING',
             sessionStatus: 'inprogress',
             callType: 'phone_call',
-            selectedLanguage: campaign.language || 'en-IN',
-            selectedVoice: campaign.voice || 'Kore',
+            selectedLanguage: campaign.language ?? null,
+            selectedVoice: campaign.voice ?? null,
             startedAt,
             scripts: [],
             sessionErrors: [],
@@ -820,8 +820,8 @@ Return ONLY valid JSON with exactly these fields:
         sessionStatus: 'connected',
         startedAt,
         connectedAt: call.connectedAt || new Date(),
-        selectedLanguage: call.campaign.language || 'en-IN',
-        selectedVoice: call.campaign.voice || 'Kore',
+        selectedLanguage: call.campaign.language ?? null,
+        selectedVoice: call.campaign.voice ?? null,
         scripts: nextScripts,
         transcript: this.scriptsToTranscript(nextScripts),
         summary: `${botProfile.name} opened a live AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
@@ -1106,8 +1106,6 @@ Return ONLY valid JSON with exactly these fields:
           'If they are busy, ask for a better callback time. If they are unsure, offer to send details. If they are not interested, thank them politely and close.',
         botGreeting:
           'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
-        voice: 'Kore',
-        language: 'en-IN',
       },
       userPrompt,
       tone,
@@ -1150,14 +1148,18 @@ Return ONLY valid JSON with exactly these fields:
       'Sadachbia',
       'Sadaltager',
       'Sulafat',
+      'Aditi_hi',
+      'Kajal_hi',
+      'Madhav_hi',
     ]);
 
     const pick = (key: string, fallback: string) => {
       const text = typeof value?.[key] === 'string' ? value[key].trim() : '';
       return text || fallback;
     };
-    const voice = pick('voice', 'Kore');
-    const language = pick('language', 'en-IN');
+    const rawVoice = typeof value?.voice === 'string' ? value.voice.trim() : '';
+    const rawLanguage =
+      typeof value?.language === 'string' ? value.language.trim() : '';
 
     return {
       name: pick('name', 'AI Calling Campaign').slice(0, 90),
@@ -1182,8 +1184,10 @@ Return ONLY valid JSON with exactly these fields:
         'botGreeting',
         'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
       ),
-      voice: allowedVoices.has(voice) ? voice : 'Kore',
-      language: /^[a-z]{2,3}(-[A-Z]{2})?$/.test(language) ? language : 'en-IN',
+      voice: allowedVoices.has(rawVoice) ? rawVoice : undefined,
+      language: /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(rawLanguage)
+        ? rawLanguage
+        : undefined,
     };
   }
 
@@ -1321,10 +1325,11 @@ Return ONLY valid JSON with exactly these fields:
   private buildCallTwiml(campaign: any, contact: any) {
     const botProfile = this.buildBotProfile(campaign);
     const message = this.buildOpeningScript(campaign, contact, botProfile);
-    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
-    const twilioVoice = this.resolveTwilioVoice(campaign.voice, language);
+    const language = this.normalizeLanguageCode(campaign?.language);
+    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
 
-    return `<Response><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say><Pause length="1"/><Say voice="${twilioVoice}" language="${language}">Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
+    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Pause length="1"/><Say${sayAttrs}>Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
   }
 
   private async getCallWithContext(callId: string) {
@@ -1378,18 +1383,20 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   private buildTwilioGather(campaign: any, message: string, callId: string) {
-    const language = campaign.language === 'en-IN' ? 'en-IN' : 'en-US';
-    const twilioVoice = this.resolveTwilioVoice(campaign.voice, language);
+    const language = this.normalizeLanguageCode(campaign?.language);
+    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
     const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
+    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
 
-    return `<Response><Gather input="speech" action="${action}" method="POST" language="${language}" speechTimeout="1" timeout="4" enhanced="true"><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say></Gather><Redirect method="POST">${action}</Redirect></Response>`;
+    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="1" timeout="4" enhanced="true"><Say${sayAttrs}>${this.escapeXml(message)}</Say></Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
   private buildTwilioSayHangup(message: string, campaign?: any) {
-    const language = campaign?.language === 'en-IN' ? 'en-IN' : 'en-US';
+    const language = this.normalizeLanguageCode(campaign?.language);
     const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
 
-    return `<Response><Say voice="${twilioVoice}" language="${language}">${this.escapeXml(message)}</Say><Hangup /></Response>`;
+    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Hangup /></Response>`;
   }
 
   private buildBotProfile(campaign: any) {
@@ -1579,45 +1586,55 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     const transcript = this.scriptsToTranscript(scripts);
-    const prompt = `You are controlling a live outbound AI phone caller.
+    const campaignLanguage = call.campaign.language || 'en';
+    const languageInstruction = campaignLanguage.startsWith('hi')
+      ? 'You MUST speak and reply ONLY in Hindi (using Devanagari script). Keep the Hindi natural, polite, and conversational, like a real person calling.'
+      : campaignLanguage.startsWith('en-IN')
+      ? 'You MUST speak and reply in Indian English, using terms and a style natural to a professional Indian speaker.'
+      : 'You MUST speak and reply in English.';
 
-STRICT RULES:
-- The AI must speak only one short conversational reply, maximum 2 spoken sentences.
-- End with at most one clear question or next step unless the call should end.
-- After this reply the system will listen to the user. Do not continue talking.
-- Use only the campaign context below. Do not invent facts, pricing, promises, or policies.
-- If the user asks something outside the context, briefly say you do not have that detail and redirect to the campaign objective.
-- The bot must wait after this reply. Do not write multiple turns.
-- Return only valid JSON.
+    const prompt = `You are an advanced conversational AI controlling a live outbound phone caller.
+Your name is ${botProfile.name}, acting as ${botProfile.role}.
 
-CAMPAIGN:
-Objective: ${call.campaign.objective || 'Find whether there is a useful next step.'}
-Prompt/context: ${call.campaign.prompt || ''}
-Bot name: ${botProfile.name}
-Bot role: ${botProfile.role}
-Personality: ${botProfile.personality}
-Knowledge: ${botProfile.knowledge}
-Rules: ${botProfile.rules}
-Objection handling: ${botProfile.objections}
+LANGUAGE RULE:
+${languageInstruction}
 
-CONTACT:
-Name: ${`${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() || 'Unknown'}
-Company: ${call.contact.company || 'Unknown'}
+STRICT CONVERSATIONAL RULES:
+1. Be extremely concise. Speak only ONE short reply, maximum 1-2 conversational sentences (under 30 words).
+2. Sound like a real human over the phone: warm, natural, and polite. Avoid sounding like an AI or reading a script.
+3. Keep the conversation moving forward: end your reply with at most one clear, simple question or call-to-action.
+4. Listen to the user's input. Do not repeat what you've already said or write multiple turns.
+5. Base your answers strictly on the Campaign Context below. Do not invent facts, features, pricing, or promises.
+6. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
+7. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
 
-TRANSCRIPT SO FAR:
+CAMPAIGN CONTEXT:
+- Objective: ${call.campaign.objective || 'Identify next steps or interest.'}
+- Context/Instructions: ${call.campaign.prompt || ''}
+- Bot Personality: ${botProfile.personality}
+- Bot Knowledge: ${botProfile.knowledge}
+- Bot Rules: ${botProfile.rules}
+- Objection Handling: ${botProfile.objections}
+
+CONTACT INFORMATION:
+- Name: ${`${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() || 'Unknown'}
+- Company: ${call.contact.company || 'Unknown'}
+
+TRANSCRIPT OF THE CALL SO FAR:
 ${transcript}
 
-LATEST USER SPEECH:
-${latestUserSpeech}
+LATEST USER UTTERANCE:
+"${latestUserSpeech}"
 
-Return JSON with exactly:
+You must respond in valid JSON format.
+JSON Schema:
 {
-  "reply": "short line the AI should speak now",
+  "reply": "your conversational response in the target language",
   "shouldEnd": false,
-  "endReason": "",
+  "endReason": "why the call should end, if shouldEnd is true, otherwise empty",
   "collectedData": {},
   "sentimentScore": 7,
-  "keyOutcomes": "brief outcome",
+  "keyOutcomes": "brief outcome summary",
   "topicsCovered": ["Objective"]
 }`;
 
@@ -1897,21 +1914,73 @@ Return JSON with exactly:
     return value.replace(/(\.\.\.|[.!?])+$/g, '').trim();
   }
 
-  private resolveTwilioVoice(voice?: string, language?: string) {
-    if (language === 'en-IN') return 'Polly.Aditi';
+  private normalizeLanguageCode(language?: string) {
+    const normalized = language?.trim();
+    if (normalized === 'hi') return 'hi-IN';
+    return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
+      ? normalized
+      : undefined;
+  }
 
+  private buildSayAttributes(voice?: string, language?: string) {
+    const attributes = [];
+    if (voice) {
+      attributes.push(` voice="${this.escapeXml(voice)}"`);
+    }
+    if (language) {
+      attributes.push(` language="${this.escapeXml(language)}"`);
+    }
+    return attributes.length ? attributes.join('') : '';
+  }
+
+  private resolveTwilioVoice(voice?: string, language?: string) {
     const supportedVoices: Record<string, string> = {
-      Kore: 'Polly.Matthew',
-      Puck: 'Polly.Justin',
+      // English (US/UK)
       Zephyr: 'Polly.Joanna',
+      Puck: 'Polly.Justin',
       Charon: 'Polly.Brian',
-      Iapetus: 'Polly.Matthew',
-      Achernar: 'Polly.Amy',
-      Achird: 'Polly.Joey',
-      Sulafat: 'Polly.Joanna',
+      Fenrir: 'Polly.Joey',
+      Leda: 'Polly.Ivy',
+      Aoede: 'Polly.Kendra',
+      Callirrhoe: 'Polly.Kimberly',
+      Umbriel: 'Polly.Justin',
+      Algieba: 'Polly.Joey',
+      Erinome: 'Polly.Salli',
+      Algenib: 'Polly.Brian',
+      Laomedeia: 'Polly.Joanna',
+      Alnilam: 'Polly.Justin',
+      Schedar: 'Polly.Matthew',
+      Pulcherrima: 'Polly.Kendra',
+      Zubenelgenubi: 'Polly.Joey',
+      Sadachbia: 'Polly.Kimberly',
+      Sadaltager: 'Polly.Brian',
+
+      // English (India) - Accent optimization
+      Kore: 'Polly.Aditi',
+      Orus: 'Google.en-IN-Wavenet-C',
+      Autonoe: 'Polly.Raveena',
+      Iapetus: 'Google.en-IN-Neural-B',
+      Despina: 'Polly.Kajal',
+      Rasalgethi: 'Google.en-IN-Wavenet-F',
+      Achernar: 'Polly.Aditi',
+      Gacrux: 'Polly.Aditi',
+      Achird: 'Google.en-IN-Wavenet-C',
+      Vindemiatrix: 'Polly.Raveena',
+      Sulafat: 'Polly.Raveena',
+
+      // Hindi (India) - New Language optimization
+      Aditi_hi: 'Polly.Aditi',
+      Kajal_hi: 'Polly.Kajal',
+      Madhav_hi: 'Google.hi-IN-Neural2-C',
     };
 
-    return supportedVoices[voice || ''] || 'Polly.Joanna';
+    const normalizedVoice = voice?.trim();
+
+    if (normalizedVoice && supportedVoices[normalizedVoice]) {
+      return supportedVoices[normalizedVoice];
+    }
+
+    return undefined;
   }
 
   private escapeXml(value: string) {
