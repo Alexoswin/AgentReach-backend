@@ -6,14 +6,18 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
+  UseInterceptors,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AiCallingBotsService } from './ai-calling-bots.service';
 import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
+import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
 
 @ApiTags('ai-calling-bots')
 @Controller('ai-calling-bots')
@@ -56,6 +60,35 @@ export class AiCallingBotsController {
   @ApiOperation({ summary: 'Delete an AI calling bot and its embeddings' })
   remove(@Param('id') id: string) {
     return this.aiCallingBotsService.remove(id);
+  }
+
+  @Post(':id/train-pdf')
+  @UseInterceptors(FileInterceptor('file'))
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Train an AI calling bot from a PDF file' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        replace: { type: 'string', example: 'true' },
+        chunkSize: { type: 'string', example: '900' },
+        chunkOverlap: { type: 'string', example: '120' },
+        sourceName: { type: 'string', example: 'product-playbook.pdf' },
+      },
+      required: ['file'],
+    },
+  })
+  trainPdf(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: TrainAiCallingBotPdfDto,
+  ) {
+    return this.aiCallingBotsService.trainFromPdf(id, file, dto);
   }
 
   @Post(':id/train')

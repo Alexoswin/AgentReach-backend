@@ -3,10 +3,14 @@ import { MongoService } from '../mongo.service';
 import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
+import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
+import { PDFParse } from 'pdf-parse';
 
 const EMBEDDING_DIMENSIONS = 384;
 const DEFAULT_CHUNK_SIZE = 900;
 const DEFAULT_CHUNK_OVERLAP = 120;
+const MAX_TRAINING_PDF_BYTES = 8 * 1024 * 1024;
+const MIN_TRAINING_TEXT_LENGTH = 40;
 
 export type GoogleVoiceProfile = {
   id: string;
@@ -82,6 +86,36 @@ export class AiCallingBotsService {
     await this.findOne(id);
     await this.db.aiCallingBotEmbedding.deleteMany({ where: { botId: id } });
     return this.db.aiCallingBot.delete({ where: { id } });
+  }
+
+  async trainFromPdf(
+    id: string,
+    file: Express.Multer.File,
+    dto: TrainAiCallingBotPdfDto = {},
+  ) {
+    const parsed = await this.extractPdfTrainingText(file);
+    const sourceName = dto.sourceName?.trim() || file.originalname;
+    const training = await this.train(id, {
+      content: parsed.text,
+      sourceName,
+      replace: this.parseMultipartBoolean(dto.replace),
+      chunkSize: this.parseMultipartNumber(dto.chunkSize),
+      chunkOverlap: this.parseMultipartNumber(dto.chunkOverlap),
+      metadata: {
+        sourceType: 'pdf',
+        sourceName,
+        originalFileName: file.originalname,
+        pages: parsed.pages,
+        characters: parsed.characters,
+      },
+    });
+
+    return {
+      ...training,
+      fileName: file.originalname,
+      pages: parsed.pages,
+      characters: parsed.characters,
+    };
   }
 
   async train(id: string, dto: TrainAiCallingBotDto) {
@@ -196,6 +230,68 @@ export class AiCallingBotsService {
       botObjectionHandling: bot.objectionHandling,
       botGreeting: bot.greeting,
     };
+  }
+
+  private async extractPdfTrainingText(file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No PDF file provided');
+    }
+
+    const originalName = file.originalname || '';
+    const isPdf =
+      file.mimetype === 'application/pdf' ||
+      originalName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      throw new BadRequestException('Training file must be a PDF');
+    }
+
+    if (file.size > MAX_TRAINING_PDF_BYTES) {
+      throw new BadRequestException('Training PDF must be 8 MB or smaller');
+    }
+
+    const parser = new PDFParse({ data: file.buffer });
+    try {
+      const parsed = await parser.getText();
+      const text = this.cleanTrainingText(parsed.text || '');
+
+      if (text.length < MIN_TRAINING_TEXT_LENGTH) {
+        throw new BadRequestException(
+          'We could not read enough text from this PDF. Try exporting it as a text-based PDF.',
+        );
+      }
+
+      return {
+        text,
+        characters: text.length,
+        pages: parsed.total || 0,
+      };
+    } catch (error: any) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(
+        error.message || 'We could not read that PDF. Please try another file.',
+      );
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  private cleanTrainingText(value: string) {
+    return value
+      .replace(/\u0000/g, '')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  private parseMultipartBoolean(value?: string) {
+    if (value === undefined || value === '') return undefined;
+    return !['false', '0', 'no', 'off'].includes(value.toLowerCase());
+  }
+
+  private parseMultipartNumber(value?: string) {
+    if (value === undefined || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   private normalizeBotPayload(dto: Partial<CreateAiCallingBotDto>) {
