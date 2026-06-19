@@ -40,6 +40,11 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   language?: string;
 
+  @ApiProperty({ required: false, example: 'ai-calling-bot-id' })
+  @IsString()
+  @IsOptional()
+  aiCallingBotId?: string;
+
   @ApiProperty({ required: false, example: 'Sarah' })
   @IsString()
   @IsOptional()

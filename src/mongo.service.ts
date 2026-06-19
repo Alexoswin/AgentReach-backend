@@ -12,6 +12,8 @@ import { EmailCampaign } from './schemas/email-campaign.schema';
 import { EmailCampaignContact } from './schemas/email-campaign-contact.schema';
 import { CallingCampaign } from './schemas/calling-campaign.schema';
 import { CallHistory } from './schemas/call-history.schema';
+import { AiCallingBot } from './schemas/ai-calling-bot.schema';
+import { AiCallingBotEmbedding } from './schemas/ai-calling-bot-embedding.schema';
 
 type AnyModel = Model<any>;
 
@@ -26,6 +28,8 @@ export class MongoService implements OnModuleInit {
   emailCampaignContact: MongoDelegate;
   callingCampaign: MongoDelegate;
   callHistory: MongoDelegate;
+  aiCallingBot: MongoDelegate;
+  aiCallingBotEmbedding: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -38,6 +42,9 @@ export class MongoService implements OnModuleInit {
     private emailCampaignContactModel: AnyModel,
     @InjectModel(CallingCampaign.name) private callingCampaignModel: AnyModel,
     @InjectModel(CallHistory.name) private callHistoryModel: AnyModel,
+    @InjectModel(AiCallingBot.name) private aiCallingBotModel: AnyModel,
+    @InjectModel(AiCallingBotEmbedding.name)
+    private aiCallingBotEmbeddingModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -49,6 +56,8 @@ export class MongoService implements OnModuleInit {
       emailCampaignContact: this.emailCampaignContactModel,
       callingCampaign: this.callingCampaignModel,
       callHistory: this.callHistoryModel,
+      aiCallingBot: this.aiCallingBotModel,
+      aiCallingBotEmbedding: this.aiCallingBotEmbeddingModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -82,6 +91,16 @@ export class MongoService implements OnModuleInit {
     this.callHistory = new MongoDelegate(
       'callHistory',
       this.callHistoryModel,
+      models,
+    );
+    this.aiCallingBot = new MongoDelegate(
+      'aiCallingBot',
+      this.aiCallingBotModel,
+      models,
+    );
+    this.aiCallingBotEmbedding = new MongoDelegate(
+      'aiCallingBotEmbedding',
+      this.aiCallingBotEmbeddingModel,
       models,
     );
   }

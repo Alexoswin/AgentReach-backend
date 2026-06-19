@@ -25,6 +25,14 @@ import {
   CallingCampaignSchema,
 } from './schemas/calling-campaign.schema';
 import { CallHistory, CallHistorySchema } from './schemas/call-history.schema';
+import {
+  AiCallingBot,
+  AiCallingBotSchema,
+} from './schemas/ai-calling-bot.schema';
+import {
+  AiCallingBotEmbedding,
+  AiCallingBotEmbeddingSchema,
+} from './schemas/ai-calling-bot-embedding.schema';
 
 @Global()
 @Module({
@@ -39,6 +47,11 @@ import { CallHistory, CallHistorySchema } from './schemas/call-history.schema';
       { name: EmailCampaignContact.name, schema: EmailCampaignContactSchema },
       { name: CallingCampaign.name, schema: CallingCampaignSchema },
       { name: CallHistory.name, schema: CallHistorySchema },
+      { name: AiCallingBot.name, schema: AiCallingBotSchema },
+      {
+        name: AiCallingBotEmbedding.name,
+        schema: AiCallingBotEmbeddingSchema,
+      },
     ]),
   ],
   providers: [MongoService],

@@ -28,6 +28,9 @@ export class CallingCampaign {
   language?: string;
 
   @Prop()
+  aiCallingBotId?: string;
+
+  @Prop()
   botName?: string;
 
   @Prop()

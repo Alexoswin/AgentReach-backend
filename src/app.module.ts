@@ -12,6 +12,7 @@ import { CallingCampaignsModule } from './calling-campaigns/calling-campaigns.mo
 import { HistoryModule } from './history/history.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
+import { AiCallingBotsModule } from './ai-calling-bots/ai-calling-bots.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AuthModule } from './auth/auth.module';
     ContactsModule,
     TemplatesModule,
     EmailCampaignsModule,
+    AiCallingBotsModule,
     CallingCampaignsModule,
     HistoryModule,
     AnalyticsModule,

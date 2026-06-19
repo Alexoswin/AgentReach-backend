@@ -5,6 +5,7 @@ import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
+import { AiCallingBotsService } from '../ai-calling-bots/ai-calling-bots.service';
 
 type TwilioSettings = {
   twilioAccountSid?: string;
@@ -26,6 +27,13 @@ type GeneratedCallingCampaign = {
   botGreeting: string;
   voice?: string;
   language?: string;
+};
+
+type CachedGoogleSpeech = {
+  text: string;
+  voice: string;
+  language: string;
+  createdAt: number;
 };
 
 type CallingCampaignGenerationJob = {
@@ -57,10 +65,12 @@ type ConversationGeneration = {
 export class CallingCampaignsService {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
+  private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
 
   constructor(
     private db: MongoService,
     private configService: ConfigService,
+    private aiCallingBotsService: AiCallingBotsService,
   ) {}
 
   async findAll() {
@@ -79,6 +89,7 @@ export class CallingCampaignsService {
       prompt: c.prompt,
       voice: c.voice,
       language: c.language,
+      aiCallingBotId: c.aiCallingBotId,
       botName: c.botName,
       botRole: c.botRole,
       botPersonality: c.botPersonality,
@@ -126,8 +137,9 @@ export class CallingCampaignsService {
     this.logger.debug(
       `Creating calling campaign "${rest.name}" with ${contactIds?.length || 0} requested contacts`,
     );
+    const campaignData = await this.applyAiCallingBotDefaults(rest);
     const campaign = await this.db.callingCampaign.create({
-      data: rest,
+      data: campaignData,
     });
 
     if (contactIds && contactIds.length > 0) {
@@ -192,7 +204,7 @@ ${userPrompt}
 TONE:
 ${tone}
 
-The calling agent must act like a real person, not like a prompt reader. It should ask permission, listen first, handle objections briefly, and capture a clear next step.
+The calling agent must act like a real person, not like a prompt reader. It should ask permission, listen first, handle objections briefly, and capture a clear next step. Use Google-only voices for natural AI calling audio.
 
 Return ONLY valid JSON with exactly these fields:
 {
@@ -206,8 +218,8 @@ Return ONLY valid JSON with exactly these fields:
   "botRules": "Rules the bot must follow",
   "botObjectionHandling": "How to respond to common objections",
   "botGreeting": "Opening line using {{firstName}} and {{botName}} variables",
-  "voice": "One Gemini voice from: Kore, Puck, Zephyr, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat, Aditi_hi, Kajal_hi, Madhav_hi. (Select Hindi voices Aditi_hi, Kajal_hi, or Madhav_hi if the user request implies Hindi language)",
-  "language": "BCP-47 language code such as en-IN, en, or hi"
+  "voice": "One Google voice profile only: google:en-IN-Chirp3-HD-Puck for Indian English, google:hi-IN-Chirp3-HD-Puck for Hindi, or google:en-US-Chirp3-HD-Puck for English",
+  "language": "BCP-47 language code: en-IN, hi-IN, or en-US"
 }`;
 
     const response = await fetch(
@@ -285,9 +297,10 @@ Return ONLY valid JSON with exactly these fields:
     this.logger.debug(
       `Updating calling campaign ${id}; fields=${Object.keys(rest).join(',') || 'none'}; requestedContacts=${contactIds?.length || 0}`,
     );
+    const campaignData = await this.applyAiCallingBotDefaults(rest);
     const campaign = await this.db.callingCampaign.update({
       where: { id },
-      data: rest,
+      data: campaignData,
     });
 
     if (contactIds) {
@@ -1106,6 +1119,8 @@ Return ONLY valid JSON with exactly these fields:
           'If they are busy, ask for a better callback time. If they are unsure, offer to send details. If they are not interested, thank them politely and close.',
         botGreeting:
           'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
+        voice: 'google:en-IN-Chirp3-HD-Puck',
+        language: 'en-IN',
       },
       userPrompt,
       tone,
@@ -1117,41 +1132,11 @@ Return ONLY valid JSON with exactly these fields:
     userPrompt: string,
     tone: string,
   ) {
-    const allowedVoices = new Set([
-      'Kore',
-      'Puck',
-      'Zephyr',
-      'Charon',
-      'Fenrir',
-      'Leda',
-      'Orus',
-      'Aoede',
-      'Callirrhoe',
-      'Autonoe',
-      'Enceladus',
-      'Iapetus',
-      'Umbriel',
-      'Algieba',
-      'Despina',
-      'Erinome',
-      'Algenib',
-      'Rasalgethi',
-      'Laomedeia',
-      'Achernar',
-      'Alnilam',
-      'Schedar',
-      'Gacrux',
-      'Pulcherrima',
-      'Achird',
-      'Zubenelgenubi',
-      'Vindemiatrix',
-      'Sadachbia',
-      'Sadaltager',
-      'Sulafat',
-      'Aditi_hi',
-      'Kajal_hi',
-      'Madhav_hi',
-    ]);
+    const allowedVoices = new Set(
+      this.aiCallingBotsService
+        ?.getGoogleVoiceProfiles()
+        .map((profile) => profile.voice) || [],
+    );
 
     const pick = (key: string, fallback: string) => {
       const text = typeof value?.[key] === 'string' ? value[key].trim() : '';
@@ -1184,10 +1169,12 @@ Return ONLY valid JSON with exactly these fields:
         'botGreeting',
         'Hi {{firstName}}, this is {{botName}}. I know this is a quick call, so I will be brief.',
       ),
-      voice: allowedVoices.has(rawVoice) ? rawVoice : undefined,
+      voice: allowedVoices.has(rawVoice)
+        ? rawVoice
+        : this.normalizeCampaignVoice(rawVoice, rawLanguage),
       language: /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(rawLanguage)
-        ? rawLanguage
-        : undefined,
+        ? this.normalizeLanguageCode(rawLanguage)
+        : this.inferLanguageFromVoice(rawVoice),
     };
   }
 
@@ -1202,6 +1189,70 @@ Return ONLY valid JSON with exactly these fields:
     }
 
     return JSON.parse(cleanedJson);
+  }
+
+  private async applyAiCallingBotDefaults(data: Record<string, any>) {
+    if (!data.aiCallingBotId) return data;
+    const defaults = await this.aiCallingBotsService.getCampaignDefaults(
+      data.aiCallingBotId,
+    );
+    return {
+      ...defaults,
+      ...data,
+      voice: data.voice || defaults.voice,
+      language: data.language || defaults.language,
+      botName: data.botName || defaults.botName,
+      botRole: data.botRole || defaults.botRole,
+      botPersonality: data.botPersonality || defaults.botPersonality,
+      botKnowledge: data.botKnowledge || defaults.botKnowledge,
+      botRules: data.botRules || defaults.botRules,
+      botObjectionHandling:
+        data.botObjectionHandling || defaults.botObjectionHandling,
+      botGreeting: data.botGreeting || defaults.botGreeting,
+    };
+  }
+
+  async renderGoogleSpeechAudio(audioId: string) {
+    const cached = this.googleSpeechCache.get(audioId);
+    if (!cached) {
+      throw new BadRequestException('Google speech audio was not found.');
+    }
+
+    const apiKey = await this.getGoogleTtsApiKey();
+    if (!apiKey) {
+      throw new BadRequestException(
+        'Google TTS requires GOOGLE_TTS_API_KEY, GOOGLE_API_KEY, or a configured Gemini API key.',
+      );
+    }
+
+    const response = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text: cached.text },
+          voice: {
+            languageCode: cached.language,
+            name: cached.voice,
+          },
+          audioConfig: {
+            audioEncoding: 'MP3',
+            speakingRate: cached.language === 'hi-IN' ? 0.96 : 1.02,
+            pitch: 0,
+          },
+        }),
+      },
+    );
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.audioContent) {
+      throw new BadRequestException(
+        data?.error?.message || 'Google TTS synthesis failed.',
+      );
+    }
+
+    return Buffer.from(data.audioContent, 'base64');
   }
 
   private async resetCallsForRelaunch(calls: any[]) {
@@ -1382,21 +1433,77 @@ Return ONLY valid JSON with exactly these fields:
     return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/${type}/${encodeURIComponent(callId)}`;
   }
 
-  private buildTwilioGather(campaign: any, message: string, callId: string) {
+  private async buildTwilioGather(
+    campaign: any,
+    message: string,
+    callId: string,
+  ) {
     const language = this.normalizeLanguageCode(campaign?.language);
-    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
     const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
-    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
+    const speech = await this.buildTwilioSpeechNoun(
+      campaign,
+      message,
+      language,
+    );
 
-    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="1" timeout="4" enhanced="true"><Say${sayAttrs}>${this.escapeXml(message)}</Say></Gather><Redirect method="POST">${action}</Redirect></Response>`;
+    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="1" timeout="4" enhanced="true">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
-  private buildTwilioSayHangup(message: string, campaign?: any) {
+  private async buildTwilioSayHangup(message: string, campaign?: any) {
     const language = this.normalizeLanguageCode(campaign?.language);
+    const speech = await this.buildTwilioSpeechNoun(
+      campaign,
+      message,
+      language,
+    );
+
+    return `<Response>${speech}<Hangup /></Response>`;
+  }
+
+  private async buildTwilioSpeechNoun(
+    campaign: any,
+    message: string,
+    language?: string,
+  ) {
+    const googleTtsVoice = this.resolveGoogleTtsVoice(
+      campaign?.voice,
+      language,
+    );
+    const apiKey = await this.getGoogleTtsApiKey();
+
+    if (apiKey) {
+      const audioId = this.registerGoogleSpeech(
+        message,
+        googleTtsVoice,
+        language,
+      );
+      return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
+    }
+
     const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
     const sayAttrs = this.buildSayAttributes(twilioVoice, language);
+    return `<Say${sayAttrs}>${this.escapeXml(message)}</Say>`;
+  }
 
-    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Hangup /></Response>`;
+  private registerGoogleSpeech(text: string, voice: string, language?: string) {
+    const audioId = randomUUID();
+    const now = Date.now();
+    for (const [id, cached] of this.googleSpeechCache.entries()) {
+      if (now - cached.createdAt > 10 * 60 * 1000) {
+        this.googleSpeechCache.delete(id);
+      }
+    }
+    this.googleSpeechCache.set(audioId, {
+      text: this.compactForSpeech(text, 460),
+      voice,
+      language: this.normalizeLanguageCode(language) || 'en-IN',
+      createdAt: now,
+    });
+    return audioId;
+  }
+
+  private getTwilioTtsUrl(audioId: string) {
+    return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/tts/${encodeURIComponent(audioId)}`;
   }
 
   private buildBotProfile(campaign: any) {
@@ -1576,6 +1683,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       scripts,
     );
+    const ragContext = await this.aiCallingBotsService.buildCallingContext(
+      call.campaign.aiCallingBotId,
+      latestUserSpeech,
+      4,
+    );
 
     if (
       !settings?.openRouterApiKey ||
@@ -1590,8 +1702,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const languageInstruction = campaignLanguage.startsWith('hi')
       ? 'You MUST speak and reply ONLY in Hindi (using Devanagari script). Keep the Hindi natural, polite, and conversational, like a real person calling.'
       : campaignLanguage.startsWith('en-IN')
-      ? 'You MUST speak and reply in Indian English, using terms and a style natural to a professional Indian speaker.'
-      : 'You MUST speak and reply in English.';
+        ? 'You MUST speak and reply in Indian English, using terms and a style natural to a professional Indian speaker.'
+        : 'You MUST speak and reply in English.';
 
     const prompt = `You are an advanced conversational AI controlling a live outbound phone caller.
 Your name is ${botProfile.name}, acting as ${botProfile.role}.
@@ -1604,7 +1716,7 @@ STRICT CONVERSATIONAL RULES:
 2. Sound like a real human over the phone: warm, natural, and polite. Avoid sounding like an AI or reading a script.
 3. Keep the conversation moving forward: end your reply with at most one clear, simple question or call-to-action.
 4. Listen to the user's input. Do not repeat what you've already said or write multiple turns.
-5. Base your answers strictly on the Campaign Context below. Do not invent facts, features, pricing, or promises.
+5. Base your answers strictly on the Campaign Context and Retrieved Bot Knowledge below. Do not invent facts, features, pricing, or promises.
 6. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
 7. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
 
@@ -1615,6 +1727,13 @@ CAMPAIGN CONTEXT:
 - Bot Knowledge: ${botProfile.knowledge}
 - Bot Rules: ${botProfile.rules}
 - Objection Handling: ${botProfile.objections}
+${
+  ragContext
+    ? `
+RETRIEVED BOT KNOWLEDGE (RAG):
+${ragContext}`
+    : ''
+}
 
 CONTACT INFORMATION:
 - Name: ${`${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() || 'Unknown'}
@@ -1917,6 +2036,7 @@ JSON Schema:
   private normalizeLanguageCode(language?: string) {
     const normalized = language?.trim();
     if (normalized === 'hi') return 'hi-IN';
+    if (normalized === 'en') return 'en-US';
     return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
       ? normalized
       : undefined;
@@ -1933,54 +2053,125 @@ JSON Schema:
     return attributes.length ? attributes.join('') : '';
   }
 
-  private resolveTwilioVoice(voice?: string, language?: string) {
-    const supportedVoices: Record<string, string> = {
-      // English (US/UK)
-      Zephyr: 'Polly.Joanna',
-      Puck: 'Polly.Justin',
-      Charon: 'Polly.Brian',
-      Fenrir: 'Polly.Joey',
-      Leda: 'Polly.Ivy',
-      Aoede: 'Polly.Kendra',
-      Callirrhoe: 'Polly.Kimberly',
-      Umbriel: 'Polly.Justin',
-      Algieba: 'Polly.Joey',
-      Erinome: 'Polly.Salli',
-      Algenib: 'Polly.Brian',
-      Laomedeia: 'Polly.Joanna',
-      Alnilam: 'Polly.Justin',
-      Schedar: 'Polly.Matthew',
-      Pulcherrima: 'Polly.Kendra',
-      Zubenelgenubi: 'Polly.Joey',
-      Sadachbia: 'Polly.Kimberly',
-      Sadaltager: 'Polly.Brian',
+  private async getGoogleTtsApiKey() {
+    const envKey =
+      this.configService.get<string>('GOOGLE_TTS_API_KEY') ||
+      this.configService.get<string>('GOOGLE_API_KEY') ||
+      this.configService.get<string>('GOOGLE_CLOUD_API_KEY');
+    if (envKey?.trim()) return envKey.trim();
 
-      // English (India) - Accent optimization
-      Kore: 'Polly.Aditi',
-      Orus: 'Google.en-IN-Wavenet-C',
-      Autonoe: 'Polly.Raveena',
-      Iapetus: 'Google.en-IN-Neural-B',
-      Despina: 'Polly.Kajal',
-      Rasalgethi: 'Google.en-IN-Wavenet-F',
-      Achernar: 'Polly.Aditi',
-      Gacrux: 'Polly.Aditi',
-      Achird: 'Google.en-IN-Wavenet-C',
-      Vindemiatrix: 'Polly.Raveena',
-      Sulafat: 'Polly.Raveena',
+    const settings = await this.db.systemSettings.findUnique({
+      where: { id: 'default' },
+      select: { geminiApiKey: true },
+    });
+    return settings?.geminiApiKey?.trim() || '';
+  }
 
-      // Hindi (India) - New Language optimization
-      Aditi_hi: 'Polly.Aditi',
-      Kajal_hi: 'Polly.Kajal',
-      Madhav_hi: 'Google.hi-IN-Neural2-C',
-    };
-
-    const normalizedVoice = voice?.trim();
-
-    if (normalizedVoice && supportedVoices[normalizedVoice]) {
-      return supportedVoices[normalizedVoice];
+  private normalizeCampaignVoice(voice?: string, language?: string) {
+    const normalized = voice?.trim();
+    if (normalized?.startsWith('google:')) return normalized;
+    if (
+      normalized &&
+      /^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(normalized)
+    ) {
+      return `google:${normalized}`;
     }
 
-    return undefined;
+    const profiles = this.aiCallingBotsService?.getGoogleVoiceProfiles() || [];
+    const byLanguage = profiles.find(
+      (profile) => profile.language === this.normalizeLanguageCode(language),
+    );
+    if (byLanguage) return byLanguage.voice;
+
+    if (normalized?.toLowerCase().includes('hi')) {
+      return 'google:hi-IN-Chirp3-HD-Puck';
+    }
+    if (this.normalizeLanguageCode(language) === 'en-US') {
+      return 'google:en-US-Chirp3-HD-Puck';
+    }
+    return 'google:en-IN-Chirp3-HD-Puck';
+  }
+
+  private inferLanguageFromVoice(voice?: string) {
+    const normalized = voice?.trim();
+    if (
+      normalized?.includes('hi-IN') ||
+      normalized?.toLowerCase().includes('hi')
+    ) {
+      return 'hi-IN';
+    }
+    if (normalized?.includes('en-US')) return 'en-US';
+    return 'en-IN';
+  }
+
+  private resolveGoogleTtsVoice(voice?: string, language?: string) {
+    const normalizedLanguage = this.normalizeLanguageCode(language) || 'en-IN';
+    const normalizedVoice = voice?.trim() || '';
+    const withoutProvider = normalizedVoice.startsWith('google:')
+      ? normalizedVoice.slice('google:'.length)
+      : normalizedVoice;
+
+    if (/^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(withoutProvider)) {
+      return withoutProvider;
+    }
+
+    const voiceName = this.extractGeminiVoiceName(withoutProvider);
+    return `${normalizedLanguage}-Chirp3-HD-${voiceName}`;
+  }
+
+  private extractGeminiVoiceName(value?: string) {
+    const supported = new Set([
+      'Puck',
+      'Charon',
+      'Kore',
+      'Fenrir',
+      'Aoede',
+      'Zephyr',
+      'Orus',
+      'Autonoe',
+      'Umbriel',
+      'Erinome',
+      'Laomedeia',
+      'Schedar',
+      'Achird',
+      'Sadachbia',
+      'Enceladus',
+      'Algieba',
+      'Algenib',
+      'Achernar',
+      'Gacrux',
+      'Zubenelgenubi',
+      'Sadaltager',
+      'Leda',
+      'Callirrhoe',
+      'Iapetus',
+      'Despina',
+      'Rasalgethi',
+      'Alnilam',
+      'Pulcherrima',
+      'Vindemiatrix',
+      'Sulafat',
+    ]);
+    const last = value?.split('-').at(-1)?.split(':').at(-1) || 'Puck';
+    const normalized = `${last.charAt(0).toUpperCase()}${last
+      .slice(1)
+      .toLowerCase()}`;
+    return supported.has(normalized) ? normalized : 'Puck';
+  }
+
+  private resolveTwilioVoice(voice?: string, language?: string) {
+    const googleVoice = this.resolveGoogleTtsVoice(voice, language);
+    const voiceName = this.extractGeminiVoiceName(googleVoice);
+
+    if (googleVoice.startsWith('hi-IN')) return 'Google.hi-IN-Neural2-C';
+    if (googleVoice.startsWith('en-US')) {
+      return voiceName === 'Kore' || voiceName === 'Aoede'
+        ? 'Google.en-US-Neural2-F'
+        : 'Google.en-US-Neural2-D';
+    }
+    return voiceName === 'Kore' || voiceName === 'Aoede'
+      ? 'Google.en-IN-Wavenet-A'
+      : 'Google.en-IN-Wavenet-D';
   }
 
   private escapeXml(value: string) {

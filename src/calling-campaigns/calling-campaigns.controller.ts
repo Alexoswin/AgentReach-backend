@@ -87,6 +87,14 @@ export class CallingCampaignsController {
     return this.callingCampaignsService.handleTwilioRecording(callId, body);
   }
 
+  @Get('twilio/tts/:audioId')
+  @Public()
+  @Header('Content-Type', 'audio/mpeg')
+  @ApiOperation({ summary: 'Google TTS audio for Twilio AI calling' })
+  async twilioTts(@Param('audioId') audioId: string) {
+    return this.callingCampaignsService.renderGoogleSpeechAudio(audioId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get details of an AI calling campaign' })
   async findOne(@Param('id') id: string) {
