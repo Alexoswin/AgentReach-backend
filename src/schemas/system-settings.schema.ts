@@ -35,8 +35,9 @@ export class SystemSettings {
   @Prop({ default: '' })
   twilioPhoneNumber: string;
 
+
   @Prop({ default: '' })
-  geminiApiKey: string;
+  googleServiceAccountJson: string;
 
   @Prop({ default: 'DISCONNECTED' })
   twilioStatus: string;

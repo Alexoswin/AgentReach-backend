@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DEFAULT_OPENROUTER_MODEL } from './config/openrouter';
+import { encryptSystemSettingsData } from './settings/credential-encryption';
 import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
 import { SystemSettings } from './schemas/system-settings.schema';
@@ -106,15 +107,26 @@ export class MongoService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    const existingSettings = await this.systemSettings.findUnique({
+      where: { id: 'default' },
+    });
     await this.systemSettings.upsert({
       where: { id: 'default' },
-      update: {
-        awsAccessKeyId: process.env.AWS_KEY_ID || '',
-        awsSecretAccessKey: process.env.AWS_KEY || '',
-        openRouterApiKey: process.env.OPENROUTER_KEY || '',
+      update: encryptSystemSettingsData({
+        awsAccessKeyId:
+          process.env.AWS_KEY_ID || existingSettings?.awsAccessKeyId || '',
+        awsSecretAccessKey:
+          process.env.AWS_KEY || existingSettings?.awsSecretAccessKey || '',
+        openRouterApiKey:
+          process.env.OPENROUTER_KEY || existingSettings?.openRouterApiKey || '',
+        twilioAccountSid: existingSettings?.twilioAccountSid || '',
+        twilioAuthToken: existingSettings?.twilioAuthToken || '',
+        twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
+        googleServiceAccountJson:
+          existingSettings?.googleServiceAccountJson || '',
         openRouterModel: DEFAULT_OPENROUTER_MODEL,
-      },
-      create: {
+      }),
+      create: encryptSystemSettingsData({
         id: 'default',
         awsAccessKeyId: process.env.AWS_KEY_ID || '',
         awsSecretAccessKey: process.env.AWS_KEY || '',
@@ -122,7 +134,7 @@ export class MongoService implements OnModuleInit {
         awsSenderEmail: 'oswin.alex@oswinalex.site',
         openRouterApiKey: process.env.OPENROUTER_KEY || '',
         openRouterModel: DEFAULT_OPENROUTER_MODEL,
-      },
+      }),
     });
 
     const defaultEmail = 'oswinalex1@gmail.com';

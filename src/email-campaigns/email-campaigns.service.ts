@@ -7,6 +7,7 @@ import {
   SendEmailCommand,
   SendRawEmailCommand,
 } from '@aws-sdk/client-ses';
+import { decryptSystemSettings } from '../settings/credential-encryption';
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
@@ -196,9 +197,11 @@ export class EmailCampaignsService {
 
   private async runBackgroundSending(campaignId: string) {
     try {
-      const settings = await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-      });
+      const settings = decryptSystemSettings(
+        await this.db.systemSettings.findUnique({
+          where: { id: 'default' },
+        }),
+      );
 
       const campaign = await this.db.emailCampaign.findUnique({
         where: { id: campaignId },

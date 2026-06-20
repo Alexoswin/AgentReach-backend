@@ -4,6 +4,7 @@ import { MongoService } from '../mongo.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
+import { decryptSystemSettings } from '../settings/credential-encryption';
 import { PDFParse } from 'pdf-parse';
 
 const MAX_TEMPLATE_ATTACHMENTS = 5;
@@ -218,9 +219,11 @@ export class TemplatesService {
       dto.referenceDocumentText,
       dto.referenceDocumentName,
     );
-    const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
-    });
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+      }),
+    );
 
     const hasNoKey = !settings || !settings.openRouterApiKey;
     const isMockKey =

@@ -47,10 +47,11 @@ export class UpdateSettingsDto {
   @IsOptional()
   twilioPhoneNumber?: string;
 
+
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()
-  geminiApiKey?: string;
+  googleServiceAccountJson?: string;
 
   @ApiProperty({ required: false })
   @IsString()

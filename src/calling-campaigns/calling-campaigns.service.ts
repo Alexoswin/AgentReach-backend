@@ -1,11 +1,12 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import { createSign, randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 import { resolveOpenRouterModel } from '../config/openrouter';
 import { AiCallingBotsService } from '../ai-calling-bots/ai-calling-bots.service';
+import { decryptSystemSettings } from '../settings/credential-encryption';
 
 type TwilioSettings = {
   twilioAccountSid?: string;
@@ -30,11 +31,17 @@ type GeneratedCallingCampaign = {
 };
 
 type CachedGoogleSpeech = {
-  text: string;
-  voice: string;
-  language: string;
+  audio: Buffer;
   createdAt: number;
 };
+
+type GoogleTtsAccessToken = {
+  accessToken: string;
+  expiresAt: number;
+};
+
+const GOOGLE_TTS_TIMEOUT_MS = 3500;
+const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 
 type CallingCampaignGenerationJob = {
   id: string;
@@ -66,6 +73,7 @@ export class CallingCampaignsService {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
   private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
+  private googleTtsAccessToken: GoogleTtsAccessToken | null = null;
 
   constructor(
     private db: MongoService,
@@ -184,9 +192,11 @@ export class CallingCampaignsService {
       throw new BadRequestException('Prompt is required.');
     }
 
-    const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
-    });
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+      }),
+    );
     const tone = dto.tone?.trim() || 'warm, natural, concise, and helpful';
 
     if (
@@ -348,9 +358,11 @@ Return ONLY valid JSON with exactly these fields:
       throw new BadRequestException('Calling campaign is already running');
     }
 
-    const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
-    });
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+      }),
+    );
     const hasTwilio = this.hasUsableTwilioSettings(settings);
     const launchMode = hasTwilio ? 'twilio' : 'simulation';
     this.logger.debug(
@@ -1219,41 +1231,7 @@ Return ONLY valid JSON with exactly these fields:
       throw new BadRequestException('Google speech audio was not found.');
     }
 
-    const apiKey = await this.getGoogleTtsApiKey();
-    if (!apiKey) {
-      throw new BadRequestException(
-        'Google TTS requires GOOGLE_TTS_API_KEY, GOOGLE_API_KEY, or a configured Gemini API key.',
-      );
-    }
-
-    const response = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: { text: cached.text },
-          voice: {
-            languageCode: cached.language,
-            name: cached.voice,
-          },
-          audioConfig: {
-            audioEncoding: 'MP3',
-            speakingRate: cached.language === 'hi-IN' ? 0.96 : 1.02,
-            pitch: 0,
-          },
-        }),
-      },
-    );
-
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.audioContent) {
-      throw new BadRequestException(
-        data?.error?.message || 'Google TTS synthesis failed.',
-      );
-    }
-
-    return Buffer.from(data.audioContent, 'base64');
+    return cached.audio;
   }
 
   private async resetCallsForRelaunch(calls: any[]) {
@@ -1471,34 +1449,110 @@ Return ONLY valid JSON with exactly these fields:
         campaign?.voice,
         language,
       );
-      const audioId = this.registerGoogleSpeech(
+      const audioId = await this.registerGoogleSpeech(
         message,
         googleTtsVoice,
         language,
       );
-      return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
+      if (audioId) {
+        return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
+      }
     }
 
+    return this.buildTwilioSayNoun(campaign, message, language);
+  }
+
+  private buildTwilioSayNoun(campaign: any, message: string, language?: string) {
     const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
     const sayAttrs = this.buildSayAttributes(twilioVoice, language);
     return `<Say${sayAttrs}>${this.escapeXml(message)}</Say>`;
   }
 
-  private registerGoogleSpeech(text: string, voice: string, language?: string) {
-    const audioId = randomUUID();
+  private async registerGoogleSpeech(
+    text: string,
+    voice: string,
+    language?: string,
+  ) {
     const now = Date.now();
     for (const [id, cached] of this.googleSpeechCache.entries()) {
       if (now - cached.createdAt > 10 * 60 * 1000) {
         this.googleSpeechCache.delete(id);
       }
     }
-    this.googleSpeechCache.set(audioId, {
-      text: this.compactForSpeech(text, 460),
-      voice,
-      language: this.normalizeLanguageCode(language) || 'en-IN',
-      createdAt: now,
-    });
-    return audioId;
+
+    const accessToken = await this.getGoogleTtsAccessToken();
+    if (!accessToken) {
+      this.logger.warn(
+        'Google service account JSON is not configured for HD AI calling audio; falling back to Twilio Say.',
+      );
+      return null;
+    }
+
+    const normalizedLanguage = this.normalizeLanguageCode(language) || 'en-IN';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GOOGLE_TTS_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(
+        'https://texttospeech.googleapis.com/v1/text:synthesize',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            input: { text: this.compactForSpeech(text, 460) },
+            voice: {
+              languageCode: normalizedLanguage,
+              name: voice,
+            },
+            audioConfig: {
+              audioEncoding: 'MP3',
+              speakingRate: normalizedLanguage === 'hi-IN' ? 0.96 : 1.02,
+              pitch: 0,
+            },
+          }),
+        },
+      );
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.audioContent) {
+        this.logger.warn(
+          `Google TTS failed for HD AI calling audio; falling back to Twilio Say. Reason: ${data?.error?.message || response.statusText || 'empty audio response'}`,
+        );
+        return null;
+      }
+
+      const audio = Buffer.from(data.audioContent, 'base64');
+      if (!audio.length) {
+        this.logger.warn(
+          'Google TTS returned empty HD AI calling audio; falling back to Twilio Say.',
+        );
+        return null;
+      }
+
+      const audioId = randomUUID();
+      this.googleSpeechCache.set(audioId, {
+        audio,
+        createdAt: now,
+      });
+      return audioId;
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.name === 'AbortError'
+          ? `timed out after ${GOOGLE_TTS_TIMEOUT_MS}ms`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      this.logger.warn(
+        `Google TTS could not prepare HD AI calling audio; falling back to Twilio Say. Reason: ${reason}`,
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private getTwilioTtsUrl(audioId: string) {
@@ -1673,9 +1727,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
   ): Promise<ConversationGeneration> {
-    const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
-    });
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+      }),
+    );
     const botProfile = this.buildBotProfile(call.campaign);
     const fallback = this.buildFallbackCallingTurn(
       call,
@@ -2052,18 +2108,93 @@ JSON Schema:
     return attributes.length ? attributes.join('') : '';
   }
 
-  private async getGoogleTtsApiKey() {
-    const envKey =
-      this.configService.get<string>('GOOGLE_TTS_API_KEY') ||
-      this.configService.get<string>('GOOGLE_API_KEY') ||
-      this.configService.get<string>('GOOGLE_CLOUD_API_KEY');
-    if (envKey?.trim()) return envKey.trim();
+  private async getGoogleTtsAccessToken() {
+    if (
+      this.googleTtsAccessToken &&
+      this.googleTtsAccessToken.expiresAt > Date.now() + 60 * 1000
+    ) {
+      return this.googleTtsAccessToken.accessToken;
+    }
 
-    const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
-      select: { geminiApiKey: true },
-    });
-    return settings?.geminiApiKey?.trim() || '';
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+        select: { googleServiceAccountJson: true },
+      }),
+    );
+    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
+    if (!serviceAccountJson) return '';
+
+    try {
+      const credentials = JSON.parse(serviceAccountJson);
+      const clientEmail = String(credentials.client_email || '').trim();
+      const privateKey = String(credentials.private_key || '').trim();
+      if (!clientEmail || !privateKey) {
+        throw new Error(
+          'service account JSON must include client_email and private_key',
+        );
+      }
+
+      const assertion = this.signGoogleServiceAccountJwt(
+        clientEmail,
+        privateKey,
+      );
+      const response = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion,
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.access_token) {
+        throw new Error(
+          data?.error_description || data?.error || response.statusText,
+        );
+      }
+
+      this.googleTtsAccessToken = {
+        accessToken: data.access_token,
+        expiresAt:
+          Date.now() +
+          Math.max(Number(data.expires_in || 3600) - 60, 60) * 1000,
+      };
+      return this.googleTtsAccessToken.accessToken;
+    } catch (error) {
+      this.googleTtsAccessToken = null;
+      this.logger.warn(
+        `Google service account auth failed for HD AI calling audio; falling back to Twilio Say. Reason: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return '';
+    }
+  }
+
+  private signGoogleServiceAccountJwt(clientEmail: string, privateKey: string) {
+    const now = Math.floor(Date.now() / 1000);
+    const header = this.base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = this.base64Url(
+      JSON.stringify({
+        iss: clientEmail,
+        scope: GOOGLE_TTS_SCOPE,
+        aud: 'https://oauth2.googleapis.com/token',
+        iat: now,
+        exp: now + 3600,
+      }),
+    );
+    const unsignedJwt = `${header}.${payload}`;
+    const signature = createSign('RSA-SHA256')
+      .update(unsignedJwt)
+      .sign(privateKey);
+    return `${unsignedJwt}.${this.base64Url(signature)}`;
+  }
+
+  private base64Url(value: string | Buffer) {
+    return Buffer.from(value)
+      .toString('base64')
+      .replace(/=/g, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
   }
 
   private normalizeCampaignVoice(voice?: string, language?: string) {

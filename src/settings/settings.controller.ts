@@ -50,13 +50,13 @@ export class SettingsController {
   }
 
   @Post('test-gemini')
-  @ApiOperation({ summary: 'Test Gemini connection' })
+  @ApiOperation({ summary: 'Test Google credentials connection' })
   async testGemini() {
     return this.settingsService.testGemini();
   }
 
   @Post('preview-gemini-voice')
-  @ApiOperation({ summary: 'Generate a short Gemini TTS voice preview' })
+  @ApiOperation({ summary: 'Generate a short Google voice preview' })
   async previewGeminiVoice(
     @Body() dto: { voice: string; language?: string; text?: string },
   ) {

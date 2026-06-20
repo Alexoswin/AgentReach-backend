@@ -1,49 +1,48 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { createSign } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { resolveOpenRouterModel } from '../config/openrouter';
+import {
+  MASKED_CREDENTIAL,
+  SYSTEM_CREDENTIAL_FIELDS,
+  decryptSystemSettings,
+  encryptSystemSettingsData,
+  maskSystemSettings,
+} from './credential-encryption';
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
-const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
-const GEMINI_TTS_SAMPLE_RATE = 24000;
+const GOOGLE_CLOUD_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 
 @Injectable()
 export class SettingsService {
   constructor(private db: MongoService) {}
 
   async getRawSettings() {
-    return this.db.systemSettings.findUnique({
+    const settings = await this.db.systemSettings.findUnique({
       where: { id: 'default' },
     });
+    return decryptSystemSettings(settings);
   }
 
   async getSettings() {
     const settings = await this.getRawSettings();
-    if (!settings) return null;
-    return {
-      ...settings,
-      awsSecretAccessKey: settings.awsSecretAccessKey ? '••••••••••••••••' : '',
-      openRouterApiKey: settings.openRouterApiKey ? '••••••••••••••••' : '',
-      twilioAuthToken: settings.twilioAuthToken ? '••••••••••••••••' : '',
-      geminiApiKey: settings.geminiApiKey ? '••••••••••••••••' : '',
-    };
+    return maskSystemSettings(settings);
   }
 
   async updateSettings(dto: UpdateSettingsDto) {
-    const current = await this.getRawSettings();
+    const current = await this.db.systemSettings.findUnique({
+      where: { id: 'default' },
+    });
     const data: any = {};
 
-    const keysToMask = [
-      'awsSecretAccessKey',
-      'openRouterApiKey',
-      'twilioAuthToken',
-      'geminiApiKey',
-    ];
-
     for (const [key, val] of Object.entries(dto)) {
-      if (keysToMask.includes(key) && val === '••••••••••••••••') {
+      if (
+        SYSTEM_CREDENTIAL_FIELDS.includes(key as any) &&
+        val === MASKED_CREDENTIAL
+      ) {
         if (current && current[key]) {
           data[key] = current[key];
         }
@@ -56,14 +55,17 @@ export class SettingsService {
       data.openRouterModel = resolveOpenRouterModel(dto.openRouterModel);
     }
 
-    return this.db.systemSettings.upsert({
+    const encryptedData = encryptSystemSettingsData(data);
+    const settings = await this.db.systemSettings.upsert({
       where: { id: 'default' },
-      update: data,
+      update: encryptedData,
       create: {
         id: 'default',
-        ...data,
+        ...encryptedData,
       },
     });
+
+    return maskSystemSettings(decryptSystemSettings(settings));
   }
 
   async testAwsSes() {
@@ -262,43 +264,14 @@ export class SettingsService {
 
   async testGemini() {
     const settings = await this.getRawSettings();
-    if (!settings || !settings.geminiApiKey) {
-      throw new BadRequestException('Gemini API Key is missing.');
-    }
-
-    if (
-      settings.geminiApiKey.toLowerCase().includes('mock') ||
-      settings.geminiApiKey.toLowerCase().includes('test')
-    ) {
-      await this.db.systemSettings.update({
-        where: { id: 'default' },
-        data: {
-          geminiStatus: 'CONNECTED',
-          geminiLastVerified: new Date(),
-        },
-      });
-      return {
-        success: true,
-        message: 'Gemini connection verified successfully (Mock Mode).',
-      };
+    if (!settings?.googleServiceAccountJson) {
+      throw new BadRequestException('Google service account JSON is missing.');
     }
 
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${settings.geminiApiKey}`,
+      await this.getGoogleAccessTokenFromServiceAccount(
+        settings.googleServiceAccountJson,
       );
-
-      const data = await response.json();
-      if (!response.ok) {
-        await this.db.systemSettings.update({
-          where: { id: 'default' },
-          data: { geminiStatus: 'FAILED' },
-        });
-        return {
-          success: false,
-          error: data.error?.message || response.statusText,
-        };
-      }
 
       await this.db.systemSettings.update({
         where: { id: 'default' },
@@ -310,7 +283,7 @@ export class SettingsService {
 
       return {
         success: true,
-        message: 'Gemini connection verified successfully.',
+        message: 'Google service account verified successfully.',
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
@@ -319,7 +292,7 @@ export class SettingsService {
       });
       return {
         success: false,
-        error: error.message || 'Unknown Gemini error',
+        error: error.message || 'Unknown Google credential error',
       };
     }
   }
@@ -330,8 +303,8 @@ export class SettingsService {
     text?: string;
   }) {
     const settings = await this.getRawSettings();
-    if (!settings || !settings.geminiApiKey) {
-      throw new BadRequestException('Gemini API Key is missing.');
+    if (!settings?.googleServiceAccountJson) {
+      throw new BadRequestException('Google service account JSON is missing.');
     }
 
     const voice = dto.voice?.trim();
@@ -339,88 +312,143 @@ export class SettingsService {
       throw new BadRequestException('Voice is required.');
     }
 
-    if (
-      settings.geminiApiKey.toLowerCase().includes('mock') ||
-      settings.geminiApiKey.toLowerCase().includes('test')
-    ) {
-      throw new BadRequestException(
-        'Gemini voice preview requires a real Gemini API key.',
-      );
-    }
-
-    const languageHint =
-      dto.language === 'en-IN'
-        ? ' Speak naturally in Indian English with a clear, professional accent.'
-        : dto.language
-          ? ` Speak naturally in language code ${dto.language}.`
-          : '';
+    const accessToken = await this.getGoogleAccessTokenFromServiceAccount(
+      settings.googleServiceAccountJson,
+    );
+    const languageCode = this.normalizeLanguageCode(dto.language) || 'en-IN';
+    const voiceName = this.resolveGoogleVoiceName(voice, languageCode);
     const text =
       dto.text?.trim() ||
-      `Say warmly:${languageHint} Hello, this is a quick ReachConvert voice preview.`;
+      'Hello, this is a quick ReachConvert voice preview.';
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${settings.geminiApiKey}`,
+      'https://texttospeech.googleapis.com/v1/text:synthesize',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: voice,
-                },
-              },
-            },
+          input: { text },
+          voice: {
+            languageCode,
+            name: voiceName,
+          },
+          audioConfig: {
+            audioEncoding: 'MP3',
+            speakingRate: languageCode === 'hi-IN' ? 0.96 : 1.02,
+            pitch: 0,
           },
         }),
       },
     );
 
     const data = await response.json().catch(() => null);
-    if (!response.ok) {
+    if (!response.ok || !data?.audioContent) {
       throw new BadRequestException(
-        data?.error?.message || 'Gemini voice preview failed.',
+        data?.error?.message || 'Google voice preview failed.',
       );
-    }
-
-    const inlineData =
-      data?.candidates?.[0]?.content?.parts?.find(
-        (part: any) => part.inlineData,
-      )?.inlineData || data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-    const audioBase64 = inlineData?.data;
-    if (!audioBase64) {
-      throw new BadRequestException('Gemini did not return preview audio.');
     }
 
     return {
       success: true,
-      voice,
-      mimeType: 'audio/wav',
-      audioDataUrl: `data:audio/wav;base64,${this.toWaveBase64(audioBase64)}`,
+      voice: voiceName,
+      mimeType: 'audio/mpeg',
+      audioDataUrl: `data:audio/mpeg;base64,${data.audioContent}`,
     };
   }
 
-  private toWaveBase64(pcmBase64: string) {
-    const pcm = Buffer.from(pcmBase64, 'base64');
-    const header = Buffer.alloc(44);
-
-    header.write('RIFF', 0);
-    header.writeUInt32LE(36 + pcm.length, 4);
-    header.write('WAVE', 8);
-    header.write('fmt ', 12);
-    header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20);
-    header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(GEMINI_TTS_SAMPLE_RATE, 24);
-    header.writeUInt32LE(GEMINI_TTS_SAMPLE_RATE * 2, 28);
-    header.writeUInt16LE(2, 32);
-    header.writeUInt16LE(16, 34);
-    header.write('data', 36);
-    header.writeUInt32LE(pcm.length, 40);
-
-    return Buffer.concat([header, pcm]).toString('base64');
+  private normalizeLanguageCode(language?: string) {
+    const normalized = language?.trim();
+    if (normalized === 'hi') return 'hi-IN';
+    if (normalized === 'en') return 'en-US';
+    return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
+      ? normalized
+      : undefined;
   }
+
+  private resolveGoogleVoiceName(voice: string, languageCode: string) {
+    const normalizedVoice = voice.trim();
+    const withoutProvider = normalizedVoice.startsWith('google:')
+      ? normalizedVoice.slice('google:'.length)
+      : normalizedVoice;
+
+    if (/^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(withoutProvider)) {
+      return withoutProvider;
+    }
+
+    const rawName = withoutProvider.split('-').at(-1) || 'Puck';
+    const formattedName = `${rawName.charAt(0).toUpperCase()}${rawName
+      .slice(1)
+      .toLowerCase()}`;
+
+    return `${languageCode}-Chirp3-HD-${formattedName || 'Puck'}`;
+  }
+
+  private async getGoogleAccessTokenFromServiceAccount(
+    serviceAccountJson: string,
+  ) {
+    let credentials: any;
+
+    try {
+      credentials = JSON.parse(serviceAccountJson);
+    } catch {
+      throw new BadRequestException('Google service account JSON is invalid JSON.');
+    }
+
+    const clientEmail = String(credentials?.client_email || '').trim();
+    const privateKey = String(credentials?.private_key || '').trim();
+
+    if (!clientEmail || !privateKey) {
+      throw new BadRequestException(
+        'Google service account JSON must include client_email and private_key.',
+      );
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const header = this.base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = this.base64UrlEncode(
+      JSON.stringify({
+        iss: clientEmail,
+        scope: GOOGLE_CLOUD_SCOPE,
+        aud: 'https://oauth2.googleapis.com/token',
+        iat: now,
+        exp: now + 3600,
+      }),
+    );
+    const unsignedJwt = `${header}.${payload}`;
+    const signature = createSign('RSA-SHA256').update(unsignedJwt).sign(privateKey);
+    const assertion = `${unsignedJwt}.${this.base64UrlEncode(signature)}`;
+
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }),
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.access_token) {
+      throw new BadRequestException(
+        data?.error_description ||
+          data?.error ||
+          response.statusText ||
+          'Google OAuth token request failed.',
+      );
+    }
+
+    return String(data.access_token);
+  }
+
+  private base64UrlEncode(value: string | Buffer) {
+    return Buffer.from(value)
+      .toString('base64')
+      .replace(/=/g, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+  }
+
 }
