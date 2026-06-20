@@ -1292,9 +1292,21 @@ Return ONLY valid JSON with exactly these fields:
   async renderGoogleSpeechAudio(audioId: string) {
     const cached = this.googleSpeechCache.get(audioId);
     if (!cached) {
+      this.logger.warn(
+        'Twilio TTS audio cache miss for audioId=' +
+          audioId +
+          '; cacheSize=' +
+          String(this.googleSpeechCache.size),
+      );
       throw new BadRequestException('Google speech audio was not found.');
     }
 
+    this.logger.debug(
+      'Twilio TTS audio cache hit for audioId=' +
+        audioId +
+        '; bytes=' +
+        String(cached.audio.length),
+    );
     return cached.audio;
   }
 
@@ -1482,6 +1494,7 @@ Return ONLY valid JSON with exactly these fields:
     callId: string,
   ) {
     const language = this.normalizeLanguageCode(campaign?.language);
+    const gatherLanguage = this.resolveTwilioGatherLanguage(language);
     const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
     const speech = await this.buildTwilioSpeechNoun(
       campaign,
@@ -1489,7 +1502,7 @@ Return ONLY valid JSON with exactly these fields:
       language,
     );
 
-    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="auto" timeout="4">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
+    return `<Response><Gather input="speech" action="${action}" method="POST"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="4">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
   private async buildTwilioSayHangup(message: string, campaign?: any) {
@@ -1519,7 +1532,16 @@ Return ONLY valid JSON with exactly these fields:
         language,
       );
       if (audioId) {
-        return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
+        const audioUrl = this.getTwilioTtsUrl(audioId);
+        this.logger.debug(
+          'Prepared HD Twilio TTS audio: audioId=' +
+            audioId +
+            ', url=' +
+            audioUrl +
+            ', textLength=' +
+            String(message.length),
+        );
+        return `<Play>${this.escapeXml(audioUrl)}</Play>`;
       }
     }
 
@@ -2219,6 +2241,17 @@ JSON Schema:
       attributes.push(` language="${this.escapeXml(language)}"`);
     }
     return attributes.length ? attributes.join('') : '';
+  }
+
+  private resolveTwilioGatherLanguage(language?: string) {
+    const normalized = this.normalizeLanguageCode(language);
+    if (!normalized) return undefined;
+
+    if (normalized === 'en-IN') {
+      return 'en-US';
+    }
+
+    return normalized;
   }
 
   private async getGoogleTtsAccessToken() {
