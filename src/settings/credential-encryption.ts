@@ -33,7 +33,7 @@ function isSystemCredentialField(key: string): key is SystemCredentialField {
   return SYSTEM_CREDENTIAL_FIELDS.includes(key as SystemCredentialField);
 }
 
-export function isEncryptedCredential(value: unknown) {
+export function isEncryptedCredential(value: unknown): value is string {
   return (
     typeof value === 'string' && value.startsWith(ENCRYPTED_CREDENTIAL_PREFIX)
   );

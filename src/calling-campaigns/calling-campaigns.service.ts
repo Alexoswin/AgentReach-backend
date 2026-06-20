@@ -41,6 +41,7 @@ type GoogleTtsAccessToken = {
 };
 
 const GOOGLE_TTS_TIMEOUT_MS = 3500;
+const TWILIO_HD_PLAY_ENABLED = false;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 
 type CallingCampaignGenerationJob = {
@@ -818,60 +819,71 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   async handleTwilioAnswer(callId: string, body: any = {}) {
-    const call = await this.getCallWithContext(callId);
-    if (!call) {
-      return this.buildTwilioSayHangup('Sorry, this call could not be found.');
-    }
+    try {
+      const call = await this.getCallWithContext(callId);
+      if (!call) {
+        return this.buildTwilioSayHangup('Sorry, this call could not be found.');
+      }
 
-    const botProfile = this.buildBotProfile(call.campaign);
-    const opening = this.buildLiveOpeningScript(
-      call.campaign,
-      call.contact,
-      botProfile,
-    );
-    const scripts = this.ensureScripts(call.scripts);
-    const nextScripts = scripts.length
-      ? scripts
-      : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
-    const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
+      const botProfile = this.buildBotProfile(call.campaign);
+      const opening = this.buildLiveOpeningScript(
+        call.campaign,
+        call.contact,
+        botProfile,
+      );
+      const scripts = this.ensureScripts(call.scripts);
+      const nextScripts = scripts.length
+        ? scripts
+        : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
+      const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
 
-    await this.db.callHistory.update({
-      where: { id: callId },
-      data: {
-        provider: 'TWILIO',
-        providerCallSid: body.CallSid || call.providerCallSid || null,
-        providerStatus: body.CallStatus || call.providerStatus || 'answered',
-        status: 'IN_PROGRESS',
-        outcome: 'IN_PROGRESS',
-        sessionStatus: 'connected',
-        startedAt,
-        connectedAt: call.connectedAt || new Date(),
-        selectedLanguage: call.campaign.language ?? null,
-        selectedVoice: call.campaign.voice ?? null,
-        scripts: nextScripts,
-        transcript: this.scriptsToTranscript(nextScripts),
-        summary: `${botProfile.name} opened a live AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
-        topicsCovered: this.buildTopicsCovered(call.campaign, botProfile),
-        analysis: {
-          intent: 'live_ai_call_started',
-          agentPersona: {
-            name: botProfile.name,
-            role: botProfile.role,
-            personality: botProfile.personality,
+      await this.db.callHistory.update({
+        where: { id: callId },
+        data: {
+          provider: 'TWILIO',
+          providerCallSid: body.CallSid || call.providerCallSid || null,
+          providerStatus: body.CallStatus || call.providerStatus || 'answered',
+          status: 'IN_PROGRESS',
+          outcome: 'IN_PROGRESS',
+          sessionStatus: 'connected',
+          startedAt,
+          connectedAt: call.connectedAt || new Date(),
+          selectedLanguage: call.campaign.language ?? null,
+          selectedVoice: call.campaign.voice ?? null,
+          scripts: nextScripts,
+          transcript: this.scriptsToTranscript(nextScripts),
+          summary: `${botProfile.name} opened a live AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
+          topicsCovered: this.buildTopicsCovered(call.campaign, botProfile),
+          analysis: {
+            intent: 'live_ai_call_started',
+            agentPersona: {
+              name: botProfile.name,
+              role: botProfile.role,
+              personality: botProfile.personality,
+            },
+            guardrails: this.buildConversationGuardrails(
+              call.campaign,
+              botProfile,
+            ),
           },
-          guardrails: this.buildConversationGuardrails(
-            call.campaign,
-            botProfile,
-          ),
+          timestamp: new Date(),
         },
-        timestamp: new Date(),
-      },
-    });
+      });
 
-    return this.buildTwilioGather(call.campaign, opening, callId);
+      return this.buildTwilioGather(call.campaign, opening, callId);
+    } catch (error) {
+      this.logger.error(
+        `Twilio answer webhook failed for call ${callId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      return this.buildTwilioSayHangup(
+        'Sorry, we had a technical issue and need to end this call for now.',
+      );
+    }
   }
 
   async handleTwilioResponse(callId: string, body: any = {}) {
+    try {
     const call = await this.getCallWithContext(callId);
     if (!call) {
       return this.buildTwilioSayHangup('Sorry, this call could not be found.');
@@ -977,6 +989,15 @@ Return ONLY valid JSON with exactly these fields:
     });
 
     return this.buildTwilioGather(call.campaign, generation.reply, callId);
+      } catch (error) {
+      this.logger.error(
+        `Twilio response webhook failed for call ${callId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      return this.buildTwilioSayHangup(
+        'Sorry, we had a technical issue and need to end this call for now.',
+      );
+    }
   }
 
   async handleTwilioStatus(callId: string, body: any = {}) {
@@ -1444,7 +1465,7 @@ Return ONLY valid JSON with exactly these fields:
     message: string,
     language?: string,
   ) {
-    if (campaign?.voiceQuality === 'hd') {
+    if (campaign?.voiceQuality === 'hd' && TWILIO_HD_PLAY_ENABLED) {
       const googleTtsVoice = this.resolveGoogleTtsVoice(
         campaign?.voice,
         language,
@@ -1457,6 +1478,12 @@ Return ONLY valid JSON with exactly these fields:
       if (audioId) {
         return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
       }
+    }
+
+    if (campaign?.voiceQuality === 'hd' && !TWILIO_HD_PLAY_ENABLED) {
+      this.logger.warn(
+        'HD Play mode is disabled for Twilio live calls; using Twilio Say fallback to prevent application errors.',
+      );
     }
 
     return this.buildTwilioSayNoun(campaign, message, language);

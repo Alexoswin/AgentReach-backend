@@ -262,15 +262,17 @@ export class SettingsService {
     }
   }
 
-  async testGemini() {
+  async testGemini(payload: { googleServiceAccountJson?: string } = {}) {
     const settings = await this.getRawSettings();
-    if (!settings?.googleServiceAccountJson) {
+    const providedJson = payload.googleServiceAccountJson?.trim();
+    const serviceAccountJson = providedJson || settings?.googleServiceAccountJson || '';
+    if (!serviceAccountJson) {
       throw new BadRequestException('Google service account JSON is missing.');
     }
 
     try {
       await this.getGoogleAccessTokenFromServiceAccount(
-        settings.googleServiceAccountJson,
+        serviceAccountJson,
       );
 
       await this.db.systemSettings.update({
