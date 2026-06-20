@@ -171,3 +171,120 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  function createService(googleServiceAccountJson = '') {
+    const service = Object.create(CallingCampaignsService.prototype) as any;
+    service.googleSpeechCache = new Map();
+    service.logger = { warn: jest.fn() };
+    service.configService = {
+      get: jest.fn(),
+    };
+    service.db = {
+      systemSettings: {
+        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
+      },
+    };
+    service.aiCallingBotsService = {
+      buildCallingContext: jest.fn().mockResolvedValue(''),
+    };
+    return service;
+  }
+
+  function createCall() {
+    return {
+      campaign: {
+        objective: 'Book a demo',
+        prompt: 'Focus on demo qualification.',
+        language: 'en-IN',
+        botName: 'Alex',
+        botRole: 'calling specialist',
+        botPersonality: 'warm and concise',
+        botKnowledge: 'Product details',
+        botRules: 'Keep responses short',
+        botObjectionHandling: 'Offer callback',
+        aiCallingBotId: 'bot-1',
+      },
+      contact: {
+        firstName: 'Sam',
+        lastName: 'Lee',
+        company: 'Acme',
+      },
+    };
+  }
+
+  it('uses Vertex AI for live calling turn generation when Google JSON is configured', async () => {
+    const service = createService(
+      JSON.stringify({
+        client_email: 'svc@example.iam.gserviceaccount.com',
+        private_key: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
+        project_id: 'reachconvert-prod',
+      }),
+    );
+    service.googleTtsAccessToken = {
+      accessToken: 'google-oauth-token',
+      expiresAt: Date.now() + 3600 * 1000,
+    };
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    reply: 'Absolutely, does tomorrow afternoon work for you?',
+                    shouldEnd: false,
+                    endReason: '',
+                    collectedData: {},
+                    sentimentScore: 7,
+                    keyOutcomes: 'Asked for demo slot',
+                    topicsCovered: ['Objective'],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    } as any);
+
+    const result = await service.generateNextCallingTurn(
+      createCall(),
+      'Yes, tell me more.',
+      [],
+    );
+
+    expect(result.reply).toContain('tomorrow afternoon');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('aiplatform.googleapis.com'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('falls back safely when Google service account JSON is missing', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+
+    const result = await service.generateNextCallingTurn(
+      createCall(),
+      'Can you call later?',
+      [],
+    );
+
+    expect(result.reply).toBeTruthy();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
+    );
+  });
+});

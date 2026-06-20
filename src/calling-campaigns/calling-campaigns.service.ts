@@ -41,8 +41,15 @@ type GoogleTtsAccessToken = {
 };
 
 const GOOGLE_TTS_TIMEOUT_MS = 3500;
-const TWILIO_HD_PLAY_ENABLED = false;
+const VERTEX_TWILIO_TIMEOUT_MS = 4500;
+const TWILIO_HD_PLAY_ENABLED = true;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const VERTEX_LOCATION = 'global';
+const DEFAULT_VERTEX_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash-001',
+  'gemini-1.5-flash-002',
+];
 
 type CallingCampaignGenerationJob = {
   id: string;
@@ -516,17 +523,28 @@ Return ONLY valid JSON with exactly these fields:
           },
         });
 
+        const answerWebhook = this.getTwilioWebhookUrl('answer', call.id);
+        const statusWebhook = this.getTwilioWebhookUrl('status', call.id);
+        const recordingWebhook = this.getTwilioWebhookUrl('recording', call.id);
+        this.logger.debug(
+          'Twilio webhooks for call ' +
+            call.id +
+            ': answer=' +
+            answerWebhook +
+            ', status=' +
+            statusWebhook +
+            ', recording=' +
+            recordingWebhook,
+        );
+
         const result = await this.createTwilioCall({
           accountSid: settings.twilioAccountSid || '',
           authToken: settings.twilioAuthToken || '',
           from: settings.twilioPhoneNumber || '',
           to: contact.phoneNumber,
-          url: this.getTwilioWebhookUrl('answer', call.id),
-          statusCallback: this.getTwilioWebhookUrl('status', call.id),
-          recordingStatusCallback: this.getTwilioWebhookUrl(
-            'recording',
-            call.id,
-          ),
+          url: answerWebhook,
+          statusCallback: statusWebhook,
+          recordingStatusCallback: recordingWebhook,
         });
 
         if (result.ok) {
@@ -820,6 +838,14 @@ Return ONLY valid JSON with exactly these fields:
 
   async handleTwilioAnswer(callId: string, body: any = {}) {
     try {
+      this.logger.debug(
+        'Twilio answer webhook received for call ' +
+          callId +
+          ': sid=' +
+          (body?.CallSid || 'unknown') +
+          ', status=' +
+          (body?.CallStatus || 'unknown'),
+      );
       const call = await this.getCallWithContext(callId);
       if (!call) {
         return this.buildTwilioSayHangup('Sorry, this call could not be found.');
@@ -884,7 +910,16 @@ Return ONLY valid JSON with exactly these fields:
 
   async handleTwilioResponse(callId: string, body: any = {}) {
     try {
-    const call = await this.getCallWithContext(callId);
+      this.logger.debug(
+        'Twilio response webhook received for call ' +
+          callId +
+          ': sid=' +
+          (body?.CallSid || 'unknown') +
+          ', hasSpeech=' +
+          String(Boolean(String(body?.SpeechResult || '').trim())),
+      );
+
+      const call = await this.getCallWithContext(callId);
     if (!call) {
       return this.buildTwilioSayHangup('Sorry, this call could not be found.');
     }
@@ -988,8 +1023,8 @@ Return ONLY valid JSON with exactly these fields:
       },
     });
 
-    return this.buildTwilioGather(call.campaign, generation.reply, callId);
-      } catch (error) {
+      return this.buildTwilioGather(call.campaign, generation.reply, callId);
+    } catch (error) {
       this.logger.error(
         `Twilio response webhook failed for call ${callId}`,
         error instanceof Error ? error.stack : String(error),
@@ -1002,6 +1037,14 @@ Return ONLY valid JSON with exactly these fields:
 
   async handleTwilioStatus(callId: string, body: any = {}) {
     const status = body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
+    this.logger.debug(
+      'Twilio status webhook received for call ' +
+        callId +
+        ': sid=' +
+        (body?.CallSid || 'unknown') +
+        ', status=' +
+        status,
+    );
     const data: Record<string, unknown> = {
       provider: 'TWILIO',
       providerCallSid: body.CallSid || undefined,
@@ -1446,7 +1489,7 @@ Return ONLY valid JSON with exactly these fields:
       language,
     );
 
-    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="1" timeout="4" enhanced="true">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
+    return `<Response><Gather input="speech" action="${action}" method="POST"${language ? ` language="${this.escapeXml(language)}"` : ''} speechTimeout="auto" timeout="4">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
   private async buildTwilioSayHangup(message: string, campaign?: any) {
@@ -1478,12 +1521,6 @@ Return ONLY valid JSON with exactly these fields:
       if (audioId) {
         return `<Play>${this.escapeXml(this.getTwilioTtsUrl(audioId))}</Play>`;
       }
-    }
-
-    if (campaign?.voiceQuality === 'hd' && !TWILIO_HD_PLAY_ENABLED) {
-      this.logger.warn(
-        'HD Play mode is disabled for Twilio live calls; using Twilio Say fallback to prevent application errors.',
-      );
     }
 
     return this.buildTwilioSayNoun(campaign, message, language);
@@ -1770,12 +1807,14 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       4,
     );
-
-    if (
-      !settings?.openRouterApiKey ||
-      settings.openRouterApiKey.toLowerCase().includes('mock') ||
-      settings.openRouterApiKey.toLowerCase().includes('test')
-    ) {
+    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
+    const serviceAccount = this.parseGoogleServiceAccountCredentials(
+      serviceAccountJson,
+    );
+    if (!serviceAccount) {
+      this.logger.warn(
+        'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
+      );
       return fallback;
     }
 
@@ -1839,41 +1878,88 @@ JSON Schema:
   "topicsCovered": ["Objective"]
 }`;
 
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      VERTEX_TWILIO_TIMEOUT_MS,
+    );
+
     try {
-      const response = await fetch(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${settings.openRouterApiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://reachconvert.com',
-            'X-Title': 'ReachConvert',
+      const accessToken = await this.getGoogleTtsAccessToken();
+      if (!accessToken) {
+        this.logger.warn(
+          'Google service account auth is unavailable for Vertex AI live calling; using scripted fallback response.',
+        );
+        return fallback;
+      }
+
+      const configuredModel =
+        this.configService.get<string>('VERTEX_AI_MODEL')?.trim() ||
+        this.configService.get<string>('GOOGLE_VERTEX_MODEL')?.trim() ||
+        '';
+      const candidateModels = [
+        ...(configuredModel ? [configuredModel] : []),
+        ...DEFAULT_VERTEX_MODELS,
+      ].filter(Boolean);
+      const uniqueModels = Array.from(new Set(candidateModels));
+      let lastFailureReason = 'unknown error';
+
+      for (const model of uniqueModels) {
+        const response = await fetch(
+          `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(VERTEX_LOCATION)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0.4,
+                maxOutputTokens: 450,
+                responseMimeType: 'application/json',
+              },
+            }),
           },
-          body: JSON.stringify({
-            model: resolveOpenRouterModel(settings.openRouterModel),
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' },
-            temperature: 0.4,
-            max_tokens: 450,
-          }),
-        },
-      );
-      const data = await response.json().catch(() => null);
-      if (!response.ok) return fallback;
-      const content = data?.choices?.[0]?.message?.content;
-      if (!content) return fallback;
-      return this.normalizeConversationGeneration(
-        this.parseJsonObject(content),
-        fallback,
-      );
-    } catch (error) {
+        );
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          lastFailureReason =
+            data?.error?.message || response.statusText || 'request failed';
+          continue;
+        }
+        const content = data?.candidates?.[0]?.content?.parts
+          ?.map((part: any) =>
+            typeof part?.text === 'string' ? part.text : '',
+          )
+          .join('\n')
+          .trim();
+        if (!content) {
+          lastFailureReason = 'empty model response';
+          continue;
+        }
+        return this.normalizeConversationGeneration(
+          this.parseJsonObject(content),
+          fallback,
+        );
+      }
+
       this.logger.warn(
-        `AI calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Vertex AI live calling turn generation failed; using scripted fallback response. Reason: ${lastFailureReason}`,
       );
       return fallback;
+    } catch (error) {
+      this.logger.warn(
+        `Vertex AI live calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return fallback;
+    } finally {
+      clearTimeout(timeout);
     }
   }
+
 
   private normalizeConversationGeneration(
     value: any,
@@ -2222,6 +2308,22 @@ JSON Schema:
       .replace(/=/g, '')
       .replace(/\+/g, '-')
       .replace(/\//g, '_');
+  }
+
+  private parseGoogleServiceAccountCredentials(serviceAccountJson?: string) {
+    if (!serviceAccountJson) return null;
+    try {
+      const credentials = JSON.parse(serviceAccountJson);
+      const clientEmail = String(credentials?.client_email || '').trim();
+      const privateKey = String(credentials?.private_key || '').trim();
+      const projectId = String(credentials?.project_id || '').trim();
+      if (!clientEmail || !privateKey || !projectId) {
+        return null;
+      }
+      return { clientEmail, privateKey, projectId };
+    } catch {
+      return null;
+    }
   }
 
   private normalizeCampaignVoice(voice?: string, language?: string) {
