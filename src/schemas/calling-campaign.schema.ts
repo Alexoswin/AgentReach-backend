@@ -22,6 +22,9 @@ export class CallingCampaign {
   prompt?: string;
 
   @Prop()
+  voiceQuality?: string;
+
+  @Prop()
   voice?: string;
 
   @Prop()

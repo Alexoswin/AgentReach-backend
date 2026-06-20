@@ -87,6 +87,7 @@ export class CallingCampaignsService {
       description: c.description,
       objective: c.objective,
       prompt: c.prompt,
+      voiceQuality: c.voiceQuality,
       voice: c.voice,
       language: c.language,
       aiCallingBotId: c.aiCallingBotId,
@@ -1465,13 +1466,11 @@ Return ONLY valid JSON with exactly these fields:
     message: string,
     language?: string,
   ) {
-    const googleTtsVoice = this.resolveGoogleTtsVoice(
-      campaign?.voice,
-      language,
-    );
-    const apiKey = await this.getGoogleTtsApiKey();
-
-    if (apiKey) {
+    if (campaign?.voiceQuality === 'hd') {
+      const googleTtsVoice = this.resolveGoogleTtsVoice(
+        campaign?.voice,
+        language,
+      );
       const audioId = this.registerGoogleSpeech(
         message,
         googleTtsVoice,

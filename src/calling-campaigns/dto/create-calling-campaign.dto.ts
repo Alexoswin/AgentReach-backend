@@ -30,6 +30,11 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   prompt?: string;
 
+  @ApiProperty({ required: false, example: 'generic' })
+  @IsString()
+  @IsOptional()
+  voiceQuality?: string;
+
   @ApiProperty({ required: false, example: 'sarah-female-us' })
   @IsString()
   @IsOptional()
