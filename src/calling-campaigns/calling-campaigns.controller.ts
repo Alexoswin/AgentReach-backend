@@ -7,6 +7,8 @@ import {
   Body,
   Param,
   Header,
+  Query,
+  HttpCode,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -59,32 +61,66 @@ export class CallingCampaignsController {
 
   @Post('twilio/answer/:callId')
   @Public()
+  @HttpCode(200)
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Twilio AI calling answer webhook' })
   async twilioAnswer(@Param('callId') callId: string, @Body() body: any) {
     return this.callingCampaignsService.handleTwilioAnswer(callId, body);
   }
 
+  @Get('twilio/answer/:callId')
+  @Public()
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Twilio AI calling answer webhook (GET fallback)' })
+  async twilioAnswerGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.callingCampaignsService.handleTwilioAnswer(callId, query);
+  }
+
   @Post('twilio/respond/:callId')
   @Public()
+  @HttpCode(200)
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Twilio AI calling speech response webhook' })
   async twilioRespond(@Param('callId') callId: string, @Body() body: any) {
     return this.callingCampaignsService.handleTwilioResponse(callId, body);
   }
 
+  @Get('twilio/respond/:callId')
+  @Public()
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Twilio AI calling speech response webhook (GET fallback)' })
+  async twilioRespondGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.callingCampaignsService.handleTwilioResponse(callId, query);
+  }
+
   @Post('twilio/status/:callId')
   @Public()
+  @HttpCode(200)
   @ApiOperation({ summary: 'Twilio AI calling status webhook' })
   async twilioStatus(@Param('callId') callId: string, @Body() body: any) {
     return this.callingCampaignsService.handleTwilioStatus(callId, body);
   }
 
+  @Get('twilio/status/:callId')
+  @Public()
+  @ApiOperation({ summary: 'Twilio AI calling status webhook (GET fallback)' })
+  async twilioStatusGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.callingCampaignsService.handleTwilioStatus(callId, query);
+  }
+
   @Post('twilio/recording/:callId')
   @Public()
+  @HttpCode(200)
   @ApiOperation({ summary: 'Twilio AI calling recording webhook' })
   async twilioRecording(@Param('callId') callId: string, @Body() body: any) {
     return this.callingCampaignsService.handleTwilioRecording(callId, body);
+  }
+
+  @Get('twilio/recording/:callId')
+  @Public()
+  @ApiOperation({ summary: 'Twilio AI calling recording webhook (GET fallback)' })
+  async twilioRecordingGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.callingCampaignsService.handleTwilioRecording(callId, query);
   }
 
   @Get('twilio/tts/:audioId')

@@ -360,12 +360,12 @@ Return ONLY valid JSON with exactly these fields:
       this.logger.warn(`Launch failed: calling campaign ${id} not found`);
       throw new BadRequestException('Calling campaign not found');
     }
-
-    if (campaign.status === 'RUNNING') {
-      this.logger.warn(`Launch blocked for campaign ${id}: already running`);
+    if (campaign.status === 'RUNNING' || campaign.status === 'LAUNCHING') {
+      this.logger.warn(
+        `Launch blocked for campaign ${id}: status is ${campaign.status}`,
+      );
       throw new BadRequestException('Calling campaign is already running');
     }
-
     const settings = decryptSystemSettings(
       await this.db.systemSettings.findUnique({
         where: { id: 'default' },
@@ -409,22 +409,46 @@ Return ONLY valid JSON with exactly these fields:
       this.assertPublicTwilioWebhookUrl();
     }
 
+    // Use LAUNCHING as an entry-lock so concurrent requests are rejected
+    // before we finish queueing. Moved to RUNNING once Twilio accepts calls.
     await this.db.callingCampaign.update({
       where: { id },
-      data: { status: 'RUNNING' },
+      data: { status: 'LAUNCHING' },
     });
 
     let twilioQueueResult: TwilioQueueResult | null = null;
-    if (hasTwilio) {
-      twilioQueueResult = await this.runTwilioOutboundCalls(
-        campaign.id,
-        settings,
+    try {
+      if (hasTwilio) {
+        // Promote to RUNNING now that we are actively queueing
+        await this.db.callingCampaign.update({
+          where: { id },
+          data: { status: 'RUNNING' },
+        });
+        twilioQueueResult = await this.runTwilioOutboundCalls(
+          campaign.id,
+          settings,
+        );
+      } else {
+        this.logger.warn(
+          `Campaign ${id} is using simulation because Twilio is not fully connected`,
+        );
+        await this.db.callingCampaign.update({
+          where: { id },
+          data: { status: 'RUNNING' },
+        });
+        this.runCallSimulation(campaign.id);
+      }
+    } catch (err) {
+      // If anything throws before/during queueing, park the campaign as FAILED
+      this.logger.error(
+        `Campaign ${id} failed during launch`,
+        err instanceof Error ? err.stack : String(err),
       );
-    } else {
-      this.logger.warn(
-        `Campaign ${id} is using simulation because Twilio is not fully connected`,
-      );
-      this.runCallSimulation(campaign.id);
+      await this.db.callingCampaign.update({
+        where: { id },
+        data: { status: 'FAILED' },
+      }).catch(() => undefined);
+      throw err;
     }
 
     return {
@@ -593,10 +617,14 @@ Return ONLY valid JSON with exactly these fields:
         }
       }
 
-      await this.db.callingCampaign.update({
-        where: { id: campaignId },
-        data: { status: failed > 0 && placed === 0 ? 'FAILED' : 'COMPLETED' },
-      });
+      // Stay RUNNING — completion is driven by handleTwilioStatus once all calls settle.
+      // Only fail immediately if every call was rejected at the Twilio API level.
+      if (failed > 0 && placed === 0) {
+        await this.db.callingCampaign.update({
+          where: { id: campaignId },
+          data: { status: 'FAILED' },
+        });
+      }
       this.logger.debug(
         `Twilio campaign ${campaignId} finished queueing: ${placed} accepted, ${failed} failed`,
       );
@@ -896,7 +924,14 @@ Return ONLY valid JSON with exactly these fields:
         },
       });
 
-      return this.buildTwilioGather(call.campaign, opening, callId);
+      const twiml = await this.buildTwilioGather(call.campaign, opening, callId);
+      this.logger.debug(
+        'Twilio answer TwiML for call ' +
+          callId +
+          ': ' +
+          twiml,
+      );
+      return twiml;
     } catch (error) {
       this.logger.error(
         `Twilio answer webhook failed for call ${callId}`,
@@ -1043,7 +1078,15 @@ Return ONLY valid JSON with exactly these fields:
         ': sid=' +
         (body?.CallSid || 'unknown') +
         ', status=' +
-        status,
+        status +
+        ', duration=' +
+        String(body?.CallDuration || '') +
+        ', answeredBy=' +
+        String(body?.AnsweredBy || '') +
+        ', errorCode=' +
+        String(body?.ErrorCode || '') +
+        ', errorMessage=' +
+        String(body?.ErrorMessage || ''),
     );
     const data: Record<string, unknown> = {
       provider: 'TWILIO',
@@ -1501,8 +1544,13 @@ Return ONLY valid JSON with exactly these fields:
       message,
       language,
     );
+    const gatherPrompt = this.buildTwilioSayNoun(
+      campaign,
+      'Please speak after the beep.',
+      gatherLanguage || language,
+    );
 
-    return `<Response><Gather input="speech" action="${action}" method="POST"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="8" actionOnEmptyResult="true">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
+    return `<Response>${speech}<Gather input="speech dtmf" action="${action}" method="POST" speechModel="phone_call"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="8" actionOnEmptyResult="true">${gatherPrompt}<Pause length="1"/></Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
   private async buildTwilioSayHangup(message: string, campaign?: any) {
