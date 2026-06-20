@@ -1502,7 +1502,7 @@ Return ONLY valid JSON with exactly these fields:
       language,
     );
 
-    return `<Response><Gather input="speech" action="${action}" method="POST"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="4" actionOnEmptyResult="true">${speech}</Gather></Response>`;
+    return `<Response><Gather input="speech" action="${action}" method="POST"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="8" actionOnEmptyResult="true">${speech}</Gather><Redirect method="POST">${action}</Redirect></Response>`;
   }
 
   private async buildTwilioSayHangup(message: string, campaign?: any) {
