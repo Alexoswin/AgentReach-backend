@@ -9,6 +9,7 @@ import { TokenService } from './token.service';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { RegisterDto } from './dto/register.dto';
 
 const THEME_VALUES = [
   'dark-midnight',
@@ -29,6 +30,36 @@ export class AuthService {
     private db: MongoService,
     private tokenService: TokenService,
   ) {}
+
+  async register(dto: RegisterDto) {
+    const existing = await this.db.user.findUnique({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (existing) {
+      throw new BadRequestException('User with that email already exists');
+    }
+
+    const passwordHash = await hashPassword(dto.password);
+
+    // Auto-generate initials from name
+    const parts = dto.name.trim().split(' ');
+    const initials =
+      parts.length > 1
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : dto.name.slice(0, 2).toUpperCase();
+
+    const user = await this.db.user.create({
+      data: {
+        email: dto.email.toLowerCase(),
+        passwordHash,
+        name: dto.name.trim(),
+        initials,
+      },
+    });
+
+    return this.issueSession(user);
+  }
 
   async login(dto: LoginDto) {
     const user = await this.db.user.findUnique({
