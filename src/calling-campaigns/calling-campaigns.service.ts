@@ -360,12 +360,12 @@ Return ONLY valid JSON with exactly these fields:
       this.logger.warn(`Launch failed: calling campaign ${id} not found`);
       throw new BadRequestException('Calling campaign not found');
     }
-    if (campaign.status === 'RUNNING' || campaign.status === 'LAUNCHING') {
-      this.logger.warn(
-        `Launch blocked for campaign ${id}: status is ${campaign.status}`,
-      );
+
+    if (campaign.status === 'RUNNING') {
+      this.logger.warn(`Launch blocked for campaign ${id}: already running`);
       throw new BadRequestException('Calling campaign is already running');
     }
+
     const settings = decryptSystemSettings(
       await this.db.systemSettings.findUnique({
         where: { id: 'default' },
@@ -409,46 +409,22 @@ Return ONLY valid JSON with exactly these fields:
       this.assertPublicTwilioWebhookUrl();
     }
 
-    // Use LAUNCHING as an entry-lock so concurrent requests are rejected
-    // before we finish queueing. Moved to RUNNING once Twilio accepts calls.
     await this.db.callingCampaign.update({
       where: { id },
-      data: { status: 'LAUNCHING' },
+      data: { status: 'RUNNING' },
     });
 
     let twilioQueueResult: TwilioQueueResult | null = null;
-    try {
-      if (hasTwilio) {
-        // Promote to RUNNING now that we are actively queueing
-        await this.db.callingCampaign.update({
-          where: { id },
-          data: { status: 'RUNNING' },
-        });
-        twilioQueueResult = await this.runTwilioOutboundCalls(
-          campaign.id,
-          settings,
-        );
-      } else {
-        this.logger.warn(
-          `Campaign ${id} is using simulation because Twilio is not fully connected`,
-        );
-        await this.db.callingCampaign.update({
-          where: { id },
-          data: { status: 'RUNNING' },
-        });
-        this.runCallSimulation(campaign.id);
-      }
-    } catch (err) {
-      // If anything throws before/during queueing, park the campaign as FAILED
-      this.logger.error(
-        `Campaign ${id} failed during launch`,
-        err instanceof Error ? err.stack : String(err),
+    if (hasTwilio) {
+      twilioQueueResult = await this.runTwilioOutboundCalls(
+        campaign.id,
+        settings,
       );
-      await this.db.callingCampaign.update({
-        where: { id },
-        data: { status: 'FAILED' },
-      }).catch(() => undefined);
-      throw err;
+    } else {
+      this.logger.warn(
+        `Campaign ${id} is using simulation because Twilio is not fully connected`,
+      );
+      this.runCallSimulation(campaign.id);
     }
 
     return {
