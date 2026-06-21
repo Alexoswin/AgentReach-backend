@@ -318,8 +318,14 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       }),
     } as any);
 
+    const call = createCall();
+    call.campaign.language = 'en-US';
+    call.campaign.voice = 'google:en-US-Chirp3-HD-Puck';
+    call.selectedLanguage = 'en-IN';
+    call.selectedVoice = 'google:en-IN-Chirp3-HD-Puck';
+
     const result = await service.generateNextCallingTurn(
-      createCall(),
+      call,
       'Yes, tell me more.',
       [],
     );
@@ -337,6 +343,8 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(promptText).toContain('IDEAL CONVERSATION PATH');
     expect(promptText).toContain('CALL BEHAVIOR RULES');
     expect(promptText).toContain('OUTPUT REQUIREMENTS');
+    expect(promptText).toContain('Selected language: en-IN');
+    expect(promptText).toContain('Selected voice: google:en-IN-Chirp3-HD-Puck');
     expect(promptText).toContain('You MUST speak and reply in Indian English');
   });
 

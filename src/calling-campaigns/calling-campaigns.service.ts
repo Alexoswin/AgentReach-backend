@@ -2329,12 +2329,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
 
     const transcript = this.scriptsToTranscript(scripts);
-    const campaignLanguage = call.campaign.language || 'en';
-    const languageInstruction = campaignLanguage.startsWith('hi')
-      ? 'You MUST speak and reply ONLY in Hindi (using Devanagari script). Keep the Hindi natural, polite, and conversational, like a real person calling.'
-      : campaignLanguage.startsWith('en-IN')
-        ? 'You MUST speak and reply in Indian English, not US English. Use concise, professional Indian English phrasing and a natural Indian phone-call style while keeping the text understandable internationally.'
-        : 'You MUST speak and reply in English.';
+    const campaignLanguage = this.resolveGoogleVoiceLanguage(
+      call.selectedLanguage || call.campaign.language,
+      call.selectedVoice || call.campaign.voice,
+    );
+    const languageInstruction = this.buildLiveCallLanguageInstruction(
+      campaignLanguage,
+    );
+    const selectedVoice =
+      call.selectedVoice ||
+      this.resolveGoogleTtsVoice(call.campaign.voice, campaignLanguage);
     const idealPath = this.buildLiveCallIdealPath(call.campaign, botProfile);
     const contactName =
       `${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() ||
@@ -2350,7 +2354,8 @@ ROLEPLAY SETUP
 - Actor 2 company: ${call.contact.company || 'Unknown'}
 - Scenario: ${call.campaign.prompt || call.campaign.objective || 'Outbound calling campaign'}
 - Primary objective: ${call.campaign.objective || 'Identify interest and capture the next step.'}
-- Language: ${campaignLanguage}
+- Selected language: ${campaignLanguage}
+- Selected voice: ${selectedVoice}
 
 LANGUAGE RULE
 ${languageInstruction}
@@ -2607,6 +2612,23 @@ Return ONLY valid JSON. No markdown. No extra text.
     return /\b(bye|goodbye|not interested|wrong number|stop calling|remove me|don't call|do not call|no thanks|no thank you)\b/i.test(
       value,
     );
+  }
+
+  private buildLiveCallLanguageInstruction(language?: string) {
+    const normalized = this.normalizeLanguageCode(language);
+    if (normalized === 'hi-IN') {
+      return 'You MUST speak and reply ONLY in Hindi (using Devanagari script). Keep the Hindi natural, polite, and conversational, like a real person calling.';
+    }
+    if (normalized === 'en-IN') {
+      return 'You MUST speak and reply in Indian English. Use concise, professional Indian English phrasing and a natural Indian phone-call style while keeping the text understandable internationally.';
+    }
+    if (normalized === 'en-US') {
+      return 'You MUST speak and reply in American English. Use concise, professional American phone-call phrasing and a natural phone-call style.';
+    }
+    if (normalized) {
+      return `You MUST speak and reply in ${normalized}. Keep it natural, polite, and conversational, like a real person calling.`;
+    }
+    return 'You MUST speak and reply in the campaign language. Keep it natural, polite, and conversational, like a real person calling.';
   }
 
   private async completeTwilioConversation(
