@@ -68,7 +68,9 @@ export function summarizeSnippet(value: string) {
 }
 
 export function compactSentence(value: string, maxLength = 240) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (text.length <= maxLength) return text;
   const shortened = text.slice(0, maxLength - 3);
   const splitAt = Math.max(
@@ -434,7 +436,11 @@ export function sanitizeFallbackReply(value: string) {
   return compact;
 }
 
-export function finalizeReply(llmReply: string, fallback: string, history: string) {
+export function finalizeReply(
+  llmReply: string,
+  fallback: string,
+  history: string,
+) {
   const fallbackReply = sanitizeFallbackReply(fallback);
   const candidate = String(llmReply || '')
     .replace(/\s+/g, ' ')
@@ -504,7 +510,9 @@ export function normalizeConversationGeneration(
         ? value.shouldEnd
         : fallback.shouldEnd,
     endReason:
-      typeof value?.endReason === 'string' ? value.endReason : fallback.endReason,
+      typeof value?.endReason === 'string'
+        ? value.endReason
+        : fallback.endReason,
     collectedData:
       value?.collectedData && typeof value.collectedData === 'object'
         ? value.collectedData
@@ -551,7 +559,11 @@ export function buildFallbackChatReply(
     return `I'm ${bot.name}, your ${bot.role}. I keep things ${bot.personality}, and I can answer your questions one step at a time.${goalLine}`;
   }
 
-  const synthesized = synthesizeBestAnswer(message, results, bot.knowledge || '');
+  const synthesized = synthesizeBestAnswer(
+    message,
+    results,
+    bot.knowledge || '',
+  );
   const safeSynthesized = sanitizeKnowledgeReplySnippet(synthesized, 220);
   if (safeSynthesized) {
     return `${safeSynthesized} ${buildRoleAlignedFollowup(bot, lowered)}`;
@@ -795,7 +807,10 @@ function isProceduralKnowledgeHeading(value?: string) {
   );
 }
 
-function buildKnowledgeQueryTerms(value?: string, referenceText?: string): string[] {
+function buildKnowledgeQueryTerms(
+  value?: string,
+  referenceText?: string,
+): string[] {
   const seen = new Set<string>();
   const referenceTerms: string[] = referenceText
     ? buildKnowledgeQueryTerms(referenceText)
@@ -957,7 +972,12 @@ function selectKnowledgeContinuation(
     hasUsefulKnowledgeSignal(sentence),
   );
   if (!usefulSentences.length) return sentences.slice(0, 2).join(' ');
-  const agentTurns = scripts.filter((script) => script?.speaker === 'agent').length;
-  const start = Math.min(agentTurns, Math.max(usefulSentences.length - 1, 0));
+  const agentTurns = scripts.filter(
+    (script) => script?.speaker === 'agent',
+  ).length;
+  const start = Math.min(
+    agentTurns,
+    Math.max(usefulSentences.length - 1, 0),
+  );
   return usefulSentences.slice(start, start + 2).join(' ');
 }
