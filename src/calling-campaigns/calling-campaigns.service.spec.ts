@@ -856,8 +856,16 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       }),
     });
 
-    await service.generateNextCallingTurn(createCall(), 'Yes, tell me more.', []);
-    await service.generateNextCallingTurn(createCall(), 'Yes, tell me more.', []);
+    await service.generateNextCallingTurn(
+      createCall(),
+      'Yes, tell me more.',
+      [],
+    );
+    await service.generateNextCallingTurn(
+      createCall(),
+      'Yes, tell me more.',
+      [],
+    );
 
     expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(1);
   });
