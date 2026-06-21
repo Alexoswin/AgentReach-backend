@@ -601,10 +601,9 @@ Return ONLY valid JSON with exactly these fields:
 
     return {
       success: true,
-      message:
-        shouldResetForRelaunch
-          ? `Calling campaign relaunched in ${launchMode} mode`
-          : `Calling campaign started in ${launchMode} mode`,
+      message: shouldResetForRelaunch
+        ? `Calling campaign relaunched in ${launchMode} mode`
+        : `Calling campaign started in ${launchMode} mode`,
       twilio: twilioQueueResult,
     };
   }
@@ -715,8 +714,9 @@ Return ONLY valid JSON with exactly these fields:
     const twilioStopped = stopResults.filter(
       (item) => item.attemptedTwilioStop && !item.twilioStopFailed,
     ).length;
-    const twilioFailed = stopResults.filter((item) => item.twilioStopFailed)
-      .length;
+    const twilioFailed = stopResults.filter(
+      (item) => item.twilioStopFailed,
+    ).length;
     const errors = stopResults
       .map((item) => item.error)
       .filter((value): value is string => typeof value === 'string');
@@ -2064,15 +2064,7 @@ Return ONLY valid JSON with exactly these fields:
   private isCallCancellable(call: any) {
     const status = String(call?.status || '').toUpperCase();
     const outcome = String(call?.outcome || '').toUpperCase();
-    return [
-      'PENDING',
-      'QUEUING',
-      'QUEUED',
-      'DIALING',
-      'RINGING',
-      'CONNECTED',
-      'IN_PROGRESS',
-    ].includes(status) ||
+    return (
       [
         'PENDING',
         'QUEUING',
@@ -2081,7 +2073,17 @@ Return ONLY valid JSON with exactly these fields:
         'RINGING',
         'CONNECTED',
         'IN_PROGRESS',
-      ].includes(outcome);
+      ].includes(status) ||
+      [
+        'PENDING',
+        'QUEUING',
+        'QUEUED',
+        'DIALING',
+        'RINGING',
+        'CONNECTED',
+        'IN_PROGRESS',
+      ].includes(outcome)
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -3039,7 +3041,11 @@ ${latestUserSpeech}
         ? value.reply.trim()
         : fallback.reply;
     const compactReply = this.compactForSpeech(reply, 260);
-    const safeReply = this.sanitizeLiveReply(compactReply, fallback.reply, scripts);
+    const safeReply = this.sanitizeLiveReply(
+      compactReply,
+      fallback.reply,
+      scripts,
+    );
     return {
       reply: safeReply,
       shouldEnd:
@@ -3079,7 +3085,9 @@ ${latestUserSpeech}
 
     const recentAgentReplies = scripts
       .filter((script) => script?.speaker === 'agent')
-      .map((script) => this.normalizeReplyForComparison(String(script?.text || '')))
+      .map((script) =>
+        this.normalizeReplyForComparison(String(script?.text || '')),
+      )
       .filter(Boolean)
       .slice(-2);
 
