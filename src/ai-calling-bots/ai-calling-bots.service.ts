@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
 import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
 import { PDFParse } from 'pdf-parse';
+import { randomUUID } from 'crypto';
 
 const EMBEDDING_DIMENSIONS = 384;
 const DEFAULT_CHUNK_SIZE = 900;
@@ -24,6 +25,8 @@ export type GoogleVoiceProfile = {
 
 @Injectable()
 export class AiCallingBotsService {
+  private readonly logger = new Logger(AiCallingBotsService.name);
+
   constructor(private db: MongoService) {}
 
   getGoogleVoiceProfiles(): GoogleVoiceProfile[] {
@@ -93,8 +96,14 @@ export class AiCallingBotsService {
     file: Express.Multer.File,
     dto: TrainAiCallingBotPdfDto = {},
   ) {
+    this.logger.log(
+      `Starting PDF training for bot ${id}; file=${file?.originalname || 'unknown'}; size=${file?.size || 0} bytes`,
+    );
     const parsed = await this.extractPdfTrainingText(file);
     const sourceName = dto.sourceName?.trim() || file.originalname;
+    this.logger.log(
+      `Extracted PDF text for bot ${id}; pages=${parsed.pages}; characters=${parsed.characters}; source=${sourceName}`,
+    );
     const training = await this.train(id, {
       content: parsed.text,
       sourceName,
@@ -126,10 +135,16 @@ export class AiCallingBotsService {
 
     const shouldReplace = dto.replace !== false;
     const trainingBatchId = shouldReplace ? randomUUID() : undefined;
+    this.logger.log(
+      `Training bot ${id}; replace=${shouldReplace}; source=${dto.sourceName || 'manual-training'}; contentLength=${content.length}; chunkSize=${this.clampNumber(dto.chunkSize, 300, 1600, DEFAULT_CHUNK_SIZE)}; chunkOverlap=${this.clampNumber(dto.chunkOverlap, 0, 400, DEFAULT_CHUNK_OVERLAP)}`,
+    );
     const chunks = this.chunkText(
       content,
       this.clampNumber(dto.chunkSize, 300, 1600, DEFAULT_CHUNK_SIZE),
       this.clampNumber(dto.chunkOverlap, 0, 400, DEFAULT_CHUNK_OVERLAP),
+    );
+    this.logger.log(
+      `Bot ${id} training split into ${chunks.length} chunks; batchId=${trainingBatchId || 'append-mode'}`,
     );
 
     for (const [index, chunk] of chunks.entries()) {
@@ -156,6 +171,9 @@ export class AiCallingBotsService {
           'metadata.trainingBatchId': { $ne: trainingBatchId },
         },
       });
+      this.logger.log(
+        `Bot ${id} replacement training completed; old embeddings removed for batchId=${trainingBatchId}`,
+      );
     }
 
     const embeddings = await this.db.aiCallingBotEmbedding.findMany({
@@ -171,6 +189,10 @@ export class AiCallingBotsService {
         lastTrainedAt: new Date(),
       },
     });
+
+    this.logger.log(
+      `Bot ${id} training finished; storedChunks=${embeddings.length}; status=TRAINED`,
+    );
 
     return {
       botId: id,
