@@ -453,6 +453,17 @@ Return ONLY valid JSON with exactly these fields:
     this.logger.debug(
       `Campaign ${id} launch provider check: Twilio status=${settings?.twilioStatus || 'DISCONNECTED'}, from=${settings?.twilioPhoneNumber || 'not configured'}; current mode=${launchMode}`,
     );
+    const launchLanguage = this.resolveGoogleVoiceLanguage(
+      campaign.language,
+      campaign.voice,
+    );
+    const launchVoice = this.resolveGoogleTtsVoice(
+      campaign.voice,
+      launchLanguage,
+    );
+    this.logger.debug(
+      `Campaign ${id} AI calling voice config at launch: language=${launchLanguage}; voice=${launchVoice}; voiceQuality=${campaign.voiceQuality || 'standard'}; rawLanguage=${campaign.language || 'not set'}; rawVoice=${campaign.voice || 'not set'}`,
+    );
 
     const callableCalls = (campaign.calls || []).filter((call: any) =>
       this.hasCallablePhone(call.contact),
@@ -592,6 +603,9 @@ Return ONLY valid JSON with exactly these fields:
         campaign.voice,
         selectedLanguage,
       );
+      this.logger.debug(
+        `Twilio campaign ${campaignId} resolved AI calling voice config: language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${campaign.voiceQuality || 'standard'}; rawLanguage=${campaign.language || 'not set'}; rawVoice=${campaign.voice || 'not set'}`,
+      );
       const batches: (typeof allCalls)[] = [];
       for (let i = 0; i < allCalls.length; i += concurrencyLimit) {
         batches.push(allCalls.slice(i, i + concurrencyLimit));
@@ -610,7 +624,7 @@ Return ONLY valid JSON with exactly these fields:
             }
 
             this.logger.debug(
-              `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
+              `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}; language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${campaign.voiceQuality || 'standard'}`,
             );
             const botProfile = this.buildBotProfile(campaign);
             const openingScript = this.buildLiveOpeningScript(
@@ -1022,12 +1036,14 @@ Return ONLY valid JSON with exactly these fields:
         : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
       const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
       const selectedLanguage = this.resolveGoogleVoiceLanguage(
-        call.campaign.language,
-        call.campaign.voice,
+        call.selectedLanguage || call.campaign.language,
+        call.selectedVoice || call.campaign.voice,
       );
-      const selectedVoice = this.resolveGoogleTtsVoice(
-        call.campaign.voice,
-        selectedLanguage,
+      const selectedVoice =
+        call.selectedVoice ||
+        this.resolveGoogleTtsVoice(call.campaign.voice, selectedLanguage);
+      this.logger.debug(
+        `Twilio answer voice config for call ${callId}: language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${call.campaign.voiceQuality || 'standard'}; storedLanguage=${call.selectedLanguage || 'not set'}; storedVoice=${call.selectedVoice || 'not set'}; campaignLanguage=${call.campaign.language || 'not set'}; campaignVoice=${call.campaign.voice || 'not set'}`,
       );
 
       await this.db.callHistory.update({
@@ -2232,6 +2248,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     call: any,
     botProfile: any,
     userTurns: number,
+    latestUserSpeech: string,
   ) {
     const firstName = call.contact.firstName || 'there';
     const scenario = this.detectCallingScenario(call.campaign, botProfile);
@@ -2249,6 +2266,42 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       const automotiveContext = scenario.isTata
         ? 'from Tata Motors about the new Tata Sierra'
         : `about ${objective}`;
+      const asksAboutPrice =
+        /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis)\b/i.test(
+          latestUserSpeech,
+        );
+      const asksAboutFeatures =
+        /\b(feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology)\b/i.test(
+          latestUserSpeech,
+        );
+      const asksAboutVariants =
+        /\b(variant|variants|model|models|trim|trims|option|options)\b/i.test(
+          latestUserSpeech,
+        );
+      const asksAboutTestDrive =
+        /\b(test drive|drive|demo|showroom|visit|callback|call back|booking|book)\b/i.test(
+          latestUserSpeech,
+        );
+      const asksIfHeard =
+        /\b(can you hear me|are you hearing|hello|hullo)\b/i.test(
+          latestUserSpeech,
+        );
+
+      if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures) {
+        return 'Yes, I can hear you. Please go ahead.';
+      }
+      if (asksAboutPrice) {
+        return 'Yes, I can help with price details. Exact Sierra pricing depends on variant, city, and offers, so I can arrange a dealer callback with the latest on-road price. Which city are you in?';
+      }
+      if (asksAboutFeatures) {
+        return 'For Sierra features, I can share a general overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
+      }
+      if (asksAboutVariants) {
+        return 'Sierra variants can differ by features, powertrain, and price. I do not want to guess the exact lineup, but I can have the nearest dealer share current variants. Which city are you in?';
+      }
+      if (asksAboutTestDrive) {
+        return 'Sure, I can help with a Sierra test drive or booking callback. Which city or showroom location would be convenient for you?';
+      }
       return userTurns <= 1
         ? `Thanks, ${firstName}. I am calling ${automotiveContext}. Are you interested in price, variants, or booking a test drive?`
         : 'That helps. Would you like me to arrange a test drive callback, share pricing details, or note that this is not relevant right now?';
@@ -2285,7 +2338,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
             ? 'from Tata Motors about the new Tata Sierra'
             : `about ${objective}`
         }.`,
-        'Ask one practical buyer-intent question at a time: price, variants, test drive, booking, location, callback, or details by message.',
+        'Answer direct product questions first using provided knowledge, including questions about features, specifications, variants, safety, mileage, or technology.',
+        'Then ask one practical buyer-intent question at a time: price, variants, test drive, booking, location, callback, or details by message.',
         'If the contact asks for pricing or offers, say final pricing and offers should be confirmed by an authorized dealership, then offer a callback or details.',
         'If the contact is interested, capture the preferred next step and end politely.',
       ].join('\n- ');
@@ -2389,6 +2443,13 @@ ${
     : '- Retrieved knowledge from training data: none'
 }
 
+OUTSIDE CONTEXT POLICY
+- You may use safe general world knowledge and common-sense sales context beyond the bot knowledge base when it helps answer the contact naturally.
+- Treat campaign knowledge, creator rules, and retrieved training data as authoritative when they are available.
+- If the user asks a direct question that is not in the knowledge base, still answer with useful high-level general context when safe instead of giving an unrelated fallback.
+- Do not invent exact prices, discounts, offers, availability, dates, legal or policy claims, or technical specifications.
+- If exact information is missing or uncertain, clearly say it should be confirmed by the right team, then offer a callback or details.
+
 IDEAL CONVERSATION PATH
 - ${idealPath}
 
@@ -2398,13 +2459,16 @@ CALL BEHAVIOR RULES
 3. Return exactly one spoken reply for the current turn. Do not include multiple turns.
 4. Keep the reply under 30 words unless the contact asks for details.
 5. Ask only one question at the end, and only if a question is useful.
-6. Use the scenario and knowledge base, but never read them verbatim.
+6. Use the scenario, knowledge base, retrieved knowledge, and safe outside context, but never read them verbatim.
 7. Do not invent pricing, discounts, technical specs, timelines, dealership offers, or policy details.
 8. If information is not available, say you do not have that exact detail and offer a callback or details from the right team.
 9. If the contact is interested, move toward a concrete next step: test drive, callback, demo, details by message, booking, or follow-up.
 10. If the contact declines, is busy, or asks to stop, politely acknowledge and set shouldEnd to true.
 11. For automotive sales, behave like a practical sales representative: discuss price interest, variants, test drive, booking, location, callback, or details by message.
 12. Never ask vague filler questions like "what would you want to understand" when product context is available.
+13. Answer the contact's latest direct question before offering a callback, test drive, pricing, or another next step.
+14. Never repeat a question or menu of options already given in the transcript.
+15. For feature or specification questions, answer with verified campaign or retrieved knowledge first. If that is unavailable, you may give high-level general context, but do not claim exact specs unless verified; offer a product specialist follow-up.
 
 CONVERSATION STATE
 Transcript so far:
@@ -2477,7 +2541,7 @@ Return ONLY valid JSON. No markdown. No extra text.
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 generationConfig: {
                   temperature: 0.4,
-                  maxOutputTokens: 250,
+                  maxOutputTokens: 400,
                   responseMimeType: 'application/json',
                 },
               }),
@@ -2502,10 +2566,16 @@ Return ONLY valid JSON. No markdown. No extra text.
             lastFailureReason = 'empty model response';
             continue;
           }
-          return this.normalizeConversationGeneration(
-            this.parseJsonObject(content),
-            fallback,
-          );
+          const parsedContent = this.parseJsonObject(content);
+          if (
+            !parsedContent ||
+            typeof parsedContent.reply !== 'string' ||
+            !parsedContent.reply.trim()
+          ) {
+            lastFailureReason = 'invalid JSON response or missing reply';
+            continue;
+          }
+          return this.normalizeConversationGeneration(parsedContent, fallback);
         } catch (modelErr) {
           // Catch per-model errors (including AbortError) so the loop continues.
           const reason =
@@ -2580,6 +2650,10 @@ Return ONLY valid JSON. No markdown. No extra text.
     const userTurns = this.countScriptTurns(scripts, 'contact');
     const lower = latestUserSpeech.toLowerCase();
     const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
+    const isDirectInformationRequest =
+      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis|feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology|variant|variants|model|models|trim|trims|test drive|demo|booking|book|can you hear me)\b/i.test(
+        latestUserSpeech,
+      );
 
     if (this.isImmediateEndSpeech(latestUserSpeech)) {
       return {
@@ -2597,7 +2671,7 @@ Return ONLY valid JSON. No markdown. No extra text.
       };
     }
 
-    if (userTurns >= 4) {
+    if (userTurns >= 4 && !isDirectInformationRequest) {
       return {
         reply:
           'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
@@ -2616,7 +2690,12 @@ Return ONLY valid JSON. No markdown. No extra text.
       );
     const reply = outOfContext
       ? `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
-      : this.buildSalesFallbackReply(call, botProfile, userTurns);
+      : this.buildSalesFallbackReply(
+          call,
+          botProfile,
+          userTurns,
+          latestUserSpeech,
+        );
 
     return {
       reply: this.compactForSpeech(reply, 240),

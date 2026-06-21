@@ -373,11 +373,14 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       (global.fetch as jest.Mock).mock.calls[0][1].body,
     );
     const promptText = vertexBody.contents[0].parts[0].text;
-    expect(vertexBody.generationConfig.maxOutputTokens).toBe(250);
+    expect(vertexBody.generationConfig.maxOutputTokens).toBe(400);
     expect(promptText).toContain('ROLEPLAY SETUP');
     expect(promptText).toContain('IDEAL CONVERSATION PATH');
     expect(promptText).toContain('CALL BEHAVIOR RULES');
     expect(promptText).toContain('OUTPUT REQUIREMENTS');
+    expect(promptText).toContain('OUTSIDE CONTEXT POLICY');
+    expect(promptText).toContain('safe general world knowledge');
+    expect(promptText).toContain('answer with useful high-level general context');
     expect(promptText).toContain('Selected language: en-IN');
     expect(promptText).toContain('Selected voice: google:en-IN-Chirp3-HD-Puck');
     expect(promptText).toContain('You MUST speak and reply in Indian English');
@@ -422,6 +425,95 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(result.reply).toContain('Tata Sierra');
     expect(result.reply).toMatch(/price|variants|test drive/i);
     expect(result.reply).not.toContain('What would you want to understand');
+  });
+
+  it('acknowledges automotive feature requests when verified details are unavailable', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.prompt = 'Call about the new Tata Sierra.';
+    call.campaign.botRole = 'Tata Motors sales person';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Can you tell me the features?',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you tell me the features?',
+        },
+      ],
+    );
+
+    expect(result.reply).toMatch(/features/i);
+    expect(result.reply).toMatch(/general|verified|specialist/i);
+    expect(result.reply).not.toContain('That helps');
+  });
+
+  it('answers automotive pricing requests in fallback instead of repeating the menu', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.prompt = 'Call about the new Tata Sierra.';
+    call.campaign.botRole = 'Tata Motors sales person';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Can you hear me? The price details?',
+      [
+        { speaker: 'contact', label: 'Customer', text: 'Yes, it is.' },
+        {
+          speaker: 'agent',
+          label: 'AI Agent',
+          text: 'Are you interested in price, variants, or booking a test drive?',
+        },
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you hear me? The price details?',
+        },
+      ],
+    );
+
+    expect(result.reply).toMatch(/price|pricing/i);
+    expect(result.reply).toMatch(/city|dealer|on-road/i);
+    expect(result.reply).not.toContain('That helps');
+  });
+
+  it('does not end the fallback call before answering a late direct product question', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.prompt = 'Call about the new Tata Sierra.';
+    call.campaign.botRole = 'Tata Motors sales person';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Can you tell me the features for Tata?',
+      [
+        { speaker: 'contact', label: 'Customer', text: 'Yes, it is.' },
+        { speaker: 'contact', label: 'Customer', text: 'I am interested.' },
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you hear me? The price details?',
+        },
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you tell me the features for Tata?',
+        },
+      ],
+    );
+
+    expect(result.shouldEnd).toBe(false);
+    expect(result.reply).toMatch(/features|safety|infotainment|variant/i);
+    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).not.toContain('Thanks for speaking with me');
   });
 });
 

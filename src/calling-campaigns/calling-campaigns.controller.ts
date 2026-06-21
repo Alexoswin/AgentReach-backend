@@ -9,6 +9,7 @@ import {
   Header,
   Query,
   HttpCode,
+  StreamableFile,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -128,7 +129,13 @@ export class CallingCampaignsController {
   @Header('Content-Type', 'audio/mpeg')
   @ApiOperation({ summary: 'Google TTS audio for Twilio AI calling' })
   async twilioTts(@Param('audioId') audioId: string) {
-    return this.callingCampaignsService.renderGoogleSpeechAudio(audioId);
+    const audio =
+      await this.callingCampaignsService.renderGoogleSpeechAudio(audioId);
+    return new StreamableFile(audio, {
+      type: 'audio/mpeg',
+      disposition: 'inline',
+      length: audio.length,
+    });
   }
 
   @Get(':id')
