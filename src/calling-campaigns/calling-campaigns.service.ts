@@ -1871,11 +1871,7 @@ Return ONLY valid JSON with exactly these fields:
 
     const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
 
-    const prompt = this.buildTwilioSayNoun(
-      campaign,
-      message,
-      gatherLanguage || language,
-    );
+    const prompt = this.buildTwilioSayNoun(campaign, message, language);
 
     return `
 <Response>
@@ -2078,9 +2074,20 @@ Return ONLY valid JSON with exactly these fields:
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
     );
+    const scenario = this.detectCallingScenario(campaign, botProfile);
+
+    if (scenario.isAutomotive) {
+      const automotiveContext = scenario.isTata
+        ? 'from Tata Motors about the new Tata Sierra'
+        : `about ${objective}`;
+      return this.compactForSpeech(
+        `${firstSentence} I am calling ${automotiveContext}. I will keep this brief. Is now a good time?`,
+        220,
+      );
+    }
 
     return this.compactForSpeech(
-      `${firstSentence} I am calling about ${objective}. Is now okay for one quick question?`,
+      `${firstSentence} I am calling about ${objective}. I will keep this brief. Is now a good time?`,
       220,
     );
   }
@@ -2181,6 +2188,112 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ];
   }
 
+  private detectCallingScenario(campaign: any, botProfile: any) {
+    const text = [
+      campaign.objective,
+      campaign.prompt,
+      botProfile.role,
+      botProfile.knowledge,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return {
+      isSales:
+        /\b(sales|sell|lead|prospect|customer|demo|book|booking|purchase|buy|interested|qualification)\b/.test(
+          text,
+        ),
+      isAutomotive:
+        /\b(tata|motors|car|vehicle|suv|sierra|seira|test drive|variant|on-road|showroom|booking)\b/.test(
+          text,
+        ),
+      isTata: /\b(tata|sierra|seira)\b/.test(text),
+    };
+  }
+
+  private buildSalesFallbackReply(
+    call: any,
+    botProfile: any,
+    userTurns: number,
+  ) {
+    const firstName = call.contact.firstName || 'there';
+    const scenario = this.detectCallingScenario(call.campaign, botProfile);
+    const objective = this.stripSentenceEnding(
+      this.compactForSpeech(
+        call.campaign.objective ||
+          botProfile.knowledge ||
+          call.campaign.prompt ||
+          'this offer',
+        90,
+      ),
+    );
+
+    if (scenario.isAutomotive) {
+      const automotiveContext = scenario.isTata
+        ? 'from Tata Motors about the new Tata Sierra'
+        : `about ${objective}`;
+      return userTurns <= 1
+        ? `Thanks, ${firstName}. I am calling ${automotiveContext}. Are you interested in price, variants, or booking a test drive?`
+        : 'That helps. Would you like me to arrange a test drive callback, share pricing details, or note that this is not relevant right now?';
+    }
+
+    if (scenario.isSales) {
+      return userTurns <= 1
+        ? `Thanks, ${firstName}. Briefly, this is about ${objective}. Are you interested in details, pricing, or a follow-up call?`
+        : 'That makes sense. Should I arrange a callback, send details, or mark this as not relevant for now?';
+    }
+
+    return userTurns <= 1
+      ? `Thanks, ${firstName}. Briefly, this is about ${objective}. Is this something you would like details on?`
+      : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
+  }
+
+  private buildLiveCallIdealPath(campaign: any, botProfile: any) {
+    const scenario = this.detectCallingScenario(campaign, botProfile);
+    const objective = this.stripSentenceEnding(
+      this.compactForSpeech(
+        campaign.objective ||
+          botProfile.knowledge ||
+          campaign.prompt ||
+          'the campaign objective',
+        120,
+      ),
+    );
+
+    if (scenario.isAutomotive) {
+      return [
+        'Confirm the contact has a moment to talk.',
+        `Position yourself as ${botProfile.name}, ${botProfile.role}, calling ${
+          scenario.isTata
+            ? 'from Tata Motors about the new Tata Sierra'
+            : `about ${objective}`
+        }.`,
+        'Ask one practical buyer-intent question at a time: price, variants, test drive, booking, location, callback, or details by message.',
+        'If the contact asks for pricing or offers, say final pricing and offers should be confirmed by an authorized dealership, then offer a callback or details.',
+        'If the contact is interested, capture the preferred next step and end politely.',
+      ].join('\n- ');
+    }
+
+    if (scenario.isSales) {
+      return [
+        'Confirm the contact has a moment to talk.',
+        `Explain the value of ${objective} in one short sentence using the provided context.`,
+        'Ask one qualification question at a time: interest, need, timing, budget, decision process, or preferred callback.',
+        'Handle objections briefly, then offer details, callback, demo, or opt-out.',
+        'If the next step is clear, summarize it and end politely.',
+      ].join('\n- ');
+    }
+
+    return [
+      'Confirm the contact has a moment to talk.',
+      `Explain the reason for calling: ${objective}.`,
+      'Ask one relevant question at a time.',
+      'Offer a clear next step: callback, details by message, or mark not relevant.',
+      'End politely when the contact declines or the next step is captured.',
+    ].join('\n- ');
+  }
+
   // ---------------------------------------------------------------------------
   // AI turn generation
   // ---------------------------------------------------------------------------
@@ -2220,63 +2333,74 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const languageInstruction = campaignLanguage.startsWith('hi')
       ? 'You MUST speak and reply ONLY in Hindi (using Devanagari script). Keep the Hindi natural, polite, and conversational, like a real person calling.'
       : campaignLanguage.startsWith('en-IN')
-        ? 'You MUST speak and reply in Indian English, using terms and a style natural to a professional Indian speaker.'
+        ? 'You MUST speak and reply in Indian English, not US English. Use concise, professional Indian English phrasing and a natural Indian phone-call style while keeping the text understandable internationally.'
         : 'You MUST speak and reply in English.';
-    const botIntro = `Bot Name: ${botProfile.name}
-Bot Role: ${botProfile.role}
-Bot Greeting: ${botProfile.greeting || 'not provided'}
-Bot Personality: ${botProfile.personality}
-Bot Knowledge: ${botProfile.knowledge || 'not provided'}
-Bot Rules: ${botProfile.rules}
-Bot Objection Handling: ${botProfile.objections}`;
+    const idealPath = this.buildLiveCallIdealPath(call.campaign, botProfile);
+    const contactName =
+      `${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() ||
+      'Unknown';
+    const prompt = `You are running a live AI roleplay phone call.
+This is not a chat assistant. You are the speaking actor in a real outbound call.
 
-    const prompt = `You are an advanced conversational AI controlling a live outbound phone caller.
-Your name is ${botProfile.name}, acting as ${botProfile.role}.
+ROLEPLAY SETUP
+- Actor 1 (you): ${botProfile.name}
+- Actor 1 role: ${botProfile.role}
+- Actor 1 behavior/persona: ${botProfile.personality}
+- Actor 2 (contact): ${contactName}
+- Actor 2 company: ${call.contact.company || 'Unknown'}
+- Scenario: ${call.campaign.prompt || call.campaign.objective || 'Outbound calling campaign'}
+- Primary objective: ${call.campaign.objective || 'Identify interest and capture the next step.'}
+- Language: ${campaignLanguage}
 
-LANGUAGE RULE:
+LANGUAGE RULE
 ${languageInstruction}
 
-STRICT CONVERSATIONAL RULES:
-1. Be extremely concise. Speak only ONE short reply, maximum 1-2 conversational sentences (under 30 words).
-2. Sound like a real human over the phone: warm, natural, and polite. Avoid sounding like an AI or reading a script.
-3. Keep the conversation moving forward: end your reply with at most one clear, simple question or call-to-action.
-4. Listen to the user's input. Do not repeat what you've already said or write multiple turns.
-5. Introduce yourself naturally if needed: mention your name, role, and reason for calling in a single sentence.
-6. Base your answers strictly on the Campaign Context and Retrieved Bot Knowledge below. Do not invent facts, features, pricing, or promises.
-7. Prefer the bot greeting, objection handling, and knowledge below over generic filler.
-8. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
-9. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
-10. Never read the campaign prompt, bot knowledge, or bot intro text verbatim. Use it to inform the answer, but speak naturally in your own words.
-
-CAMPAIGN CONTEXT:
-- Objective: ${call.campaign.objective || 'Identify next steps or interest.'}
-- Context/Instructions: ${call.campaign.prompt || ''}
-${botIntro}
+PERSONA AND KNOWLEDGE
+- Greeting style: ${botProfile.greeting || 'Natural, brief phone-call greeting.'}
+- Knowledge base: ${botProfile.knowledge || 'No extra knowledge provided.'}
+- Rules from creator: ${botProfile.rules}
+- Objection handling: ${botProfile.objections}
 ${
   ragContext
-    ? `
-RETRIEVED BOT KNOWLEDGE (RAG):
-${ragContext}`
-    : ''
+    ? `- Retrieved knowledge from training data:\n${ragContext}`
+    : '- Retrieved knowledge from training data: none'
 }
 
-CONTACT INFORMATION:
-- Name: ${`${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() || 'Unknown'}
-- Company: ${call.contact.company || 'Unknown'}
+IDEAL CONVERSATION PATH
+- ${idealPath}
 
-TRANSCRIPT OF THE CALL SO FAR:
-${transcript}
+CALL BEHAVIOR RULES
+1. Stay fully in character as Actor 1. Never say you are an AI, language model, assistant, or prompt.
+2. Speak like a human on a phone call: warm, direct, and concise.
+3. Return exactly one spoken reply for the current turn. Do not include multiple turns.
+4. Keep the reply under 30 words unless the contact asks for details.
+5. Ask only one question at the end, and only if a question is useful.
+6. Use the scenario and knowledge base, but never read them verbatim.
+7. Do not invent pricing, discounts, technical specs, timelines, dealership offers, or policy details.
+8. If information is not available, say you do not have that exact detail and offer a callback or details from the right team.
+9. If the contact is interested, move toward a concrete next step: test drive, callback, demo, details by message, booking, or follow-up.
+10. If the contact declines, is busy, or asks to stop, politely acknowledge and set shouldEnd to true.
+11. For automotive sales, behave like a practical sales representative: discuss price interest, variants, test drive, booking, location, callback, or details by message.
+12. Never ask vague filler questions like "what would you want to understand" when product context is available.
 
-LATEST USER UTTERANCE:
+CONVERSATION STATE
+Transcript so far:
+${transcript || 'No previous transcript.'}
+
+Latest contact utterance:
 "${latestUserSpeech}"
 
-You must respond in valid JSON format.
-JSON Schema:
+OUTPUT REQUIREMENTS
+Return ONLY valid JSON. No markdown. No extra text.
 {
-  "reply": "your conversational response in the target language",
+  "reply": "single natural phone-call reply in the target language",
   "shouldEnd": false,
-  "endReason": "why the call should end, if shouldEnd is true, otherwise empty",
-  "collectedData": {},
+  "endReason": "empty unless the call should end",
+  "collectedData": {
+    "interest": "unknown|interested|not_interested|busy",
+    "requestedNextStep": "none|callback|details|demo|test_drive|booking|opt_out",
+    "notes": "brief useful notes"
+  },
   "sentimentScore": 7,
   "keyOutcomes": "brief outcome summary",
   "topicsCovered": ["Objective"]
@@ -2337,6 +2461,9 @@ JSON Schema:
           if (!response.ok) {
             lastFailureReason =
               data?.error?.message || response.statusText || 'request failed';
+            this.logger.warn(
+              `Vertex AI model ${model} returned ${response.status || 'error'} for live calling turn: ${lastFailureReason}`,
+            );
             continue;
           }
           const content = data?.candidates?.[0]?.content?.parts
@@ -2463,9 +2590,7 @@ JSON Schema:
       );
     const reply = outOfContext
       ? `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
-      : userTurns <= 1
-        ? `Thanks, ${call.contact.firstName || 'there'}. What would you want to understand before deciding on a next step?`
-        : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
+      : this.buildSalesFallbackReply(call, botProfile, userTurns);
 
     return {
       reply: this.compactForSpeech(reply, 240),

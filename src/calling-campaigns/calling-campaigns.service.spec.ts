@@ -53,6 +53,33 @@ describe('CallingCampaignsService.normalizeLanguageCode', () => {
   });
 });
 
+describe('CallingCampaignsService live sales scripting', () => {
+  it('turns Tata automotive campaign context into a natural sales opening', () => {
+    const service = Object.create(CallingCampaignsService.prototype) as any;
+
+    const opening = service.buildLiveOpeningScript(
+      {
+        objective: 'Sales for tata seira car',
+        prompt:
+          'You are Alex, a Tata Motors sales person calling about the new Tata Sierra.',
+        botName: 'Alex',
+        botRole: 'Sales person',
+        botKnowledge: 'Tata Motors sales context for the Tata Sierra.',
+      },
+      { firstName: 'Oswin' },
+      service.buildBotProfile({
+        botName: 'Alex',
+        botRole: 'Sales person',
+        botKnowledge: 'Tata Motors sales context for the Tata Sierra.',
+      }),
+    );
+
+    expect(opening).toContain('Tata Motors');
+    expect(opening).toContain('Tata Sierra');
+    expect(opening).not.toContain('Sales for tata seira car');
+  });
+});
+
 describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
   const originalFetch = global.fetch;
 
@@ -184,6 +211,25 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it('uses Indian English for speech while mapping Gather STT to en-US', async () => {
+    const service = createService();
+
+    const twiml = await service.buildTwilioGather(
+      {
+        language: 'en-IN',
+        voice: 'google:en-IN-Chirp3-HD-Puck',
+        voiceQuality: 'hd',
+      },
+      'Hi, is now okay for one quick question?',
+      'call-123',
+    );
+
+    expect(twiml).toContain('language="en-US"');
+    expect(twiml).toContain(
+      '<Say voice="Google.en-IN-Wavenet-D" language="en-IN">Hi, is now okay for one quick question?</Say>',
+    );
+  });
 });
 
 describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
@@ -283,6 +329,15 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       expect.stringContaining('aiplatform.googleapis.com'),
       expect.objectContaining({ method: 'POST' }),
     );
+    const vertexBody = JSON.parse(
+      (global.fetch as jest.Mock).mock.calls[0][1].body,
+    );
+    const promptText = vertexBody.contents[0].parts[0].text;
+    expect(promptText).toContain('ROLEPLAY SETUP');
+    expect(promptText).toContain('IDEAL CONVERSATION PATH');
+    expect(promptText).toContain('CALL BEHAVIOR RULES');
+    expect(promptText).toContain('OUTPUT REQUIREMENTS');
+    expect(promptText).toContain('You MUST speak and reply in Indian English');
   });
 
   it('falls back safely when Google service account JSON is missing', async () => {
@@ -300,6 +355,30 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(service.logger.warn).toHaveBeenCalledWith(
       'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
     );
+  });
+
+  it('uses product-specific automotive sales fallback when Vertex AI is unavailable', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.prompt =
+      'You are Alex, a Tata Motors sales person calling about the new Tata Sierra. Qualify interest and offer pricing, variant, booking, or test drive help.';
+    call.campaign.botRole = 'Sales person';
+    call.campaign.botKnowledge =
+      'Tata Motors sales context for the Tata Sierra, including variants, pricing interest, booking support, and test drive follow-up.';
+    call.contact.firstName = 'Oswin';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Yes, it is. Okay.',
+      [{ speaker: 'contact', label: 'Customer', text: 'Yes, it is. Okay.' }],
+    );
+
+    expect(result.reply).toContain('Tata Motors');
+    expect(result.reply).toContain('Tata Sierra');
+    expect(result.reply).toMatch(/price|variants|test drive/i);
+    expect(result.reply).not.toContain('What would you want to understand');
   });
 });
 
