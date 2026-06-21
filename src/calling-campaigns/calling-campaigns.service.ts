@@ -124,35 +124,43 @@ export class CallingCampaignsService implements OnModuleInit {
   onModuleInit() {
     // FIX 6: Prune Google TTS audio cache every 5 minutes to prevent memory leaks.
     // Entries older than 10 minutes are evicted (Twilio will have already played them).
-    setInterval(() => {
-      const cutoff = Date.now() - 10 * 60 * 1000;
-      for (const [id, cached] of this.googleSpeechCache.entries()) {
-        if (cached.createdAt < cutoff) {
-          this.googleSpeechCache.delete(id);
+    setInterval(
+      () => {
+        const cutoff = Date.now() - 10 * 60 * 1000;
+        for (const [id, cached] of this.googleSpeechCache.entries()) {
+          if (cached.createdAt < cutoff) {
+            this.googleSpeechCache.delete(id);
+          }
         }
-      }
-      this.logger.debug(
-        `Google TTS cache pruned; remaining entries: ${this.googleSpeechCache.size}`,
-      );
-    }, 5 * 60 * 1000).unref();
+        this.logger.debug(
+          `Google TTS cache pruned; remaining entries: ${this.googleSpeechCache.size}`,
+        );
+      },
+      5 * 60 * 1000,
+    ).unref();
 
     // FIX 7: Prune completed/failed generation jobs older than 1 hour to prevent memory leaks.
-    setInterval(() => {
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      let pruned = 0;
-      for (const [id, job] of this.generationJobs.entries()) {
-        if (
-          (job.status === 'COMPLETED' || job.status === 'FAILED') &&
-          new Date(job.updatedAt).getTime() < cutoff
-        ) {
-          this.generationJobs.delete(id);
-          pruned++;
+    setInterval(
+      () => {
+        const cutoff = Date.now() - 60 * 60 * 1000;
+        let pruned = 0;
+        for (const [id, job] of this.generationJobs.entries()) {
+          if (
+            (job.status === 'COMPLETED' || job.status === 'FAILED') &&
+            new Date(job.updatedAt).getTime() < cutoff
+          ) {
+            this.generationJobs.delete(id);
+            pruned++;
+          }
         }
-      }
-      if (pruned > 0) {
-        this.logger.debug(`Generation job cache pruned; removed ${pruned} stale jobs`);
-      }
-    }, 15 * 60 * 1000).unref();
+        if (pruned > 0) {
+          this.logger.debug(
+            `Generation job cache pruned; removed ${pruned} stale jobs`,
+          );
+        }
+      },
+      15 * 60 * 1000,
+    ).unref();
   }
 
   // ---------------------------------------------------------------------------
@@ -1302,8 +1310,7 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   async handleTwilioStatus(callId: string, body: any = {}) {
-    const status =
-      body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
+    const status = body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
     this.logger.debug(
       'Twilio status webhook received for call ' +
         callId +

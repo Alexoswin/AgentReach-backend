@@ -15,6 +15,7 @@
     "outDir": "./dist",
     "baseUrl": "./",
     "ignoreDeprecations": "6.0",
+    "types": ["node", "jest"],
     "incremental": true,
     "skipLibCheck": true,
     "strict": true,

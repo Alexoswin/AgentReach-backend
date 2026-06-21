@@ -2,7 +2,7 @@ import { CallingCampaignsService } from './calling-campaigns.service';
 
 describe('CallingCampaignsService.resolveTwilioVoice', () => {
   it('keeps the selected voice mapping when a campaign voice is provided', () => {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
 
     expect(service.resolveTwilioVoice('Puck', 'en-IN')).toBe(
       'Google.en-IN-Wavenet-D',
@@ -22,21 +22,21 @@ describe('CallingCampaignsService.resolveTwilioVoice', () => {
   });
 
   it('rebuilds the HD voice family when the language changes', () => {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
 
-    expect(service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'hi-IN')).toBe(
-      'Google.hi-IN-Neural2-C',
-    );
-    expect(service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'en-IN')).toBe(
-      'Google.en-IN-Wavenet-D',
-    );
-    expect(service.resolveTwilioVoice('google:en-IN-Chirp3-HD-Puck', 'en-US')).toBe(
-      'Google.en-US-Neural2-D',
-    );
+    expect(
+      service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'hi-IN'),
+    ).toBe('Google.hi-IN-Neural2-C');
+    expect(
+      service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'en-IN'),
+    ).toBe('Google.en-IN-Wavenet-D');
+    expect(
+      service.resolveTwilioVoice('google:en-IN-Chirp3-HD-Puck', 'en-US'),
+    ).toBe('Google.en-US-Neural2-D');
   });
 
   it('uses a Google fallback voice when the campaign voice is unknown', () => {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
 
     expect(service.resolveTwilioVoice('UnknownVoice', 'en-IN')).toBe(
       'Google.en-IN-Wavenet-D',
@@ -46,7 +46,7 @@ describe('CallingCampaignsService.resolveTwilioVoice', () => {
 
 describe('CallingCampaignsService.normalizeLanguageCode', () => {
   it('maps hi to hi-IN', () => {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
     expect(service.normalizeLanguageCode('hi')).toBe('hi-IN');
     expect(service.normalizeLanguageCode('en-IN')).toBe('en-IN');
     expect(service.normalizeLanguageCode('en')).toBe('en-US');
@@ -55,7 +55,7 @@ describe('CallingCampaignsService.normalizeLanguageCode', () => {
 
 describe('CallingCampaignsService live sales scripting', () => {
   it('turns Tata automotive campaign context into a natural sales opening', () => {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
 
     const opening = service.buildLiveOpeningScript(
       {
@@ -91,7 +91,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
   function createService({
     googleServiceAccountJson = '',
   }: { googleServiceAccountJson?: string } = {}) {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = { warn: jest.fn() };
     service.configService = {
@@ -102,9 +102,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     };
     service.db = {
       systemSettings: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({ googleServiceAccountJson }),
+        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
       },
     };
     return service;
@@ -122,7 +120,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
       json: jest.fn().mockResolvedValue({
         audioContent: audio.toString('base64'),
       }),
-    } as any);
+    });
 
     const twiml = await service.buildTwilioSpeechNoun(
       { voiceQuality: 'hd', voice: 'google:en-IN-Chirp3-HD-Puck' },
@@ -180,7 +178,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
       json: jest
         .fn()
         .mockResolvedValue({ error: { message: 'Invalid API key' } }),
-    } as any);
+    });
 
     const twiml = await service.buildTwilioSpeechNoun(
       { voiceQuality: 'hd', voice: 'google:en-IN-Chirp3-HD-Puck' },
@@ -223,7 +221,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
       json: jest.fn().mockResolvedValue({
         audioContent: Buffer.from('gather-audio').toString('base64'),
       }),
-    } as any);
+    });
 
     const twiml = await service.buildTwilioGather(
       {
@@ -275,7 +273,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
   });
 
   function createService(googleServiceAccountJson = '') {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+    const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = { warn: jest.fn() };
     service.configService = {
@@ -292,7 +290,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     return service;
   }
 
-  function createCall() {
+  function createCall(): any {
     return {
       campaign: {
         objective: 'Book a demo',
@@ -318,7 +316,8 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const service = createService(
       JSON.stringify({
         client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
+        private_key:
+          '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
         project_id: 'reachconvert-prod',
       }),
     );
@@ -350,7 +349,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
           },
         ],
       }),
-    } as any);
+    });
 
     const call = createCall();
     call.campaign.language = 'en-US';
@@ -380,7 +379,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(promptText).toContain('OUTPUT REQUIREMENTS');
     expect(promptText).toContain('OUTSIDE CONTEXT POLICY');
     expect(promptText).toContain('safe general world knowledge');
-    expect(promptText).toContain('answer with useful high-level general context');
+    expect(promptText).toContain(
+      'answer with useful high-level general context',
+    );
     expect(promptText).toContain('Selected language: en-IN');
     expect(promptText).toContain('Selected voice: google:en-IN-Chirp3-HD-Puck');
     expect(promptText).toContain('You MUST speak and reply in Indian English');
@@ -525,8 +526,8 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     jest.restoreAllMocks();
   });
 
-  function createService() {
-    const service = Object.create(CallingCampaignsService.prototype) as any;
+  function createService(googleServiceAccountJson = '') {
+    const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = {
       debug: jest.fn(),
@@ -561,10 +562,32 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
         findMany: jest.fn(),
       },
       systemSettings: {
-        findUnique: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
       },
     };
     return service;
+  }
+
+  function createCall(): any {
+    return {
+      campaign: {
+        objective: 'Book a demo',
+        prompt: 'Focus on demo qualification.',
+        language: 'en-IN',
+        botName: 'Alex',
+        botRole: 'calling specialist',
+        botPersonality: 'warm and concise',
+        botKnowledge: 'Product details',
+        botRules: 'Keep responses short',
+        botObjectionHandling: 'Offer callback',
+        aiCallingBotId: 'bot-1',
+      },
+      contact: {
+        firstName: 'Sam',
+        lastName: 'Lee',
+        company: 'Acme',
+      },
+    };
   }
 
   it('adds Twilio call webhook events and AMD settings to the request body', async () => {
@@ -575,7 +598,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
         sid: 'CA123',
         status: 'queued',
       }),
-    } as any);
+    });
 
     const result = await service.createTwilioCall({
       accountSid: 'AC123',
@@ -776,14 +799,20 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       1,
       expect.objectContaining({
         where: { id: 'call-1' },
-        data: expect.objectContaining({ outcome: 'PENDING', status: 'PENDING' }),
+        data: expect.objectContaining({
+          outcome: 'PENDING',
+          status: 'PENDING',
+        }),
       }),
     );
     expect(service.db.callHistory.update).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         where: { id: 'call-2' },
-        data: expect.objectContaining({ outcome: 'PENDING', status: 'PENDING' }),
+        data: expect.objectContaining({
+          outcome: 'PENDING',
+          status: 'PENDING',
+        }),
       }),
     );
   });
@@ -792,7 +821,8 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     const service = createService(
       JSON.stringify({
         client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
+        private_key:
+          '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
         project_id: 'reachconvert-prod',
       }),
     );
@@ -824,18 +854,10 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
           },
         ],
       }),
-    } as any);
+    });
 
-    await service.generateNextCallingTurn(
-      createCall(),
-      'Yes, tell me more.',
-      [],
-    );
-    await service.generateNextCallingTurn(
-      createCall(),
-      'Yes, tell me more.',
-      [],
-    );
+    await service.generateNextCallingTurn(createCall(), 'Yes, tell me more.', []);
+    await service.generateNextCallingTurn(createCall(), 'Yes, tell me more.', []);
 
     expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(1);
   });

@@ -7,6 +7,13 @@ import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
 import { PDFParse } from 'pdf-parse';
 import { randomUUID } from 'crypto';
 
+type TrainingPdfFile = {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+};
+
 const EMBEDDING_DIMENSIONS = 384;
 const DEFAULT_CHUNK_SIZE = 900;
 const DEFAULT_CHUNK_OVERLAP = 120;
@@ -93,7 +100,7 @@ export class AiCallingBotsService {
 
   async trainFromPdf(
     id: string,
-    file: Express.Multer.File,
+    file: TrainingPdfFile,
     dto: TrainAiCallingBotPdfDto = {},
   ) {
     this.logger.log(
@@ -268,7 +275,7 @@ export class AiCallingBotsService {
     };
   }
 
-  private async extractPdfTrainingText(file: Express.Multer.File) {
+  private async extractPdfTrainingText(file: TrainingPdfFile) {
     if (!file) {
       throw new BadRequestException('No PDF file provided');
     }
@@ -314,7 +321,7 @@ export class AiCallingBotsService {
 
   private cleanTrainingText(value: string) {
     return value
-      .replace(/\u0000/g, '')
+      .replaceAll('\u0000', '')
       .replace(/[ \t]+/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -409,7 +416,7 @@ export class AiCallingBotsService {
     const vector = new Array<number>(EMBEDDING_DIMENSIONS).fill(0);
     const tokens = text
       .toLowerCase()
-      .replace(/[^a-z0-9\u0900-\u097f\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter((token) => token.length > 1);
 
