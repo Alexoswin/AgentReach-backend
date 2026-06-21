@@ -161,7 +161,7 @@ export class CallingCampaignsController {
   }
 
   @Post(':id/launch')
-  @ApiOperation({ summary: 'Launch AI calling campaign simulation' })
+  @ApiOperation({ summary: 'Launch AI calling campaign (Twilio or simulation)' })
   async launchCampaign(@Param('id') id: string) {
     return this.callingCampaignsService.launchCampaign(id);
   }

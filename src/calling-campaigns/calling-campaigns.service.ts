@@ -46,7 +46,8 @@ type GoogleTtsAccessToken = {
 };
 
 const GOOGLE_TTS_TIMEOUT_MS = 3500;
-const VERTEX_TWILIO_TIMEOUT_MS = 4500;
+const VERTEX_TWILIO_TIMEOUT_MS = 3500;
+const TWILIO_RESPONSE_BUDGET_MS = 8000;
 const TWILIO_HD_PLAY_ENABLED = true;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const VERTEX_LOCATION = 'global';
@@ -586,15 +587,11 @@ Return ONLY valid JSON with exactly these fields:
         batches.push(allCalls.slice(i, i + concurrencyLimit));
       }
 
-      let placed = 0;
-      let failed = 0;
-
       for (const batch of batches) {
         await Promise.all(
           batch.map(async (call) => {
             const contact = call.contact;
             if (!this.hasCallablePhone(contact)) {
-              failed++;
               resultSummary.failed++;
               this.logger.warn(
                 `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
@@ -670,7 +667,6 @@ Return ONLY valid JSON with exactly these fields:
             });
 
             if (result.ok) {
-              placed++;
               resultSummary.placed++;
               await this.db.callHistory.update({
                 where: { id: call.id },
@@ -688,7 +684,6 @@ Return ONLY valid JSON with exactly these fields:
                 `Twilio accepted call ${call.id}; sid=${result.sid}; status=${result.status}`,
               );
             } else {
-              failed++;
               resultSummary.failed++;
               resultSummary.errors.push(result.error);
               await this.db.callHistory.update({
@@ -721,14 +716,14 @@ Return ONLY valid JSON with exactly these fields:
 
       // Stay RUNNING — completion is driven by handleTwilioStatus once all calls settle.
       // Only fail immediately if every call was rejected at the Twilio API level.
-      if (failed > 0 && placed === 0) {
+      if (resultSummary.failed > 0 && resultSummary.placed === 0) {
         await this.db.callingCampaign.update({
           where: { id: campaignId },
           data: { status: 'FAILED' },
         });
       }
       this.logger.debug(
-        `Twilio campaign ${campaignId} finished queueing: ${placed} accepted, ${failed} failed`,
+        `Twilio campaign ${campaignId} finished queueing: ${resultSummary.placed} accepted, ${resultSummary.failed} failed`,
       );
       return resultSummary;
     } catch (err) {
@@ -989,7 +984,7 @@ Return ONLY valid JSON with exactly these fields:
       );
       const call = await this.getCallWithContext(callId);
       if (!call) {
-        return this.buildTwilioSayHangup(
+        return await this.buildTwilioSayHangup(
           'Sorry, this call could not be found.',
         );
       }
@@ -999,6 +994,9 @@ Return ONLY valid JSON with exactly these fields:
         call.campaign,
         call.contact,
         botProfile,
+      );
+      this.logger.debug(
+        `Twilio answer opening for call ${callId}; botTranscription=${JSON.stringify(opening)}`,
       );
       const scripts = this.ensureScripts(call.scripts);
       const nextScripts = scripts.length
@@ -1053,7 +1051,7 @@ Return ONLY valid JSON with exactly these fields:
         `Twilio answer webhook failed for call ${callId}`,
         error instanceof Error ? error.stack : String(error),
       );
-      return this.buildTwilioSayHangup(
+      return await this.buildTwilioSayHangup(
         'Sorry, we had a technical issue and need to end this call for now.',
       );
     }
@@ -1072,12 +1070,15 @@ Return ONLY valid JSON with exactly these fields:
 
       const call = await this.getCallWithContext(callId);
       if (!call) {
-        return this.buildTwilioSayHangup(
+        return await this.buildTwilioSayHangup(
           'Sorry, this call could not be found.',
         );
       }
 
       const speech = String(body.SpeechResult || '').trim();
+      this.logger.debug(
+        `Twilio user transcription for call ${callId}; userTranscription=${JSON.stringify(speech || '[empty]')}`,
+      );
       const scripts = this.ensureScripts(call.scripts);
       const userTurnCount = this.countScriptTurns(scripts, 'contact');
 
@@ -1109,7 +1110,7 @@ Return ONLY valid JSON with exactly these fields:
               this.buildBotProfile(call.campaign),
             ),
           });
-          return this.buildTwilioSayHangup(closing, call.campaign);
+          return await this.buildTwilioSayHangup(closing, call.campaign);
         }
 
         await this.db.callHistory.update({
@@ -1122,7 +1123,7 @@ Return ONLY valid JSON with exactly these fields:
             timestamp: new Date(),
           },
         });
-        return this.buildTwilioGather(
+        return await this.buildTwilioGather(
           call.campaign,
           'Sorry, I did not catch that. Could you say that again?',
           callId,
@@ -1135,58 +1136,85 @@ Return ONLY valid JSON with exactly these fields:
         'Customer',
         speech,
       );
-      const generation = await this.generateNextCallingTurn(
-        call,
-        speech,
-        withUserTurn,
-      );
-      const nextScripts = this.appendScriptTurn(
-        withUserTurn,
-        'agent',
-        'AI Agent',
-        generation.reply,
-      );
-      const shouldEnd =
-        generation.shouldEnd &&
-        (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
+      let responseBudgetTimer: NodeJS.Timeout | null = null;
+      try {
+        const generation = await Promise.race([
+          this.generateNextCallingTurn(call, speech, withUserTurn).catch(
+            (error) => {
+              this.logger.warn(
+                `Vertex AI live calling turn failed for call ${callId}; using fallback response. Reason: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return this.buildFallbackCallingTurn(
+                call,
+                speech,
+                withUserTurn,
+              );
+            },
+          ),
+          new Promise<ConversationGeneration>((resolve) => {
+            responseBudgetTimer = setTimeout(() => {
+              this.logger.warn(
+                `Twilio response generation timed out for call ${callId}; using fallback response.`,
+              );
+              resolve(this.buildFallbackCallingTurn(call, speech, withUserTurn));
+            }, TWILIO_RESPONSE_BUDGET_MS);
+          }),
+        ]);
+        this.logger.debug(
+          `Twilio bot transcription for call ${callId}; botTranscription=${JSON.stringify(generation.reply)}`,
+        );
+        const nextScripts = this.appendScriptTurn(
+          withUserTurn,
+          'agent',
+          'AI Agent',
+          generation.reply,
+        );
+        const shouldEnd =
+          generation.shouldEnd &&
+          (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
 
-      if (shouldEnd) {
-        await this.completeTwilioConversation(call, nextScripts, generation);
-        return this.buildTwilioSayHangup(generation.reply, call.campaign);
-      }
+        if (shouldEnd) {
+          await this.completeTwilioConversation(call, nextScripts, generation);
+          return await this.buildTwilioSayHangup(generation.reply, call.campaign);
+        }
 
-      await this.db.callHistory.update({
-        where: { id: callId },
+        await this.db.callHistory.update({
+          where: { id: callId },
         data: {
           status: 'IN_PROGRESS',
           outcome: 'IN_PROGRESS',
           sessionStatus: 'connected',
-          scripts: nextScripts,
-          transcript: this.scriptsToTranscript(nextScripts),
-          summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
-          sentimentScore: generation.sentimentScore,
-          keyOutcomes: generation.keyOutcomes,
-          topicsCovered: generation.topicsCovered,
-          analysis: {
-            ...existingAnalysis,
-            noInputCount: 0,
-            collectedData: generation.collectedData,
-            lastAiDecision: {
-              shouldEnd: generation.shouldEnd,
-              endReason: generation.endReason,
+            scripts: nextScripts,
+            transcript: this.scriptsToTranscript(nextScripts),
+            summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
+            sentimentScore: generation.sentimentScore,
+            keyOutcomes: generation.keyOutcomes,
+            topicsCovered: generation.topicsCovered,
+            analysis: {
+              ...existingAnalysis,
+              noInputCount: 0,
+              collectedData: generation.collectedData,
+              lastAiDecision: {
+                shouldEnd: generation.shouldEnd,
+                endReason: generation.endReason,
             },
           },
           timestamp: new Date(),
         },
       });
 
-      return this.buildTwilioGather(call.campaign, generation.reply, callId);
+        return await this.buildTwilioGather(call.campaign, generation.reply, callId);
+      } finally {
+        if (responseBudgetTimer) {
+          clearTimeout(responseBudgetTimer);
+        }
+      }
     } catch (error) {
       this.logger.error(
         `Twilio response webhook failed for call ${callId}`,
         error instanceof Error ? error.stack : String(error),
       );
-      return this.buildTwilioSayHangup(
+      return await this.buildTwilioSayHangup(
         'Sorry, we had a technical issue and need to end this call for now.',
       );
     }
@@ -1218,7 +1246,11 @@ Return ONLY valid JSON with exactly these fields:
       timestamp: new Date(),
     };
 
-    if (status === 'ringing') {
+    if (status === 'initiated') {
+      data.status = 'QUEUING';
+      data.outcome = 'QUEUING';
+      data.sessionStatus = 'inprogress';
+    } else if (status === 'ringing') {
       data.status = 'RINGING';
       data.outcome = 'RINGING';
     } else if (status === 'in-progress' || status === 'answered') {
@@ -1235,7 +1267,8 @@ Return ONLY valid JSON with exactly these fields:
       data.totalTime = call?.startedAt
         ? Date.now() - new Date(call.startedAt).getTime()
         : undefined;
-      if (!['ANSWERED', 'COMPLETED'].includes(call?.outcome)) {
+      const currentOutcome = call?.outcome ?? '';
+      if (!['ANSWERED', 'COMPLETED'].includes(currentOutcome)) {
         data.status = 'COMPLETED';
         data.outcome = call?.transcript ? 'ANSWERED' : 'NO_ANSWER';
         data.sessionStatus = 'completed';
@@ -1315,12 +1348,12 @@ Return ONLY valid JSON with exactly these fields:
     try {
       const campaign = await this.db.callingCampaign.findUnique({
         where: { id: campaignId },
-        include: { calls: true },
+        include: { calls: { select: { outcome: true } } },
       });
       if (!campaign || campaign.status !== 'RUNNING') return;
 
-      const allSettled = (campaign.calls as any[]).every((call) =>
-        TERMINAL_CALL_OUTCOMES.has(call.outcome),
+      const allSettled = (campaign.calls as Array<{ outcome?: string }>).every(
+        (call) => TERMINAL_CALL_OUTCOMES.has(call.outcome || ''),
       );
       if (!allSettled) return;
 
@@ -1344,13 +1377,35 @@ Return ONLY valid JSON with exactly these fields:
   // ---------------------------------------------------------------------------
 
   private async addCallableContacts(campaignId: string, contactIds: string[]) {
+    if (!contactIds.length) return { added: 0, skipped: 0 };
+
+    const [contacts, existingCalls] = await Promise.all([
+      this.db.contact.findMany({
+        where: { id: { in: [...new Set(contactIds)] } },
+      }),
+      this.db.callHistory.findMany({
+        where: { campaignId, contactId: { in: [...new Set(contactIds)] } },
+        select: { contactId: true },
+      }),
+    ]);
+
+    const contactMap = new Map(contacts.map((contact) => [contact.id, contact]));
+    const existingContactIds = new Set(
+      existingCalls.map((call) => call.contactId),
+    );
     let added = 0;
     let skipped = 0;
+    const requestContactIds = new Set<string>();
+    const creates: Promise<unknown>[] = [];
 
     for (const contactId of contactIds) {
-      const contact = await this.db.contact.findUnique({
-        where: { id: contactId },
-      });
+      if (requestContactIds.has(contactId)) {
+        skipped++;
+        continue;
+      }
+      requestContactIds.add(contactId);
+
+      const contact = contactMap.get(contactId);
 
       if (!contact) {
         skipped++;
@@ -1368,11 +1423,7 @@ Return ONLY valid JSON with exactly these fields:
         continue;
       }
 
-      const existing = await this.db.callHistory.findFirst({
-        where: { campaignId, contactId },
-      });
-
-      if (existing) {
+      if (existingContactIds.has(contactId)) {
         skipped++;
         this.logger.debug(
           `Skipping contact ${contactId} for campaign ${campaignId}: call already exists`,
@@ -1380,23 +1431,27 @@ Return ONLY valid JSON with exactly these fields:
         continue;
       }
 
-      await this.db.callHistory.create({
-        data: {
-          campaignId,
-          contactId,
-          outcome: 'PENDING',
-          status: 'PENDING',
-          sessionStatus: 'pending',
-          callType: 'phone_call',
-          duration: 0,
-          scripts: [],
-          topicsCovered: [],
-          sessionErrors: [],
-        },
-      });
+      existingContactIds.add(contactId);
+      creates.push(
+        this.db.callHistory.create({
+          data: {
+            campaignId,
+            contactId,
+            outcome: 'PENDING',
+            status: 'PENDING',
+            sessionStatus: 'pending',
+            callType: 'phone_call',
+            duration: 0,
+            scripts: [],
+            topicsCovered: [],
+            sessionErrors: [],
+          },
+        }),
+      );
       added++;
     }
 
+    await Promise.all(creates);
     return { added, skipped };
   }
 
@@ -1630,40 +1685,42 @@ Return ONLY valid JSON with exactly these fields:
   // ---------------------------------------------------------------------------
 
   private async resetCallsForRelaunch(calls: any[]) {
-    for (const call of calls) {
-      await this.db.callHistory.update({
-        where: { id: call.id },
-        data: {
-          duration: 0,
-          outcome: 'PENDING',
-          status: 'PENDING',
-          transcript: null,
-          recordingUrl: null,
-          scripts: [],
-          summary: null,
-          sentimentScore: 5.0,
-          keyOutcomes: null,
-          analysis: null,
-          topicsCovered: [],
-          endCallReason: null,
-          sessionStatus: 'pending',
-          selectedLanguage: null,
-          selectedVoice: null,
-          startedAt: null,
-          connectedAt: null,
-          endedAt: null,
-          startupTime: null,
-          totalTime: null,
-          sessionErrors: [],
-          deviceLogs: null,
-          provider: null,
-          providerCallSid: null,
-          providerStatus: null,
-          errorMessage: null,
-          timestamp: new Date(),
-        },
-      });
-    }
+    await Promise.all(
+      calls.map((call) =>
+        this.db.callHistory.update({
+          where: { id: call.id },
+          data: {
+            duration: 0,
+            outcome: 'PENDING',
+            status: 'PENDING',
+            transcript: null,
+            recordingUrl: null,
+            scripts: [],
+            summary: null,
+            sentimentScore: 5.0,
+            keyOutcomes: null,
+            analysis: null,
+            topicsCovered: [],
+            endCallReason: null,
+            sessionStatus: 'pending',
+            selectedLanguage: null,
+            selectedVoice: null,
+            startedAt: null,
+            connectedAt: null,
+            endedAt: null,
+            startupTime: null,
+            totalTime: null,
+            sessionErrors: [],
+            deviceLogs: null,
+            provider: null,
+            providerCallSid: null,
+            providerStatus: null,
+            errorMessage: null,
+            timestamp: new Date(),
+          },
+        }),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1710,15 +1767,11 @@ Return ONLY valid JSON with exactly these fields:
       RecordingStatusCallback: recordingStatusCallback,
       RecordingStatusCallbackMethod: 'POST',
     });
-   [
-  'initiated',
-  'ringing',
-  'answered',
-  'completed',
-].forEach((event) => body.append('StatusCallbackEvent', event));
-
-body.append('MachineDetection', 'Enable');
-body.append('AsyncAmd', 'true');
+    ['initiated', 'ringing', 'answered', 'completed'].forEach((event) =>
+      body.append('StatusCallbackEvent', event),
+    );
+    body.append('MachineDetection', 'Enable');
+    body.append('AsyncAmd', 'true');
 
     try {
       const response = await fetch(
@@ -1761,58 +1814,23 @@ body.append('AsyncAmd', 'true');
   // TwiML builders
   // ---------------------------------------------------------------------------
 
-  private buildCallTwiml(campaign: any, contact: any) {
-    const botProfile = this.buildBotProfile(campaign);
-    const message = this.buildOpeningScript(campaign, contact, botProfile);
-    const language = this.normalizeLanguageCode(campaign?.language);
-    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
-    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
-
-    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Pause length="1"/><Say${sayAttrs}>Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
-  }
-
   private async buildTwilioGather(
-  campaign: any,
-  message: string,
-  callId: string,
-) {
-  const language = this.normalizeLanguageCode(campaign?.language);
-  const gatherLanguage = this.resolveTwilioGatherLanguage(language);
+    campaign: any,
+    message: string,
+    callId: string,
+  ) {
+    const language = this.normalizeLanguageCode(campaign?.language);
+    const gatherLanguage = this.resolveTwilioGatherLanguage(language);
 
-  const action = this.escapeXml(
-    this.getTwilioWebhookUrl('respond', callId),
-  );
+    const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
 
-  let prompt = '';
-
-  if (campaign?.voiceQuality === 'hd' && TWILIO_HD_PLAY_ENABLED) {
-    const googleVoice = this.resolveGoogleTtsVoice(
-      campaign?.voice,
-      language,
-    );
-
-    const audioId = await this.registerGoogleSpeech(
-      message,
-      googleVoice,
-      language,
-    );
-
-    if (audioId) {
-      prompt = `<Play>${this.escapeXml(
-        this.getTwilioTtsUrl(audioId),
-      )}</Play>`;
-    }
-  }
-
-  if (!prompt) {
-    prompt = this.buildTwilioSayNoun(
+    const prompt = this.buildTwilioSayNoun(
       campaign,
       message,
       gatherLanguage || language,
     );
-  }
 
-  return `
+    return `
 <Response>
   <Gather
     input="speech"
@@ -1833,7 +1851,7 @@ body.append('AsyncAmd', 'true');
   </Redirect>
 </Response>
 `.trim();
-}
+  }
 
   private async buildTwilioSayHangup(message: string, campaign?: any) {
     const language = this.normalizeLanguageCode(campaign?.language);
@@ -2122,11 +2140,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
   ): Promise<ConversationGeneration> {
-    const settings = decryptSystemSettings(
-      await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-      }),
-    );
     const botProfile = this.buildBotProfile(call.campaign);
     const fallback = this.buildFallbackCallingTurn(
       call,
@@ -2138,7 +2151,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       4,
     );
-    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
+    const serviceAccountJson = await this.getServiceAccountJson();
     const serviceAccount =
       this.parseGoogleServiceAccountCredentials(serviceAccountJson);
     if (!serviceAccount) {
@@ -2444,6 +2457,9 @@ JSON Schema:
         timestamp: new Date(),
       },
     });
+    this.logger.debug(
+      `Twilio final transcription for call ${call.id}; userBotTranscript=${JSON.stringify(this.scriptsToTranscript(scripts))}`,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -2764,6 +2780,31 @@ JSON Schema:
       );
       return '';
     }
+  }
+
+  private cachedServiceAccountJson: string | null = null;
+  private cachedServiceAccountJsonAt = 0;
+  private readonly SERVICE_ACCOUNT_CACHE_TTL_MS = 5 * 60 * 1000;
+
+  private async getServiceAccountJson(): Promise<string> {
+    if (
+      this.cachedServiceAccountJson !== null &&
+      Date.now() - this.cachedServiceAccountJsonAt <
+        this.SERVICE_ACCOUNT_CACHE_TTL_MS
+    ) {
+      return this.cachedServiceAccountJson ?? '';
+    }
+
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+        select: { googleServiceAccountJson: true },
+      }),
+    );
+    this.cachedServiceAccountJson =
+      settings?.googleServiceAccountJson?.trim() ?? '';
+    this.cachedServiceAccountJsonAt = Date.now();
+    return this.cachedServiceAccountJson ?? '';
   }
 
   private signGoogleServiceAccountJwt(clientEmail: string, privateKey: string) {
