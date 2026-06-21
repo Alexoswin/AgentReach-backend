@@ -937,7 +937,7 @@ function compactKnowledgeSummary(value: string, maxLength: number) {
     : summary;
 }
 
-function isLowInformationTurn(value?: string) {
+export function isLowInformationTurn(value?: string) {
   const normalized = String(value || '')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')

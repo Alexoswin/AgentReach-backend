@@ -25,10 +25,8 @@ import {
   buildLiveCallingPreUserPrompt,
   buildLiveCallingSystemPrompt,
   extractRelevantKnowledgeSummary,
-  looksLikeInstructionEcho,
+  isLowInformationTurn,
   normalizeConversationGeneration as normalizeAgentConversationGeneration,
-  normalizeForComparison,
-  sanitizeAgentReply,
 } from '../ai-calling/ai-calling-agent';
 
 type TwilioSettings = {
@@ -2611,13 +2609,13 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ]
       .filter(Boolean)
       .join('\n');
-    const contextSummary = this.extractRelevantKnowledgeSummary(
+    const contextSummary = extractRelevantKnowledgeSummary(
       latestUserSpeech,
       contextualKnowledge,
       170,
-      scripts,
+      scripts as AgentScriptTurn[],
     );
-    const lowInformationTurn = this.isLowInformationUserTurn(latestUserSpeech);
+    const lowInformationTurn = isLowInformationTurn(latestUserSpeech);
     const asksForPrompt = this.isPromptExposureRequest(latestUserSpeech);
 
     if (asksForPrompt) {
@@ -2643,245 +2641,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return userTurns <= 1
       ? `Sure, ${firstName}. ${contextSummary} If useful, I can help with the next step for ${objective}.`
       : `${contextSummary} If you want, we can move to the next step now.`;
-  }
-
-  private extractRelevantKnowledgeSummary(
-    question: string,
-    knowledge: string,
-    maxLength = 220,
-    scripts: Array<Record<string, any>> = [],
-  ) {
-    return extractRelevantKnowledgeSummary(
-      question,
-      knowledge,
-      maxLength,
-      scripts as AgentScriptTurn[],
-    );
-  }
-
-  private sanitizeKnowledgeForAnswer(value?: string) {
-    return this.buildKnowledgeCandidateSentences(value)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  private buildKnowledgeCandidateSentences(value?: string) {
-    let skipProceduralSection = false;
-    return String(value || '')
-      .replaceAll('\u0000', '')
-      .replace(/\r/g, '\n')
-      .split(/\n+/)
-      .flatMap((line) => {
-        const cleanLine = line.replace(/^[\s*\-\d.)]+/, '').trim();
-        if (!cleanLine) return [];
-        if (this.isKnowledgeSectionHeading(cleanLine)) {
-          skipProceduralSection = this.isProceduralKnowledgeHeading(cleanLine);
-          return [];
-        }
-        if (skipProceduralSection) return [];
-        if (this.shouldSkipKnowledgeLine(cleanLine)) return [];
-        return cleanLine.split(/(?<=[.!?])\s+/);
-      })
-      .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
-      .filter(Boolean)
-      .filter((line) => !this.isInstructionLikeKnowledgeSentence(line))
-      .filter((line) => this.hasUsefulKnowledgeSignal(line));
-  }
-
-  private isKnowledgeSectionHeading(value?: string) {
-    const compact = String(value || '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!compact || compact.length > 90) return false;
-    if (/^[^:]{2,90}:$/.test(compact)) return true;
-    if (/[.!?]$/.test(compact)) return false;
-    const words = compact.split(/\s+/).filter(Boolean);
-    if (words.length === 0 || words.length > 8) return false;
-    return words.every((word) => /^[A-Z0-9&/()]+$/.test(word[0] || ''));
-  }
-
-  private isProceduralKnowledgeHeading(value?: string) {
-    const compact = String(value || '')
-      .replace(/:$/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return /\b(objectives?|goals?|rules?|compliance|security|call ending|lead data|data to collect|qualification|questions?|common objections?|objections?|objection handling|behavior|policy|instructions?|ideal customers?|target audience|interest levels?|bot name|role|personality|greeting|output contract)\b/i.test(
-      compact,
-    );
-  }
-
-  private buildKnowledgeQueryTerms(
-    value?: string,
-    referenceText?: string,
-  ): string[] {
-    const seen = new Set<string>();
-    const referenceTerms: string[] = referenceText
-      ? this.buildKnowledgeQueryTerms(referenceText)
-      : [];
-    return String(value || '')
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .map((term) => term.trim())
-      .filter((term) => term.length > 2)
-      .flatMap((term) => this.expandKnowledgeQueryTerm(term))
-      .filter((term) => {
-        if (!referenceTerms.length) return true;
-        return (
-          referenceTerms.includes(term) ||
-          this.hasApproximateTermMatch(term, referenceTerms)
-        );
-      })
-      .filter((term) => {
-        if (seen.has(term)) return false;
-        seen.add(term);
-        return true;
-      });
-  }
-
-  private expandKnowledgeQueryTerm(term: string) {
-    const variants = [term];
-    if (term.endsWith('ies') && term.length > 4) {
-      variants.push(`${term.slice(0, -3)}y`);
-    }
-    if (term.endsWith('ing') && term.length > 5) {
-      const stem = term.slice(0, -3);
-      variants.push(stem, `${stem}e`);
-    }
-    if (term.endsWith('s') && term.length > 4) {
-      variants.push(term.slice(0, -1));
-    }
-    return variants;
-  }
-
-  private hasApproximateTermMatch(term: string, candidates: string[]) {
-    if (term.length < 5) return false;
-    return candidates.some((candidate) => {
-      if (candidate.length < 5 || candidate[0] !== term[0]) return false;
-      const allowedDistance =
-        term.length <= 5 ? 2 : Math.min(2, Math.floor(term.length / 3));
-      return this.levenshteinDistance(term, candidate) <= allowedDistance;
-    });
-  }
-
-  private levenshteinDistance(left: string, right: string) {
-    const previous = Array.from(
-      { length: right.length + 1 },
-      (_, index) => index,
-    );
-    for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
-      const current = [leftIndex];
-      for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
-        const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
-        current[rightIndex] = Math.min(
-          current[rightIndex - 1] + 1,
-          previous[rightIndex] + 1,
-          previous[rightIndex - 1] + cost,
-        );
-      }
-      previous.splice(0, previous.length, ...current);
-    }
-    return previous[right.length];
-  }
-
-  private shouldSkipKnowledgeLine(value?: string) {
-    const compact = String(value || '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!compact) return true;
-    if (
-      /^(objective|rules|compliance|security|call ending|lead data to collect|qualification questions|common objections|behavior rules|conversation policy|campaign setup|output contract)\s*:?\s*$/i.test(
-        compact,
-      )
-    ) {
-      return true;
-    }
-    if (
-      /^(busy|not interested|not looking|unsure|comparing|objection|objections?|common objections?|need .*approval)\s*:\s*["“]?/i.test(
-        compact,
-      )
-    ) {
-      return true;
-    }
-    return /^[a-z][a-z\s-]{1,40}:\s*["“][^"”]+/i.test(compact);
-  }
-
-  private isInstructionLikeKnowledgeSentence(value?: string) {
-    const compact = String(value || '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!compact) return true;
-    if (this.looksLikeLivePromptEcho(compact)) return true;
-    if (
-      /^(objective|rules|compliance|security|call ending|lead data to collect|qualification questions|common objections|behavior rules|conversation policy|campaign setup|output contract)\s*:?\s*$/i.test(
-        compact,
-      )
-    ) {
-      return true;
-    }
-    if (
-      /^(busy|not interested|not looking|unsure|comparing|objection|objections?|common objections?|need .*approval)\s*:\s*["“]?/i.test(
-        compact,
-      )
-    ) {
-      return true;
-    }
-    if (/^[a-z][a-z\s-]{1,40}:\s*["“][^"”]+/i.test(compact)) {
-      return true;
-    }
-    const imperativeSignals =
-      compact.match(
-        /\b(always|never|must|do not|don't|return only|ignore|ask permission|keep calls?)\b/gi,
-      )?.length || 0;
-    return imperativeSignals >= 2 && compact.length > 40;
-  }
-
-  private isLowInformationUserTurn(value?: string) {
-    const normalized = String(value || '')
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!normalized) return true;
-    if (/[?؟]/.test(value || '')) return false;
-    const tokens = normalized.split(' ').filter(Boolean);
-    if (tokens.length <= 3) return true;
-    return normalized.length <= 28 && tokens.length <= 6;
-  }
-
-  private hasUsefulKnowledgeSignal(value: string) {
-    const compact = value.replace(/\s+/g, ' ').trim();
-    if (!compact || this.isInstructionLikeKnowledgeSentence(compact)) {
-      return false;
-    }
-    if (compact.length < 18 && !/[\d₹$€%]/.test(compact)) return false;
-    return /[A-Za-z\p{L}]{4,}/u.test(compact);
-  }
-
-  private compactKnowledgeSummary(value: string, maxLength: number) {
-    const summary = value.replace(/\s+/g, ' ').trim();
-    if (!summary || this.looksLikeLivePromptEcho(summary)) {
-      return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
-    }
-    return summary.length > maxLength
-      ? `${summary.slice(0, maxLength).trim()}...`
-      : summary;
-  }
-
-  private selectKnowledgeContinuation(
-    sentences: string[],
-    scripts: Array<Record<string, any>>,
-  ) {
-    const usefulSentences = sentences.filter((sentence) =>
-      this.hasUsefulKnowledgeSignal(sentence),
-    );
-    if (!usefulSentences.length) return sentences.slice(0, 2).join(' ');
-    const agentTurns = this.countScriptTurns(scripts, 'agent');
-    const start = Math.min(
-      agentTurns,
-      Math.max(usefulSentences.length - 1, 0),
-    );
-    return usefulSentences.slice(start, start + 2).join(' ');
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -3232,18 +2991,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
   }
 
-  private sanitizeLiveReply(
-    reply: string,
-    fallbackReply: string,
-    scripts: Array<Record<string, any>>,
-  ) {
-    return sanitizeAgentReply(
-      this.compactForSpeech(reply || '', 260),
-      this.compactForSpeech(fallbackReply || '', 240),
-      scripts as AgentScriptTurn[],
-    );
-  }
-
   private shouldEndConversationNow(
     latestUserSpeech: string,
     generation: ConversationGeneration,
@@ -3326,14 +3073,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       '',
       botProfile,
     );
-  }
-
-  private looksLikeLivePromptEcho(value: string) {
-    return looksLikeInstructionEcho(value);
-  }
-
-  private normalizeReplyForComparison(value: string) {
-    return normalizeForComparison(value);
   }
 
   private buildFallbackCallingTurn(
