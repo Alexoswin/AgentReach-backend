@@ -453,6 +453,38 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(result.reply).not.toContain('That helps');
   });
 
+  it('answers a direct details question instead of repeating the menu', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.prompt = 'Call about the new Tata Sierra.';
+    call.campaign.botRole = 'Tata Motors sales person';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Can you tell me the Details.',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Yes, it is a good time.',
+        },
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'can you tell me the Details.',
+        },
+      ],
+    );
+
+    expect(result.reply).toMatch(/details|overview|features|safety|infotainment/i);
+    expect(result.reply).not.toContain(
+      'Would you like me to arrange a test drive callback',
+    );
+    expect(result.reply).not.toContain('That helps');
+  });
+
   it('answers automotive pricing requests in fallback instead of repeating the menu', async () => {
     const service = createService('');
     global.fetch = jest.fn();

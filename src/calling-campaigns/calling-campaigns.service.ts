@@ -2310,6 +2310,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis)\b/i.test(
           latestUserSpeech,
         );
+      const asksAboutDetails =
+        /\b(detail|details|information|info|tell me more|more about)\b/i.test(
+          latestUserSpeech,
+        );
       const asksAboutFeatures =
         /\b(feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology)\b/i.test(
           latestUserSpeech,
@@ -2327,7 +2331,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           latestUserSpeech,
         );
 
-      if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures) {
+      if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures && !asksAboutDetails) {
         return hindi
           ? 'हाँ, मैं सुन रहा हूँ. कृपया बताइए.'
           : 'Yes, I can hear you. Please go ahead.';
@@ -2337,10 +2341,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           ? 'हाँ, मैं कीमत के बारे में मदद कर सकता हूँ. सिएरा की अंतिम कीमत वेरिएंट, शहर और ऑफर्स पर निर्भर करती है, इसलिए मैं नवीनतम ऑन-रोड कीमत के लिए कॉलबैक अरेंज कर सकता हूँ. आप किस शहर में हैं?'
           : 'Yes, I can help with price details. Exact Sierra pricing depends on variant, city, and offers, so I can arrange a dealer callback with the latest on-road price. Which city are you in?';
       }
-      if (asksAboutFeatures) {
+      if (asksAboutDetails || asksAboutFeatures) {
         return hindi
-          ? 'सिएरा के फीचर्स का एक सामान्य ओवरव्यू है: कम्फर्ट, सेफ्टी, इंफोटेनमेंट, और वेरिएंट के अनुसार विकल्प. सटीक फीचर्स वेरिएंट पर निर्भर करते हैं, तो क्या मैं स्पेशलिस्ट कॉलबैक अरेंज करूँ?'
-          : 'For Sierra features, I can share a general overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
+          ? 'सिएरा के बारे में संक्षेप में: यह आराम, सेफ्टी, इंफोटेनमेंट, और वेरिएंट-आधारित विकल्पों के साथ एक SUV है. सटीक फीचर्स वेरिएंट पर निर्भर करते हैं, तो क्या मैं स्पेशलिस्ट कॉलबैक अरेंज करूँ?'
+          : 'For Sierra details, I can share a quick overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
       }
       if (asksAboutVariants) {
         return hindi
@@ -2719,7 +2723,7 @@ Return ONLY valid JSON. No markdown. No extra text.
     const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
     const language = this.normalizeLanguageCode(conversationLanguage);
     const isDirectInformationRequest =
-      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis|feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology|variant|variants|model|models|trim|trims|test drive|demo|booking|book|can you hear me)\b/i.test(
+      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis|detail|details|information|info|tell me more|more about|feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology|variant|variants|model|models|trim|trims|test drive|demo|booking|book|can you hear me)\b/i.test(
         latestUserSpeech,
       );
 
