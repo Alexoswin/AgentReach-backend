@@ -184,6 +184,46 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(result.reply).not.toContain('specialist callback');
   });
 
+  it('introduces trained knowledge after permission instead of surfacing objection scripts', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Qualify fit for a workflow service';
+    call.campaign.botRole = 'consultative specialist';
+    call.campaign.botKnowledge = `Workflow Service helps teams automate follow-up, track customer conversations, and route qualified opportunities to the right owner.
+Common Objections
+Busy: "Is there a better time for a quick call, or would you prefer I send the details?"
+Not Looking: "No problem. I can send a short overview."`;
+    call.contact.firstName = 'Oswin';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Yes, it is a good time.',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Yes, it is a good time.',
+        },
+      ],
+    );
+
+    expect(result.reply).toMatch(
+      /workflow|automate|follow-up|opportunities/i,
+    );
+    expect(result.reply).not.toMatch(
+      /better time|quick call|send the details/i,
+    );
+    expect(result.reply).not.toMatch(/based on your question/i);
+    expect(
+      service.aiCallingBotsService.buildCallingContext,
+    ).toHaveBeenCalledWith(
+      'bot-1',
+      expect.stringContaining('Qualify fit for a workflow service'),
+      expect.any(Number),
+    );
+  });
+
   it('acknowledges automotive feature requests when verified details are unavailable', async () => {
     const service = createService('');
     global.fetch = jest.fn();

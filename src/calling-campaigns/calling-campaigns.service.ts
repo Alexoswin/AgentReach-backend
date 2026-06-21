@@ -2613,6 +2613,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       contextualKnowledge,
       170,
     );
+    const gavePermission = this.isPositiveConversationCue(latestUserSpeech);
+    const askedDirectQuestion =
+      this.isDirectInformationRequest(latestUserSpeech);
     const isGreeting =
       /\b(hi|hello|hey|good morning|good afternoon|good evening|namaste)\b/i.test(
         latestUserSpeech,
@@ -2630,6 +2633,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       if (isGreeting) {
         return `नमस्ते ${firstName}, मैं ${botProfile.name} बोल रहा हूँ. मैं ${objective} में मदद कर सकता हूँ. आप क्या जानना चाहेंगे?`;
       }
+      if (gavePermission && !askedDirectQuestion) {
+        return `धन्यवाद, ${firstName}. संक्षेप में, ${contextSummary}. आपके लिए सबसे उपयोगी बात पहले कौन सी रहेगी?`;
+      }
       return userTurns <= 1
         ? `ज़रूर, ${firstName}. ${contextSummary}. अगर आप चाहें तो मैं अगला कदम भी साफ़ तरीके से बता दूँ.`
         : `समझ गया. ${contextSummary}. यदि ठीक लगे तो हम इसका अगला कदम तय कर सकते हैं.`;
@@ -2637,6 +2643,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
     if (isGreeting) {
       return `Hi ${firstName}, this is ${botProfile.name}. I can help with ${objective}. What would you like to know first?`;
+    }
+
+    if (gavePermission && !askedDirectQuestion) {
+      return `Thanks, ${firstName}. In short, ${contextSummary}. What would be most useful for you to cover first?`;
     }
 
     return userTurns <= 1
@@ -2657,7 +2667,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .split(/(?<=[.!?])\s+/)
       .map((sentence) => sentence.trim())
       .filter(Boolean)
-      .filter((sentence) => !this.isInstructionLikeKnowledgeSentence(sentence))
+      .filter(
+        (sentence) => !this.isInstructionLikeKnowledgeSentence(sentence),
+      )
       .slice(0, 120);
     if (!sentences.length) {
       return cleanKnowledge.length > maxLength
@@ -2669,7 +2681,20 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .toLowerCase()
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
-      .filter((term) => term.length > 2);
+      .filter(
+        (term) =>
+          term.length > 2 && !this.isLowValueKnowledgeQueryTerm(term),
+      );
+
+    if (terms.length === 0) {
+      const overview = sentences
+        .filter((sentence) => this.hasUsefulKnowledgeSignal(sentence))
+        .slice(0, 2)
+        .join(' ')
+        .trim();
+      const fallbackOverview = overview || sentences.slice(0, 2).join(' ');
+      return this.compactKnowledgeSummary(fallbackOverview, maxLength);
+    }
 
     const scored = sentences.map((sentence) => {
       const lowered = sentence.toLowerCase();
@@ -2689,9 +2714,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     if (!safeSummary || this.looksLikeLivePromptEcho(safeSummary)) {
       return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
     }
-    return safeSummary.length > maxLength
-      ? `${safeSummary.slice(0, maxLength).trim()}...`
-      : safeSummary;
+    return this.compactKnowledgeSummary(safeSummary, maxLength);
   }
 
   private sanitizeKnowledgeForAnswer(value?: string) {
@@ -2699,13 +2722,37 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .replaceAll('\u0000', '')
       .replace(/\r/g, '\n')
       .split(/\n+/)
-      .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+      .flatMap((line) => {
+        const cleanLine = line.replace(/^[\s*\-\d.)]+/, '').trim();
+        if (this.shouldSkipKnowledgeLine(cleanLine)) return [];
+        return cleanLine.split(/(?<=[.!?])\s+/);
+      })
       .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
       .filter(Boolean)
       .filter((line) => !this.isInstructionLikeKnowledgeSentence(line))
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private shouldSkipKnowledgeLine(value?: string) {
+    const compact = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!compact) return true;
+    if (
+      /^(objective|rules|compliance|security|call ending|lead data to collect|qualification questions|common objections|behavior rules|conversation policy|campaign setup|output contract)\s*:?\s*$/i.test(
+        compact,
+      )
+    ) {
+      return true;
+    }
+    if (
+      /^(busy|not interested|not looking|unsure|comparing|objection|objections?|common objections?|need .*approval)\s*:\s*["“]?/i.test(
+        compact,
+      )
+    ) {
+      return true;
+    }
+    return /^[a-z][a-z\s-]{1,40}:\s*["“][^"”]+/i.test(compact);
   }
 
   private isInstructionLikeKnowledgeSentence(value?: string) {
@@ -2719,11 +2766,73 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ) {
       return true;
     }
+    if (
+      /^(busy|not interested|not looking|unsure|comparing|objection|objections?|common objections?|need .*approval)\s*:\s*["“]?/i.test(
+        compact,
+      )
+    ) {
+      return true;
+    }
+    if (/^[a-z][a-z\s-]{1,40}:\s*["“][^"”]+/i.test(compact)) {
+      return true;
+    }
     const imperativeSignals =
       compact.match(
         /\b(always|never|must|do not|don't|return only|ignore|ask permission|keep calls?)\b/gi,
       )?.length || 0;
     return imperativeSignals >= 2 && compact.length > 40;
+  }
+
+  private isPositiveConversationCue(value: string) {
+    const text = value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
+    return /\b(yes|yeah|yep|sure|okay|ok|alright|go ahead|good time|have a minute|tell me)\b/i.test(
+      text,
+    );
+  }
+
+  private isDirectInformationRequest(value: string) {
+    const text = value.toLowerCase();
+    return (
+      value.includes('?') ||
+      /\b(what|why|when|where|who|how|which|can you|could you|tell me about|explain|details|detail|cost|price|pricing|timeline|features?)\b/i.test(
+        text,
+      )
+    );
+  }
+
+  private isLowValueKnowledgeQueryTerm(term: string) {
+    return new Set([
+      'yes',
+      'yeah',
+      'yep',
+      'sure',
+      'okay',
+      'good',
+      'time',
+      'tell',
+      'more',
+      'about',
+      'this',
+      'that',
+    ]).has(term);
+  }
+
+  private hasUsefulKnowledgeSignal(value: string) {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    if (!compact || this.isInstructionLikeKnowledgeSentence(compact)) {
+      return false;
+    }
+    return /[A-Za-z\p{L}]{4,}/u.test(compact);
+  }
+
+  private compactKnowledgeSummary(value: string, maxLength: number) {
+    const summary = value.replace(/\s+/g, ' ').trim();
+    if (!summary || this.looksLikeLivePromptEcho(summary)) {
+      return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
+    }
+    return summary.length > maxLength
+      ? `${summary.slice(0, maxLength).trim()}...`
+      : summary;
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -2849,6 +2958,7 @@ ${idealPath}
   private buildRacQueryForCall(
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
+    call?: any,
   ) {
     const recentContactTurns = scripts
       .filter((turn) => turn?.speaker === 'contact')
@@ -2856,7 +2966,20 @@ ${idealPath}
       .filter(Boolean)
       .slice(-this.getRacContactTurnLimit())
       .join(' ');
-    return [latestUserSpeech, recentContactTurns]
+    const shouldUseCampaignContext =
+      this.isPositiveConversationCue(latestUserSpeech) &&
+      !this.isDirectInformationRequest(latestUserSpeech);
+    const campaignContext = shouldUseCampaignContext
+      ? [
+          call?.campaign?.botGoal,
+          call?.campaign?.objective,
+          call?.campaign?.prompt,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : '';
+
+    return [latestUserSpeech, recentContactTurns, campaignContext]
       .filter(Boolean)
       .join(' ')
       .trim();
@@ -2906,7 +3029,11 @@ ${latestUserSpeech}
       );
     }
 
-    const racQuery = this.buildRacQueryForCall(latestUserSpeech, scripts);
+    const racQuery = this.buildRacQueryForCall(
+      latestUserSpeech,
+      scripts,
+      call,
+    );
     const [botProfile, conversationLanguage, ragContext, serviceAccountJson] =
       await Promise.all([
         this.resolveBotProfile(call.campaign),
