@@ -67,6 +67,8 @@ const VERTEX_TWILIO_TIMEOUT_MS = 2500;
 const TWILIO_RESPONSE_BUDGET_MS = 5000;
 const TWILIO_SPEECH_TIMEOUT_SECONDS = 1;
 const MAX_VERTEX_LIVE_CALL_MODELS = 2;
+const DEFAULT_LIVE_PROMPT_SCRIPT_TURNS = 14;
+const DEFAULT_LIVE_RAC_QUERY_CHARS = 900;
 const TWILIO_HD_PLAY_ENABLED = true;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const VERTEX_LOCATION = 'global';
@@ -150,8 +152,8 @@ export class CallingCampaignsService implements OnModuleInit {
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
   private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
   private googleTtsAccessToken: GoogleTtsAccessToken | null = null;
-  private promptExposurePatternCache: RegExp | null = null;
   private immediateEndPatternCache: RegExp | null = null;
+  private promptExposureTermsCache: string[] | null = null;
 
   constructor(
     private db: MongoService,
@@ -1877,16 +1879,28 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   private parseJsonObject(content: string) {
-    let cleanedJson = content.trim();
+    const raw = String(content || '').trim();
+    if (!raw) {
+      throw new Error('Model response was empty');
+    }
+
+    let cleanedJson = raw;
     if (cleanedJson.startsWith('```')) {
       cleanedJson = cleanedJson
-        .replace(/^```json/, '')
-        .replace(/^```/, '')
-        .replace(/```$/, '')
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
         .trim();
     }
 
-    return JSON.parse(cleanedJson);
+    try {
+      return JSON.parse(cleanedJson);
+    } catch {
+      const match = cleanedJson.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new Error('Model response did not contain a valid JSON object');
+      }
+      return JSON.parse(match[0]);
+    }
   }
 
   private async applyAiCallingBotDefaults(data: Record<string, any>) {
@@ -2732,11 +2746,14 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     scripts: Array<Record<string, any>>,
     call?: any,
   ) {
+    const latestSpeech = String(latestUserSpeech || '').trim();
+    const latestSpeechNormalized = latestSpeech.toLowerCase();
     const recentContactTurns = scripts
       .filter((turn) => turn?.speaker === 'contact')
       .map((turn) => String(turn?.text || '').trim())
       .filter(Boolean)
       .slice(-this.getRacContactTurnLimit())
+      .filter((turn) => turn.toLowerCase() !== latestSpeechNormalized)
       .join(' ');
     const campaignContext = [
       call?.campaign?.botGoal,
@@ -2746,10 +2763,13 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .filter(Boolean)
       .join(' ');
 
-    return [latestUserSpeech, recentContactTurns, campaignContext]
-      .filter(Boolean)
-      .join(' ')
-      .trim();
+    return this.compactModelText(
+      [latestSpeech, recentContactTurns, campaignContext]
+        .filter(Boolean)
+        .join(' ')
+        .trim(),
+      this.getCallingRacQueryMaxChars(),
+    );
   }
 
   private buildLiveCallingUserPrompt(
@@ -2789,15 +2809,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     const racQuery = this.buildRacQueryForCall(latestUserSpeech, scripts, call);
+    const llmScopedScripts = this.getPromptScopedScripts(scripts);
     const [botProfile, conversationLanguage, ragContext, serviceAccountJson] =
       await Promise.all([
         this.resolveBotProfile(call.campaign),
         Promise.resolve(quickLanguage),
-        this.aiCallingBotsService.buildCallingContext(
-          call.campaign.aiCallingBotId,
-          racQuery,
-          this.getCallingRacTopK(),
-        ),
+        this.buildCallingRagContext(call, racQuery),
         this.getServiceAccountJson(),
       ]);
     const serviceAccount =
@@ -2821,7 +2838,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       `Vertex AI bot context for call ${call.id}; botName=${botProfile.name}; botRole=${botProfile.role}; knowledgeLength=${String((botProfile.knowledge || '').length)}; ragLength=${String((ragContext || '').length)}; transcriptTurns=${String(scripts.length)}`,
     );
 
-    const transcript = this.scriptsToTranscript(scripts);
+    const transcript = this.scriptsToTranscript(llmScopedScripts);
     const campaignLanguage = conversationLanguage;
     const languageInstruction =
       this.buildLiveCallLanguageInstruction(campaignLanguage);
@@ -2948,7 +2965,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           return this.normalizeConversationGeneration(
             parsedContent,
             fallback,
-            scripts,
+            llmScopedScripts,
           );
         } catch (modelErr) {
           // Catch per-model errors (including AbortError) so the loop continues.
@@ -2997,7 +3014,25 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   ) {
     // Strict end gate: only end when the contact declines or the configured goal is met.
     if (this.isImmediateEndSpeech(latestUserSpeech)) return true;
+    if (this.isLikelyContinuationTurn(latestUserSpeech)) return false;
     return this.isGoalMarkedAsMet(generation);
+  }
+
+  private isLikelyContinuationTurn(latestUserSpeech: string) {
+    const speech = String(latestUserSpeech || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+    if (!speech) return false;
+    if (/[?؟]/.test(speech)) return true;
+    if (
+      /\b(what|how|when|where|which|can you|could you|tell me|share|explain|details|capabilities|price|pricing|cost|more)\b/.test(
+        speech,
+      )
+    ) {
+      return true;
+    }
+    return /\b(next|continue|go on|tell me more|anything else)\b/.test(speech);
   }
 
   private isGoalMarkedAsMet(generation: ConversationGeneration) {
@@ -3005,33 +3040,40 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const readString = (value: unknown) =>
       typeof value === 'string' ? value : '';
 
-    if (typeof data.goalMet === 'boolean' && data.goalMet) return true;
-    if (typeof data.objectiveMet === 'boolean' && data.objectiveMet)
-      return true;
-
+    const goalMetFlag =
+      (typeof data.goalMet === 'boolean' && data.goalMet) ||
+      (typeof data.objectiveMet === 'boolean' && data.objectiveMet);
     const goalStatus = readString(data.goalStatus).toLowerCase().trim();
+    const goalStatusMet = [
+      'met',
+      'achieved',
+      'completed',
+      'done',
+      'resolved',
+    ].includes(goalStatus);
+    if (!goalMetFlag && !goalStatusMet) return false;
+
+    const requestedNextStep = readString(data.requestedNextStep)
+      .toLowerCase()
+      .trim();
     if (
-      ['met', 'achieved', 'completed', 'done', 'resolved'].includes(goalStatus)
+      [
+        'callback',
+        'details',
+        'meeting',
+        'booking',
+        'handoff',
+        'opt_out',
+      ].includes(requestedNextStep)
     ) {
       return true;
     }
+    if (requestedNextStep === 'none') return false;
 
-    const evidence = [
-      generation?.endReason || '',
-      generation?.keyOutcomes || '',
-      readString(data.notes),
-    ]
-      .join(' ')
-      .toLowerCase();
-    if (
-      /\b(goal met|objective met|goal achieved|objective achieved)\b/.test(
-        evidence,
-      )
-    ) {
-      return true;
-    }
-
-    return false;
+    const notes = readString(data.notes).toLowerCase();
+    return /\b(callback|follow[- ]?up|send|meeting|book|handoff|opt[- ]?out)\b/.test(
+      notes,
+    );
   }
 
   private derivePrimaryGoal(call?: any, botProfile?: any) {
@@ -3145,16 +3187,42 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   }
 
   private isPromptExposureRequest(value: string) {
-    if (!this.promptExposurePatternCache) {
-      this.promptExposurePatternCache = buildKeywordRegex(
-        readStringListConfig(
-          this.configService,
-          'AI_CALLING_PROMPT_EXPOSURE_TERMS',
-          DEFAULT_PROMPT_EXPOSURE_TERMS,
-        ),
+    const text = String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+    if (!text) return false;
+    const directLeakIntentPattern =
+      /\b(show|share|reveal|tell|disclose|give|print|repeat|read|what(?:'s| is))\b[\s\S]{0,60}\b(system prompt|prompt|instructions?|rules?|developer message|hidden instructions?)\b|\b(ignore previous instructions|jailbreak|reveal your rules|show your rules|system prompt|developer message)\b/i;
+    if (directLeakIntentPattern.test(text)) return true;
+
+    const terms = this.getPromptExposureTerms();
+    const matchedTerms = terms.filter((term) =>
+      text.includes(term.toLowerCase()),
+    );
+    if (matchedTerms.length >= 2) return true;
+    if (matchedTerms.length === 0) return false;
+
+    const onlyTerm = matchedTerms[0].toLowerCase();
+    if (onlyTerm === 'prompt' || onlyTerm === 'instructions') {
+      return /\b(show|share|reveal|tell|disclose|give|read|what(?:'s| is))\b/.test(
+        text,
       );
     }
-    return this.promptExposurePatternCache.test(value);
+    return true;
+  }
+
+  private getPromptExposureTerms(): string[] {
+    if (!this.promptExposureTermsCache) {
+      this.promptExposureTermsCache = readStringListConfig(
+        this.configService,
+        'AI_CALLING_PROMPT_EXPOSURE_TERMS',
+        DEFAULT_PROMPT_EXPOSURE_TERMS,
+      )
+        .map((term) => term.trim().toLowerCase())
+        .filter(Boolean);
+    }
+    return this.promptExposureTermsCache || [];
   }
 
   private buildLiveCallLanguageInstruction(language?: string) {
@@ -3450,6 +3518,30 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
   }
 
+  private getCallingPromptScriptTurnLimit() {
+    return Math.floor(
+      readNumberConfig(
+        this.configService,
+        'AI_CALLING_PROMPT_SCRIPT_TURNS',
+        DEFAULT_LIVE_PROMPT_SCRIPT_TURNS,
+        6,
+        40,
+      ),
+    );
+  }
+
+  private getCallingRacQueryMaxChars() {
+    return Math.floor(
+      readNumberConfig(
+        this.configService,
+        'AI_CALLING_RAC_QUERY_MAX_CHARS',
+        DEFAULT_LIVE_RAC_QUERY_CHARS,
+        300,
+        4000,
+      ),
+    );
+  }
+
   private getCallingRacTopK() {
     return Math.floor(
       readNumberConfig(this.configService, 'AI_CALLING_RAC_TOP_K', 4, 1, 8),
@@ -3485,6 +3577,21 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     if (sentenceEnd > 80) return shortened.slice(0, sentenceEnd + 1);
     const space = shortened.lastIndexOf(' ');
     return `${shortened.slice(0, space > 80 ? space : maxLength - 3)}...`;
+  }
+
+  private compactModelText(value: string, maxLength: number) {
+    const text = String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length <= maxLength) return text;
+    const shortened = text.slice(0, maxLength - 3);
+    const splitAt = Math.max(
+      shortened.lastIndexOf('. '),
+      shortened.lastIndexOf(' '),
+    );
+    return `${shortened
+      .slice(0, splitAt > 80 ? splitAt : maxLength - 3)
+      .trim()}...`;
   }
 
   private stripSentenceEnding(value: string) {
@@ -3815,5 +3922,26 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const digits = phoneNumber?.replace(/\D/g, '') || '';
     if (digits.length <= 4) return phoneNumber || 'missing';
     return `${phoneNumber?.startsWith('+') ? '+' : ''}***${digits.slice(-4)}`;
+  }
+
+  private getPromptScopedScripts(scripts: Array<Record<string, any>>) {
+    return scripts.slice(-this.getCallingPromptScriptTurnLimit());
+  }
+
+  private async buildCallingRagContext(call: any, query: string) {
+    const aiCallingBotId = String(call?.campaign?.aiCallingBotId || '').trim();
+    if (!aiCallingBotId || !query) return '';
+    try {
+      return await this.aiCallingBotsService.buildCallingContext(
+        aiCallingBotId,
+        query,
+        this.getCallingRacTopK(),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `RAG context fetch failed for bot ${aiCallingBotId}; continuing without RAG context. Reason: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return '';
+    }
   }
 }
