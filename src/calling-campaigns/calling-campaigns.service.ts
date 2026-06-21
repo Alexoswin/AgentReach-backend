@@ -2283,33 +2283,88 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         90,
       ),
     );
-    const campaignTopic =
-      this.stripSentenceEnding(
-        this.compactForSpeech(
-          knowledgeContext ||
-            botProfile.knowledge ||
-            call.campaign.prompt ||
-            objective ||
-            'this product',
-          110,
-        ),
-      ) || 'this product';
+    const contextualKnowledge = [
+      knowledgeContext,
+      botProfile.knowledge,
+      call.campaign.prompt,
+    ]
+      .filter(Boolean)
+      .join('\n');
     const userNeed = this.stripSentenceEnding(
       this.compactForSpeech(latestUserSpeech || 'the latest question', 90),
     );
-    const contextSummary = this.stripSentenceEnding(
-      this.compactForSpeech(campaignTopic, 120),
+    const contextSummary = this.extractRelevantKnowledgeSummary(
+      latestUserSpeech,
+      contextualKnowledge,
+      220,
     );
+    const isGreeting =
+      /\b(hi|hello|hey|good morning|good afternoon|good evening|namaste)\b/i.test(
+        latestUserSpeech,
+      );
 
     if (hindi) {
+      if (isGreeting) {
+        return `नमस्ते ${firstName}, मैं ${botProfile.name} बोल रहा हूँ. मैं ${objective} में मदद कर सकता हूँ. आप किस बिंदु पर जानकारी चाहते हैं?`;
+      }
       return userTurns <= 1
-        ? `धन्यवाद, ${firstName}. मैं ${objective} के बारे में कॉल कर रहा हूँ. आपने "${userNeed}" पूछा है. उपलब्ध संदर्भ के आधार पर मैं संक्षेप में मदद कर सकता हूँ: ${contextSummary}. क्या आप इसी दिशा में आगे बढ़ना चाहेंगे?`
-        : `समझ गया. आपने "${userNeed}" कहा है. उपलब्ध संदर्भ के अनुसार अगला उपयोगी बिंदु है: ${contextSummary}. क्या मैं इसी पर आगे बढ़ूँ?`;
+        ? `धन्यवाद, ${firstName}. आपने "${userNeed}" पूछा है. उपलब्ध संदर्भ के आधार पर: ${contextSummary}. क्या आप इसी पर आगे बढ़ना चाहेंगे?`
+        : `समझ गया. आपने "${userNeed}" कहा है. सबसे प्रासंगिक जानकारी: ${contextSummary}. क्या मैं इसी दिशा में आगे बढ़ूँ?`;
+    }
+
+    if (isGreeting) {
+      return `Hi ${firstName}, this is ${botProfile.name}. I can help with ${objective}. What would you like to know first?`;
     }
 
     return userTurns <= 1
-      ? `Thanks, ${firstName}. I am calling about ${objective}. You asked about "${userNeed}". Based on available context, I can continue with this: ${contextSummary}. Should I continue in this direction?`
-      : `Understood. You asked about "${userNeed}". Based on available context, the most relevant point is: ${contextSummary}. Should I continue with that?`;
+      ? `Thanks, ${firstName}. You asked about "${userNeed}". Based on available context: ${contextSummary}. Should I continue with this?`
+      : `Understood. You asked about "${userNeed}". The most relevant point I have is: ${contextSummary}. Should I continue?`;
+  }
+
+  private extractRelevantKnowledgeSummary(
+    question: string,
+    knowledge: string,
+    maxLength = 220,
+  ) {
+    const cleanKnowledge = (knowledge || '').replace(/\s+/g, ' ').trim();
+    if (!cleanKnowledge) {
+      return 'I do not yet have enough verified detail in the training context.';
+    }
+    const sentences = cleanKnowledge
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean)
+      .slice(0, 120);
+    if (!sentences.length) {
+      return cleanKnowledge.length > maxLength
+        ? `${cleanKnowledge.slice(0, maxLength).trim()}...`
+        : cleanKnowledge;
+    }
+
+    const terms = question
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((term) => term.length > 2);
+
+    const scored = sentences.map((sentence) => {
+      const lowered = sentence.toLowerCase();
+      const score = terms.reduce(
+        (sum, term) => (lowered.includes(term) ? sum + 1 : sum),
+        0,
+      );
+      return { sentence, score };
+    });
+
+    const selected = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map((item) => item.sentence);
+    const summary = selected.join(' ').trim();
+    const safeSummary = summary || sentences.slice(0, 2).join(' ').trim();
+    return safeSummary.length > maxLength
+      ? `${safeSummary.slice(0, maxLength).trim()}...`
+      : safeSummary;
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -2369,6 +2424,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       this.logger.warn(
         'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
       );
+      const openRouterFallback = await this.generateOpenRouterCallingTurn(
+        call,
+        latestUserSpeech,
+        scripts,
+        conversationLanguage,
+        botProfile,
+        ragContext,
+        fallback,
+      );
+      if (openRouterFallback) return openRouterFallback;
       return fallback;
     }
 
@@ -2475,6 +2540,16 @@ Return ONLY valid JSON. No markdown. No extra text.
         this.logger.warn(
           'Google service account auth is unavailable for Vertex AI live calling; using scripted fallback response.',
         );
+        const openRouterFallback = await this.generateOpenRouterCallingTurn(
+          call,
+          latestUserSpeech,
+          scripts,
+          conversationLanguage,
+          botProfile,
+          ragContext,
+          fallback,
+        );
+        if (openRouterFallback) return openRouterFallback;
         return fallback;
       }
 
@@ -2570,12 +2645,126 @@ Return ONLY valid JSON. No markdown. No extra text.
       this.logger.warn(
         `Vertex AI live calling turn generation failed; using scripted fallback response. Reason: ${lastFailureReason}`,
       );
+      const openRouterFallback = await this.generateOpenRouterCallingTurn(
+        call,
+        latestUserSpeech,
+        scripts,
+        conversationLanguage,
+        botProfile,
+        ragContext,
+        fallback,
+      );
+      if (openRouterFallback) return openRouterFallback;
       return fallback;
     } catch (error) {
       this.logger.warn(
         `Vertex AI live calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      const openRouterFallback = await this.generateOpenRouterCallingTurn(
+        call,
+        latestUserSpeech,
+        scripts,
+        conversationLanguage,
+        botProfile,
+        ragContext,
+        fallback,
+      );
+      if (openRouterFallback) return openRouterFallback;
       return fallback;
+    }
+  }
+
+  private async generateOpenRouterCallingTurn(
+    call: any,
+    latestUserSpeech: string,
+    scripts: Array<Record<string, any>>,
+    conversationLanguage: string,
+    botProfile: any,
+    ragContext: string,
+    fallback: ConversationGeneration,
+  ) {
+    try {
+      const settings = decryptSystemSettings(
+        await this.db.systemSettings.findUnique({
+          where: { id: 'default' },
+        }),
+      );
+      const key = settings?.openRouterApiKey?.trim();
+      if (!key) return null;
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('mock') || lowerKey.includes('test')) return null;
+
+      const transcript = this.scriptsToTranscript(scripts);
+      const languageInstruction =
+        this.buildLiveCallLanguageInstruction(conversationLanguage);
+      const retrieved = ragContext?.trim()
+        ? ragContext
+        : 'No retrieved knowledge available.';
+      const systemPrompt = [
+        `You are ${botProfile.name}, a ${botProfile.role}.`,
+        `Persona: ${botProfile.personality}`,
+        `Objective: ${call.campaign.objective || 'identify interest and capture next step'}`,
+        `Scenario: ${call.campaign.prompt || call.campaign.objective || 'Outbound campaign'}`,
+        `Knowledge base: ${botProfile.knowledge || 'none'}`,
+        `Retrieved context: ${retrieved}`,
+        `Rules: ${botProfile.rules || 'be concise and truthful'}`,
+        `Objection handling: ${botProfile.objections || 'stay calm and practical'}`,
+        languageInstruction,
+        'Respond naturally like a real human caller.',
+        'Do not dump raw chunks or long copied text.',
+        'Answer latest question first, then ask one useful next-step question at most.',
+        'Keep reply concise unless detail is requested.',
+        'Return only JSON with this schema: {"reply":"string","shouldEnd":boolean,"endReason":"string","collectedData":{},"sentimentScore":number,"keyOutcomes":"string","topicsCovered":["string"]}',
+      ].join('\n');
+      const userPrompt = [
+        `Transcript:\n${transcript || 'No previous transcript.'}`,
+        `Latest contact utterance: "${latestUserSpeech}"`,
+      ].join('\n\n');
+
+      const response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reachconvert.com',
+            'X-Title': 'ReachConvert',
+          },
+          body: JSON.stringify({
+            model: resolveOpenRouterModel(settings?.openRouterModel),
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.3,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        this.logger.warn(
+          `OpenRouter live calling fallback failed: ${data?.error?.message || response.statusText}`,
+        );
+        return null;
+      }
+      const content = String(data?.choices?.[0]?.message?.content || '').trim();
+      if (!content) return null;
+      const parsed = this.parseJsonObject(content);
+      if (
+        !parsed ||
+        typeof parsed.reply !== 'string' ||
+        !parsed.reply.trim()
+      ) {
+        return null;
+      }
+      return this.normalizeConversationGeneration(parsed, fallback);
+    } catch (error) {
+      this.logger.warn(
+        `OpenRouter live calling fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
     }
   }
 

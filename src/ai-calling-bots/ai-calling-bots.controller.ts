@@ -19,6 +19,7 @@ import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
 import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
+import { ChatAiCallingBotDto } from './dto/chat-ai-calling-bot.dto';
 
 const MAX_TRAINING_PDF_BYTES = 8 * 1024 * 1024;
 
@@ -120,5 +121,12 @@ export class AiCallingBotsController {
   @ApiOperation({ summary: 'Search an AI calling bot knowledge base' })
   search(@Param('id') id: string, @Body() dto: SearchAiCallingBotDto) {
     return this.aiCallingBotsService.search(id, dto);
+  }
+
+  @Post(':id/chat')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Chat with an AI calling bot using trained context' })
+  chat(@Param('id') id: string, @Body() dto: ChatAiCallingBotDto) {
+    return this.aiCallingBotsService.chat(id, dto);
   }
 }

@@ -4,8 +4,11 @@ import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
 import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
+import { ChatAiCallingBotDto } from './dto/chat-ai-calling-bot.dto';
 import { PDFParse } from 'pdf-parse';
 import { randomUUID } from 'crypto';
+import { resolveOpenRouterModel } from '../config/openrouter';
+import { decryptSystemSettings } from '../settings/credential-encryption';
 
 type TrainingPdfFile = {
   originalname: string;
@@ -216,6 +219,44 @@ export class AiCallingBotsService {
     return this.searchBotKnowledge(id, query, dto.topK || 4);
   }
 
+  async chat(id: string, dto: ChatAiCallingBotDto) {
+    const message = dto.message?.trim();
+    if (!message) throw new BadRequestException('Chat message is required.');
+    const bot = await this.findOne(id);
+    const topK = dto.topK || 4;
+    const results = bot.ragEnabled
+      ? await this.searchBotKnowledge(id, message, topK)
+      : [];
+
+    const fallback = this.buildFallbackChatReply(
+      message,
+      {
+        name: bot.name || 'Agent',
+        role: bot.role || 'calling specialist',
+        knowledge: bot.knowledge || '',
+      },
+      results,
+    );
+
+    const llmReply = await this.generateChatReplyWithOpenRouter(
+      {
+        name: bot.name || 'Agent',
+        role: bot.role || 'calling specialist',
+        personality: bot.personality || 'warm, concise, and helpful',
+        knowledge: bot.knowledge || '',
+        rules: bot.rules || '',
+        greeting: bot.greeting || '',
+      },
+      message,
+      results,
+    );
+
+    return {
+      reply: llmReply || fallback,
+      sources: results,
+    };
+  }
+
   async searchBotKnowledge(botId: string, query: string, topK = 4) {
     const embeddings = await this.db.aiCallingBotEmbedding.findMany({
       where: { botId },
@@ -256,6 +297,126 @@ export class AiCallingBotsService {
         return `RAG ${index + 1}${source}: ${item.content}`;
       })
       .join('\n');
+  }
+
+  private buildFallbackChatReply(
+    message: string,
+    bot: { name: string; role: string; knowledge: string },
+    results: Array<{ content: string }>,
+  ) {
+    const lowered = message.toLowerCase();
+    const isGreeting =
+      /\b(hi|hello|hey|good morning|good afternoon|good evening|namaste)\b/i.test(
+        lowered,
+      );
+    if (isGreeting) {
+      return `Hi, I am ${bot.name}, your ${bot.role}. Ask me anything about the trained knowledge and I will keep it concise.`;
+    }
+
+    const snippets = results
+      .map((item) => this.summarizeSnippet(item.content))
+      .filter(Boolean)
+      .slice(0, 2);
+
+    if (snippets.length > 0) {
+      return snippets.join(' ');
+    }
+
+    if (bot.knowledge?.trim()) {
+      const summary = this.summarizeSnippet(bot.knowledge);
+      if (summary) return summary;
+    }
+
+    return 'I do not have enough trained context for that yet. Please train me with more specific information and ask again.';
+  }
+
+  private summarizeSnippet(value: string) {
+    const cleaned = value
+      .replace(/\s+/g, ' ')
+      .replace(/\u0000/g, '')
+      .trim();
+    if (!cleaned) return '';
+    const parts = cleaned
+      .split(/(?<=[.!?])\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const firstTwo = parts.slice(0, 2).join(' ');
+    const summary = firstTwo || cleaned;
+    return summary.length > 320 ? `${summary.slice(0, 320).trim()}...` : summary;
+  }
+
+  private async generateChatReplyWithOpenRouter(
+    bot: {
+      name: string;
+      role: string;
+      personality: string;
+      knowledge: string;
+      rules: string;
+      greeting: string;
+    },
+    message: string,
+    results: Array<{ content: string; score: number }>,
+  ) {
+    try {
+      const settings = decryptSystemSettings(
+        await this.db.systemSettings.findUnique({
+          where: { id: 'default' },
+        }),
+      );
+      const key = settings?.openRouterApiKey?.trim();
+      if (!key) return '';
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('mock') || lowerKey.includes('test')) return '';
+
+      const retrieved = results
+        .slice(0, 4)
+        .map((item, index) => `Source ${index + 1}: ${item.content}`)
+        .join('\n');
+
+      const systemPrompt = [
+        `You are ${bot.name}, a ${bot.role}.`,
+        `Personality: ${bot.personality || 'warm, concise, and practical'}`,
+        `Greeting style: ${bot.greeting || 'brief and friendly'}`,
+        `Bot knowledge: ${bot.knowledge || 'none'}`,
+        `Rules: ${bot.rules || 'be concise and factual'}`,
+        'Use retrieved context first. If unsure, clearly say what is unknown.',
+        'Never dump long raw chunks. Respond in 2-5 concise sentences.',
+      ].join('\n');
+
+      const userPrompt = [
+        `User message: ${message}`,
+        retrieved ? `Retrieved knowledge:\n${retrieved}` : 'Retrieved knowledge: none',
+      ].join('\n\n');
+
+      const response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://reachconvert.com',
+            'X-Title': 'ReachConvert',
+          },
+          body: JSON.stringify({
+            model: resolveOpenRouterModel(settings?.openRouterModel),
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: 0.3,
+            max_tokens: 220,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) return '';
+      const content = String(data?.choices?.[0]?.message?.content || '').trim();
+      if (!content) return '';
+      return content.length > 700 ? `${content.slice(0, 700).trim()}...` : content;
+    } catch {
+      return '';
+    }
   }
 
   async getCampaignDefaults(id?: string) {
