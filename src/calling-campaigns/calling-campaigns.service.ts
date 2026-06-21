@@ -1841,9 +1841,9 @@ Return ONLY valid JSON with exactly these fields:
   private hasUsableTwilioSettings(settings?: TwilioSettings | null) {
     return Boolean(
       settings?.twilioStatus === 'CONNECTED' &&
-        settings.twilioAccountSid?.trim() &&
-        settings.twilioAuthToken?.trim() &&
-        settings.twilioPhoneNumber?.trim(),
+      settings.twilioAccountSid?.trim() &&
+      settings.twilioAuthToken?.trim() &&
+      settings.twilioPhoneNumber?.trim(),
     );
   }
 
@@ -2123,7 +2123,9 @@ Return ONLY valid JSON with exactly these fields:
       `I will keep this ${this.sentenceFromText(botProfile.personality).toLowerCase()}`,
       `I wanted to see if this is relevant for ${company}, share the key context, and ask one or two quick questions before suggesting a next step.`,
       context,
-      objections ? `If you are unsure, I can handle common concerns like this: ${objections}` : '',
+      objections
+        ? `If you are unsure, I can handle common concerns like this: ${objections}`
+        : '',
       `If now is not a good time, no problem. I can note a better callback time or send the details instead.`,
       rules ? `I will keep this simple: ${rules}` : '',
     ]
@@ -2326,7 +2328,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         );
 
       if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures) {
-        return hindi ? 'हाँ, मैं सुन रहा हूँ. कृपया बताइए.' : 'Yes, I can hear you. Please go ahead.';
+        return hindi
+          ? 'हाँ, मैं सुन रहा हूँ. कृपया बताइए.'
+          : 'Yes, I can hear you. Please go ahead.';
       }
       if (asksAboutPrice) {
         return hindi
@@ -2466,9 +2470,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
     const transcript = this.scriptsToTranscript(scripts);
     const campaignLanguage = conversationLanguage;
-    const languageInstruction = this.buildLiveCallLanguageInstruction(
-      campaignLanguage,
-    );
+    const languageInstruction =
+      this.buildLiveCallLanguageInstruction(campaignLanguage);
     const selectedVoice = this.resolveGoogleTtsVoice(
       call.campaign.voice,
       campaignLanguage,
@@ -2742,10 +2745,9 @@ Return ONLY valid JSON. No markdown. No extra text.
 
     if (userTurns >= 4 && !isDirectInformationRequest) {
       return {
-        reply:
-          this.isHindiLanguage(language)
-            ? 'यह मददगार है. मैं इसे नोट कर रहा हूँ और टीम सबसे सही अगले कदम के साथ फॉलो अप करेगी. बात करने के लिए धन्यवाद.'
-            : 'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
+        reply: this.isHindiLanguage(language)
+          ? 'यह मददगार है. मैं इसे नोट कर रहा हूँ और टीम सबसे सही अगले कदम के साथ फॉलो अप करेगी. बात करने के लिए धन्यवाद.'
+          : 'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
         shouldEnd: true,
         endReason: 'Maximum live call turns reached.',
         collectedData: { latestUserSpeech },
@@ -2817,7 +2819,10 @@ Return ONLY valid JSON. No markdown. No extra text.
       return 'hi-IN';
     }
 
-    const combinedSpeech = [latestUserSpeech, ...scripts.map((turn) => turn?.text || '')]
+    const combinedSpeech = [
+      latestUserSpeech,
+      ...scripts.map((turn) => turn?.text || ''),
+    ]
       .join(' ')
       .trim();
     if (this.containsHindiScript(combinedSpeech)) {
@@ -3102,7 +3107,11 @@ Return ONLY valid JSON. No markdown. No extra text.
   }
 
   private resolveGoogleVoiceLanguage(language?: string, voice?: string) {
-    return this.normalizeLanguageCode(language) || this.inferLanguageFromVoice(voice) || 'en-IN';
+    return (
+      this.normalizeLanguageCode(language) ||
+      this.inferLanguageFromVoice(voice) ||
+      'en-IN'
+    );
   }
 
   private extractGeminiVoiceName(value?: string) {
