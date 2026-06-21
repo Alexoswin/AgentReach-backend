@@ -131,6 +131,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const userPrompt = vertexBody.contents[0].parts[0].text;
     expect(vertexBody.generationConfig.maxOutputTokens).toBe(400);
     expect(systemPrompt).toContain('<identity>');
+    expect(systemPrompt).toContain('<agentic_flow>');
     expect(systemPrompt).toContain('<conversation_policy>');
     expect(systemPrompt).toContain('<output_contract>');
     expect(systemPrompt).toContain(
@@ -141,6 +142,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     );
     expect(systemPrompt).toContain('You MUST speak and reply');
     expect(userPrompt).toContain('<rac_context>');
+    expect(userPrompt).toContain('<agent_state>');
     expect(userPrompt).toContain('<campaign_context>');
     expect(userPrompt).toContain('<latest_user_message>');
   });
