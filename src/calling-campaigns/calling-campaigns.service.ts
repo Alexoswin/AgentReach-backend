@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createSign, randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
@@ -51,6 +56,26 @@ const DEFAULT_VERTEX_MODELS = [
   'gemini-1.5-flash-002',
 ];
 
+// Statuses that indicate a call row is fully settled (no more Twilio events expected)
+const TERMINAL_CALL_OUTCOMES = new Set([
+  'ANSWERED',
+  'COMPLETED',
+  'NO_ANSWER',
+  'BUSY',
+  'FAILED',
+  'CANCELLED',
+  'VOICEMAIL',
+]);
+
+// Twilio status strings that are terminal
+const TERMINAL_TWILIO_STATUSES = new Set([
+  'completed',
+  'busy',
+  'failed',
+  'no-answer',
+  'canceled',
+]);
+
 type CallingCampaignGenerationJob = {
   id: string;
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
@@ -77,7 +102,7 @@ type ConversationGeneration = {
 };
 
 @Injectable()
-export class CallingCampaignsService {
+export class CallingCampaignsService implements OnModuleInit {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
   private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
@@ -88,6 +113,48 @@ export class CallingCampaignsService {
     private configService: ConfigService,
     private aiCallingBotsService: AiCallingBotsService,
   ) {}
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  onModuleInit() {
+    // FIX 6: Prune Google TTS audio cache every 5 minutes to prevent memory leaks.
+    // Entries older than 10 minutes are evicted (Twilio will have already played them).
+    setInterval(() => {
+      const cutoff = Date.now() - 10 * 60 * 1000;
+      for (const [id, cached] of this.googleSpeechCache.entries()) {
+        if (cached.createdAt < cutoff) {
+          this.googleSpeechCache.delete(id);
+        }
+      }
+      this.logger.debug(
+        `Google TTS cache pruned; remaining entries: ${this.googleSpeechCache.size}`,
+      );
+    }, 5 * 60 * 1000).unref();
+
+    // FIX 7: Prune completed/failed generation jobs older than 1 hour to prevent memory leaks.
+    setInterval(() => {
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      let pruned = 0;
+      for (const [id, job] of this.generationJobs.entries()) {
+        if (
+          (job.status === 'COMPLETED' || job.status === 'FAILED') &&
+          new Date(job.updatedAt).getTime() < cutoff
+        ) {
+          this.generationJobs.delete(id);
+          pruned++;
+        }
+      }
+      if (pruned > 0) {
+        this.logger.debug(`Generation job cache pruned; removed ${pruned} stale jobs`);
+      }
+    }, 15 * 60 * 1000).unref();
+  }
+
+  // ---------------------------------------------------------------------------
+  // CRUD
+  // ---------------------------------------------------------------------------
 
   async findAll() {
     const campaigns = await this.db.callingCampaign.findMany({
@@ -345,6 +412,10 @@ Return ONLY valid JSON with exactly these fields:
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Launch
+  // ---------------------------------------------------------------------------
+
   async launchCampaign(id: string) {
     this.logger.debug(`Launch requested for calling campaign ${id}`);
     const campaign = await this.db.callingCampaign.findUnique({
@@ -361,8 +432,11 @@ Return ONLY valid JSON with exactly these fields:
       throw new BadRequestException('Calling campaign not found');
     }
 
-    if (campaign.status === 'RUNNING') {
-      this.logger.warn(`Launch blocked for campaign ${id}: already running`);
+    // FIX 1: Block re-entry on both RUNNING and the new LAUNCHING guard status.
+    if (campaign.status === 'RUNNING' || campaign.status === 'LAUNCHING') {
+      this.logger.warn(
+        `Launch blocked for campaign ${id}: status is ${campaign.status}`,
+      );
       throw new BadRequestException('Calling campaign is already running');
     }
 
@@ -409,22 +483,48 @@ Return ONLY valid JSON with exactly these fields:
       this.assertPublicTwilioWebhookUrl();
     }
 
+    // FIX 1: Write LAUNCHING first as a distributed entry-lock so any concurrent
+    // launch request is rejected before we begin queuing Twilio calls.
     await this.db.callingCampaign.update({
       where: { id },
-      data: { status: 'RUNNING' },
+      data: { status: 'LAUNCHING' },
     });
 
     let twilioQueueResult: TwilioQueueResult | null = null;
-    if (hasTwilio) {
-      twilioQueueResult = await this.runTwilioOutboundCalls(
-        campaign.id,
-        settings,
+
+    try {
+      if (hasTwilio) {
+        // Promote to RUNNING now that we are actively placing calls with Twilio.
+        await this.db.callingCampaign.update({
+          where: { id },
+          data: { status: 'RUNNING' },
+        });
+        twilioQueueResult = await this.runTwilioOutboundCalls(
+          campaign.id,
+          settings,
+        );
+      } else {
+        this.logger.warn(
+          `Campaign ${id} is using simulation because Twilio is not fully connected`,
+        );
+        await this.db.callingCampaign.update({
+          where: { id },
+          data: { status: 'RUNNING' },
+        });
+        // Fire-and-forget; simulation manages its own completion transition.
+        this.runCallSimulation(campaign.id);
+      }
+    } catch (err) {
+      // If anything throws before or during queueing, park the campaign as FAILED
+      // so it is not stuck in LAUNCHING/RUNNING indefinitely.
+      this.logger.error(
+        `Campaign ${id} failed during launch`,
+        err instanceof Error ? err.stack : String(err),
       );
-    } else {
-      this.logger.warn(
-        `Campaign ${id} is using simulation because Twilio is not fully connected`,
-      );
-      this.runCallSimulation(campaign.id);
+      await this.db.callingCampaign
+        .update({ where: { id }, data: { status: 'FAILED' } })
+        .catch(() => undefined);
+      throw err;
     }
 
     return {
@@ -436,6 +536,10 @@ Return ONLY valid JSON with exactly these fields:
       twilio: twilioQueueResult,
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // Twilio outbound calling
+  // ---------------------------------------------------------------------------
 
   private async runTwilioOutboundCalls(
     campaignId: string,
@@ -469,128 +573,150 @@ Return ONLY valid JSON with exactly these fields:
         return resultSummary;
       }
 
+      // FIX 9: Respect the campaign's concurrencyLimit when placing calls.
+      // Calls are grouped into batches; each batch is fired concurrently via
+      // Promise.all, then the next batch starts once the current one settles.
+      const concurrencyLimit = Math.max(
+        1,
+        Number(campaign.concurrencyLimit) || 50,
+      );
+      const allCalls = campaign.calls as any[];
+      const batches: (typeof allCalls)[] = [];
+      for (let i = 0; i < allCalls.length; i += concurrencyLimit) {
+        batches.push(allCalls.slice(i, i + concurrencyLimit));
+      }
+
       let placed = 0;
       let failed = 0;
 
-      for (const call of campaign.calls) {
-        const contact = call.contact;
-        if (!this.hasCallablePhone(contact)) {
-          failed++;
-          resultSummary.failed++;
-          this.logger.warn(
-            `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
-          );
-          continue;
-        }
+      for (const batch of batches) {
+        await Promise.all(
+          batch.map(async (call) => {
+            const contact = call.contact;
+            if (!this.hasCallablePhone(contact)) {
+              failed++;
+              resultSummary.failed++;
+              this.logger.warn(
+                `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
+              );
+              return; // FIX 9: use return instead of continue inside async map
+            }
 
-        this.logger.debug(
-          `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
-        );
-        const botProfile = this.buildBotProfile(campaign);
-        const openingScript = this.buildLiveOpeningScript(
-          campaign,
-          contact,
-          botProfile,
-        );
-        const openingTranscript = `AI Agent: ${openingScript}`;
+            this.logger.debug(
+              `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}`,
+            );
+            const botProfile = this.buildBotProfile(campaign);
+            const openingScript = this.buildLiveOpeningScript(
+              campaign,
+              contact,
+              botProfile,
+            );
+            const openingTranscript = `AI Agent: ${openingScript}`;
 
-        await this.db.callHistory.update({
-          where: { id: call.id },
-          data: {
-            provider: 'TWILIO',
-            status: 'QUEUING',
-            outcome: 'QUEUING',
-            sessionStatus: 'inprogress',
-            callType: 'phone_call',
-            selectedLanguage: campaign.language ?? null,
-            selectedVoice: campaign.voice ?? null,
-            startedAt: new Date(),
-            scripts: this.transcriptToScripts(openingTranscript),
-            transcript: openingTranscript,
-            summary: `${botProfile.name} queued an outbound call for ${contact.firstName || 'the contact'} about ${campaign.objective || 'the campaign objective'}.`,
-            analysis: {
-              intent: 'queued_outbound_call',
-              agentPersona: {
-                name: botProfile.name,
-                role: botProfile.role,
-                personality: botProfile.personality,
-              },
-              topicsCovered: this.buildTopicsCovered(campaign, botProfile),
-            },
-            topicsCovered: this.buildTopicsCovered(campaign, botProfile),
-            sessionErrors: [],
-            errorMessage: null,
-          },
-        });
-
-        const answerWebhook = this.getTwilioWebhookUrl('answer', call.id);
-        const statusWebhook = this.getTwilioWebhookUrl('status', call.id);
-        const recordingWebhook = this.getTwilioWebhookUrl('recording', call.id);
-        this.logger.debug(
-          'Twilio webhooks for call ' +
-            call.id +
-            ': answer=' +
-            answerWebhook +
-            ', status=' +
-            statusWebhook +
-            ', recording=' +
-            recordingWebhook,
-        );
-
-        const result = await this.createTwilioCall({
-          accountSid: settings.twilioAccountSid || '',
-          authToken: settings.twilioAuthToken || '',
-          from: settings.twilioPhoneNumber || '',
-          to: contact.phoneNumber,
-          url: answerWebhook,
-          statusCallback: statusWebhook,
-          recordingStatusCallback: recordingWebhook,
-        });
-
-        if (result.ok) {
-          placed++;
-          resultSummary.placed++;
-          await this.db.callHistory.update({
-            where: { id: call.id },
-            data: {
-              provider: 'TWILIO',
-              providerCallSid: result.sid,
-              providerStatus: result.status,
-              status: 'QUEUED',
-              outcome: 'QUEUED',
-              sessionStatus: 'inprogress',
-              timestamp: new Date(),
-            },
-          });
-          this.logger.debug(
-            `Twilio accepted call ${call.id}; sid=${result.sid}; status=${result.status}`,
-          );
-        } else {
-          failed++;
-          resultSummary.failed++;
-          resultSummary.errors.push(result.error);
-          await this.db.callHistory.update({
-            where: { id: call.id },
-            data: {
-              provider: 'TWILIO',
-              providerStatus: 'FAILED',
-              status: 'FAILED',
-              outcome: 'FAILED',
-              sessionStatus: 'failed',
-              endedAt: new Date(),
-              endCallReason: 'Provider rejected the outbound call.',
-              sessionErrors: [
-                {
-                  errorCode: 'TWILIO_REJECTED',
-                  errorMessage: result.error,
+            await this.db.callHistory.update({
+              where: { id: call.id },
+              data: {
+                provider: 'TWILIO',
+                status: 'QUEUING',
+                outcome: 'QUEUING',
+                sessionStatus: 'inprogress',
+                callType: 'phone_call',
+                selectedLanguage: campaign.language ?? null,
+                selectedVoice: campaign.voice ?? null,
+                startedAt: new Date(),
+                scripts: this.transcriptToScripts(openingTranscript),
+                transcript: openingTranscript,
+                summary: `${botProfile.name} queued an outbound call for ${contact.firstName || 'the contact'} about ${campaign.objective || 'the campaign objective'}.`,
+                analysis: {
+                  intent: 'queued_outbound_call',
+                  agentPersona: {
+                    name: botProfile.name,
+                    role: botProfile.role,
+                    personality: botProfile.personality,
+                  },
+                  topicsCovered: this.buildTopicsCovered(campaign, botProfile),
                 },
-              ],
-              errorMessage: result.error,
-              timestamp: new Date(),
-            },
-          });
-          this.logger.error(`Twilio rejected call ${call.id}: ${result.error}`);
-        }
+                topicsCovered: this.buildTopicsCovered(campaign, botProfile),
+                sessionErrors: [],
+                errorMessage: null,
+              },
+            });
+
+            const answerWebhook = this.getTwilioWebhookUrl('answer', call.id);
+            const statusWebhook = this.getTwilioWebhookUrl('status', call.id);
+            const recordingWebhook = this.getTwilioWebhookUrl(
+              'recording',
+              call.id,
+            );
+            this.logger.debug(
+              'Twilio webhooks for call ' +
+                call.id +
+                ': answer=' +
+                answerWebhook +
+                ', status=' +
+                statusWebhook +
+                ', recording=' +
+                recordingWebhook,
+            );
+
+            const result = await this.createTwilioCall({
+              accountSid: settings.twilioAccountSid || '',
+              authToken: settings.twilioAuthToken || '',
+              from: settings.twilioPhoneNumber || '',
+              to: contact.phoneNumber,
+              url: answerWebhook,
+              statusCallback: statusWebhook,
+              recordingStatusCallback: recordingWebhook,
+            });
+
+            if (result.ok) {
+              placed++;
+              resultSummary.placed++;
+              await this.db.callHistory.update({
+                where: { id: call.id },
+                data: {
+                  provider: 'TWILIO',
+                  providerCallSid: result.sid,
+                  providerStatus: result.status,
+                  status: 'QUEUED',
+                  outcome: 'QUEUED',
+                  sessionStatus: 'inprogress',
+                  timestamp: new Date(),
+                },
+              });
+              this.logger.debug(
+                `Twilio accepted call ${call.id}; sid=${result.sid}; status=${result.status}`,
+              );
+            } else {
+              failed++;
+              resultSummary.failed++;
+              resultSummary.errors.push(result.error);
+              await this.db.callHistory.update({
+                where: { id: call.id },
+                data: {
+                  provider: 'TWILIO',
+                  providerStatus: 'FAILED',
+                  status: 'FAILED',
+                  outcome: 'FAILED',
+                  sessionStatus: 'failed',
+                  endedAt: new Date(),
+                  endCallReason: 'Provider rejected the outbound call.',
+                  sessionErrors: [
+                    {
+                      errorCode: 'TWILIO_REJECTED',
+                      errorMessage: result.error,
+                    },
+                  ],
+                  errorMessage: result.error,
+                  timestamp: new Date(),
+                },
+              });
+              this.logger.error(
+                `Twilio rejected call ${call.id}: ${result.error}`,
+              );
+            }
+          }),
+        );
       }
 
       // Stay RUNNING — completion is driven by handleTwilioStatus once all calls settle.
@@ -619,6 +745,10 @@ Return ONLY valid JSON with exactly these fields:
       return resultSummary;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Simulation
+  // ---------------------------------------------------------------------------
 
   private async runCallSimulation(campaignId: string) {
     try {
@@ -723,7 +853,7 @@ Return ONLY valid JSON with exactly these fields:
           const duration = Math.floor(Math.random() * 120) + 30;
           const recordingUrl =
             recordingUrls[Math.floor(Math.random() * recordingUrls.length)];
-          const sentimentScore = parseFloat((Math.random() * 3 + 7).toFixed(1)); // positive 7.0 - 10.0
+          const sentimentScore = parseFloat((Math.random() * 3 + 7).toFixed(1));
           const botProfile = this.buildBotProfile(campaign);
           const summary = `${botProfile.name} spoke with ${contact.firstName} about ${campaign.objective || 'the campaign objective'} and captured the next step.`;
           const keyOutcomes = this.buildKeyOutcomes(campaign);
@@ -767,7 +897,6 @@ Return ONLY valid JSON with exactly these fields:
             `Call ${call.id} completed as ANSWERED in ${duration}s`,
           );
         } else {
-          // Failure or no answer
           await this.db.callHistory.update({
             where: { id: call.id },
             data: {
@@ -821,6 +950,10 @@ Return ONLY valid JSON with exactly these fields:
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Dashboard
+  // ---------------------------------------------------------------------------
+
   async getDashboardMetrics() {
     const campaigns = await this.db.callingCampaign.findMany();
     const calls = await this.db.callHistory.findMany();
@@ -840,6 +973,10 @@ Return ONLY valid JSON with exactly these fields:
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Twilio webhooks
+  // ---------------------------------------------------------------------------
+
   async handleTwilioAnswer(callId: string, body: any = {}) {
     try {
       this.logger.debug(
@@ -852,7 +989,9 @@ Return ONLY valid JSON with exactly these fields:
       );
       const call = await this.getCallWithContext(callId);
       if (!call) {
-        return this.buildTwilioSayHangup('Sorry, this call could not be found.');
+        return this.buildTwilioSayHangup(
+          'Sorry, this call could not be found.',
+        );
       }
 
       const botProfile = this.buildBotProfile(call.campaign);
@@ -900,12 +1039,13 @@ Return ONLY valid JSON with exactly these fields:
         },
       });
 
-      const twiml = await this.buildTwilioGather(call.campaign, opening, callId);
+      const twiml = await this.buildTwilioGather(
+        call.campaign,
+        opening,
+        callId,
+      );
       this.logger.debug(
-        'Twilio answer TwiML for call ' +
-          callId +
-          ': ' +
-          twiml,
+        'Twilio answer TwiML for call ' + callId + ': ' + twiml,
       );
       return twiml;
     } catch (error) {
@@ -931,108 +1071,114 @@ Return ONLY valid JSON with exactly these fields:
       );
 
       const call = await this.getCallWithContext(callId);
-    if (!call) {
-      return this.buildTwilioSayHangup('Sorry, this call could not be found.');
-    }
-
-    const speech = String(body.SpeechResult || '').trim();
-    const scripts = this.ensureScripts(call.scripts);
-    const userTurnCount = this.countScriptTurns(scripts, 'contact');
-    const noInputCount = Number(call.analysis?.noInputCount || 0);
-
-    if (!speech) {
-      const nextNoInputCount = noInputCount + 1;
-      if (nextNoInputCount >= 2) {
-        const closing =
-          'I could not hear you clearly, so I will end the call for now. Thank you for your time.';
-        const endedScripts = this.appendScriptTurn(
-          scripts,
-          'agent',
-          'AI Agent',
-          closing,
+      if (!call) {
+        return this.buildTwilioSayHangup(
+          'Sorry, this call could not be found.',
         );
-        await this.completeTwilioConversation(call, endedScripts, {
-          reply: closing,
-          shouldEnd: true,
-          endReason: 'No speech detected after repeated prompts.',
-          collectedData: {},
-          sentimentScore: 5,
-          keyOutcomes: 'Call ended because no clear speech was detected.',
-          topicsCovered: this.buildTopicsCovered(
-            call.campaign,
-            this.buildBotProfile(call.campaign),
-          ),
+      }
+
+      const speech = String(body.SpeechResult || '').trim();
+      const scripts = this.ensureScripts(call.scripts);
+      const userTurnCount = this.countScriptTurns(scripts, 'contact');
+
+      // FIX 4: Use safeAnalysis() to guard against non-object JSON values stored
+      // in the Prisma JSON field (e.g. null, string, array from old records).
+      const existingAnalysis = this.safeAnalysis(call.analysis);
+      const noInputCount = Number(existingAnalysis?.noInputCount || 0);
+
+      if (!speech) {
+        const nextNoInputCount = noInputCount + 1;
+        if (nextNoInputCount >= 3) {
+          const closing =
+            'I could not hear you clearly, so I will end the call for now. Thank you for your time.';
+          const endedScripts = this.appendScriptTurn(
+            scripts,
+            'agent',
+            'AI Agent',
+            closing,
+          );
+          await this.completeTwilioConversation(call, endedScripts, {
+            reply: closing,
+            shouldEnd: true,
+            endReason: 'No speech detected after repeated prompts.',
+            collectedData: {},
+            sentimentScore: 5,
+            keyOutcomes: 'Call ended because no clear speech was detected.',
+            topicsCovered: this.buildTopicsCovered(
+              call.campaign,
+              this.buildBotProfile(call.campaign),
+            ),
+          });
+          return this.buildTwilioSayHangup(closing, call.campaign);
+        }
+
+        await this.db.callHistory.update({
+          where: { id: callId },
+          data: {
+            analysis: {
+              ...existingAnalysis,
+              noInputCount: nextNoInputCount,
+            },
+            timestamp: new Date(),
+          },
         });
-        return this.buildTwilioSayHangup(closing, call.campaign);
+        return this.buildTwilioGather(
+          call.campaign,
+          'Sorry, I did not catch that. Could you say that again?',
+          callId,
+        );
+      }
+
+      const withUserTurn = this.appendScriptTurn(
+        scripts,
+        'contact',
+        'Customer',
+        speech,
+      );
+      const generation = await this.generateNextCallingTurn(
+        call,
+        speech,
+        withUserTurn,
+      );
+      const nextScripts = this.appendScriptTurn(
+        withUserTurn,
+        'agent',
+        'AI Agent',
+        generation.reply,
+      );
+      const shouldEnd =
+        generation.shouldEnd &&
+        (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
+
+      if (shouldEnd) {
+        await this.completeTwilioConversation(call, nextScripts, generation);
+        return this.buildTwilioSayHangup(generation.reply, call.campaign);
       }
 
       await this.db.callHistory.update({
         where: { id: callId },
         data: {
+          status: 'IN_PROGRESS',
+          outcome: 'IN_PROGRESS',
+          sessionStatus: 'connected',
+          scripts: nextScripts,
+          transcript: this.scriptsToTranscript(nextScripts),
+          summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
+          sentimentScore: generation.sentimentScore,
+          keyOutcomes: generation.keyOutcomes,
+          topicsCovered: generation.topicsCovered,
           analysis: {
-            ...(call.analysis || {}),
-            noInputCount: nextNoInputCount,
+            ...existingAnalysis,
+            noInputCount: 0,
+            collectedData: generation.collectedData,
+            lastAiDecision: {
+              shouldEnd: generation.shouldEnd,
+              endReason: generation.endReason,
+            },
           },
           timestamp: new Date(),
         },
       });
-      return this.buildTwilioGather(
-        call.campaign,
-        'Sorry, I did not catch that. Could you say that again?',
-        callId,
-      );
-    }
-
-    const withUserTurn = this.appendScriptTurn(
-      scripts,
-      'contact',
-      'Customer',
-      speech,
-    );
-    const generation = await this.generateNextCallingTurn(
-      call,
-      speech,
-      withUserTurn,
-    );
-    const nextScripts = this.appendScriptTurn(
-      withUserTurn,
-      'agent',
-      'AI Agent',
-      generation.reply,
-    );
-    const shouldEnd =
-      generation.shouldEnd &&
-      (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
-
-    if (shouldEnd) {
-      await this.completeTwilioConversation(call, nextScripts, generation);
-      return this.buildTwilioSayHangup(generation.reply, call.campaign);
-    }
-
-    await this.db.callHistory.update({
-      where: { id: callId },
-      data: {
-        status: 'IN_PROGRESS',
-        outcome: 'IN_PROGRESS',
-        sessionStatus: 'connected',
-        scripts: nextScripts,
-        transcript: this.scriptsToTranscript(nextScripts),
-        summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
-        sentimentScore: generation.sentimentScore,
-        keyOutcomes: generation.keyOutcomes,
-        topicsCovered: generation.topicsCovered,
-        analysis: {
-          ...(call.analysis || {}),
-          noInputCount: 0,
-          collectedData: generation.collectedData,
-          lastAiDecision: {
-            shouldEnd: generation.shouldEnd,
-            endReason: generation.endReason,
-          },
-        },
-        timestamp: new Date(),
-      },
-    });
 
       return this.buildTwilioGather(call.campaign, generation.reply, callId);
     } catch (error) {
@@ -1047,7 +1193,8 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   async handleTwilioStatus(callId: string, body: any = {}) {
-    const status = body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
+    const status =
+      body.CallStatus || body.CallStatusCallbackEvent || 'unknown';
     this.logger.debug(
       'Twilio status webhook received for call ' +
         callId +
@@ -1111,6 +1258,18 @@ Return ONLY valid JSON with exactly these fields:
       where: { id: callId },
       data,
     });
+
+    // FIX 2: After every terminal Twilio status, check whether all calls for the
+    // campaign have settled so we can auto-transition the campaign to COMPLETED.
+    if (TERMINAL_TWILIO_STATUSES.has(status)) {
+      const updatedCall = await this.db.callHistory
+        .findUnique({ where: { id: callId } })
+        .catch(() => null);
+      if (updatedCall?.campaignId) {
+        void this.checkAndCompleteCampaign(updatedCall.campaignId);
+      }
+    }
+
     return { success: true };
   }
 
@@ -1127,8 +1286,9 @@ Return ONLY valid JSON with exactly these fields:
         providerStatus:
           body.RecordingStatus || call?.providerStatus || 'recorded',
         duration: Number(body.RecordingDuration || call?.duration || 0),
+        // FIX 8: Use safeAnalysis() to guard against non-object JSON field values.
         analysis: {
-          ...(call?.analysis || {}),
+          ...this.safeAnalysis(call?.analysis),
           recording: {
             sid: body.RecordingSid,
             status: body.RecordingStatus,
@@ -1140,6 +1300,48 @@ Return ONLY valid JSON with exactly these fields:
     });
     return { success: true };
   }
+
+  // ---------------------------------------------------------------------------
+  // Campaign auto-completion (FIX 2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Checks whether every call in a campaign has reached a terminal outcome
+   * and, if so, transitions the campaign status to COMPLETED.
+   * Called after each terminal Twilio status webhook so the campaign settles
+   * automatically without a separate polling job.
+   */
+  private async checkAndCompleteCampaign(campaignId: string) {
+    try {
+      const campaign = await this.db.callingCampaign.findUnique({
+        where: { id: campaignId },
+        include: { calls: true },
+      });
+      if (!campaign || campaign.status !== 'RUNNING') return;
+
+      const allSettled = (campaign.calls as any[]).every((call) =>
+        TERMINAL_CALL_OUTCOMES.has(call.outcome),
+      );
+      if (!allSettled) return;
+
+      await this.db.callingCampaign.update({
+        where: { id: campaignId },
+        data: { status: 'COMPLETED' },
+      });
+      this.logger.debug(
+        `Campaign ${campaignId} auto-completed: all calls have settled`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `checkAndCompleteCampaign failed for ${campaignId}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Contact management
+  // ---------------------------------------------------------------------------
 
   private async addCallableContacts(campaignId: string, contactIds: string[]) {
     let added = 0;
@@ -1197,6 +1399,10 @@ Return ONLY valid JSON with exactly these fields:
 
     return { added, skipped };
   }
+
+  // ---------------------------------------------------------------------------
+  // Campaign generation helpers
+  // ---------------------------------------------------------------------------
 
   private buildMockGeneratedCampaign(userPrompt: string, tone: string) {
     return this.normalizeGeneratedCampaign(
@@ -1308,6 +1514,10 @@ Return ONLY valid JSON with exactly these fields:
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Google TTS / HD audio
+  // ---------------------------------------------------------------------------
+
   async renderGoogleSpeechAudio(audioId: string) {
     const cached = this.googleSpeechCache.get(audioId);
     if (!cached) {
@@ -1329,261 +1539,14 @@ Return ONLY valid JSON with exactly these fields:
     return cached.audio;
   }
 
-  private async resetCallsForRelaunch(calls: any[]) {
-    for (const call of calls) {
-      await this.db.callHistory.update({
-        where: { id: call.id },
-        data: {
-          duration: 0,
-          outcome: 'PENDING',
-          status: 'PENDING',
-          transcript: null,
-          recordingUrl: null,
-          scripts: [],
-          summary: null,
-          sentimentScore: 5.0,
-          keyOutcomes: null,
-          analysis: null,
-          topicsCovered: [],
-          endCallReason: null,
-          sessionStatus: 'pending',
-          selectedLanguage: null,
-          selectedVoice: null,
-          startedAt: null,
-          connectedAt: null,
-          endedAt: null,
-          startupTime: null,
-          totalTime: null,
-          sessionErrors: [],
-          deviceLogs: null,
-          provider: null,
-          providerCallSid: null,
-          providerStatus: null,
-          errorMessage: null,
-          timestamp: new Date(),
-        },
-      });
-    }
-  }
-
-  private hasUsableTwilioSettings(settings?: TwilioSettings | null) {
-    return Boolean(
-      settings?.twilioStatus === 'CONNECTED' &&
-      settings.twilioAccountSid?.trim() &&
-      settings.twilioAuthToken?.trim() &&
-      settings.twilioPhoneNumber?.trim(),
-    );
-  }
-
-  private async createTwilioCall({
-    accountSid,
-    authToken,
-    from,
-    to,
-    url,
-    statusCallback,
-    recordingStatusCallback,
-  }: {
-    accountSid: string;
-    authToken: string;
-    from: string;
-    to: string;
-    url: string;
-    statusCallback: string;
-    recordingStatusCallback: string;
-  }): Promise<
-    { ok: true; sid: string; status: string } | { ok: false; error: string }
-  > {
-    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-    const body = new URLSearchParams({
-      To: to,
-      From: from,
-      Url: url,
-      Method: 'POST',
-      StatusCallback: statusCallback,
-      StatusCallbackMethod: 'POST',
-      Record: 'true',
-      RecordingStatusCallback: recordingStatusCallback,
-      RecordingStatusCallbackMethod: 'POST',
-    });
-    ['initiated', 'ringing', 'answered', 'completed'].forEach((event) =>
-      body.append('StatusCallbackEvent', event),
-    );
-
-    try {
-      const response = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${auth}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body,
-        },
-      );
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        return {
-          ok: false,
-          error:
-            data?.message ||
-            data?.error_message ||
-            `Twilio API error ${response.status} ${response.statusText}`,
-        };
-      }
-
-      return {
-        ok: true,
-        sid: data?.sid || '',
-        status: data?.status || 'queued',
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
-  private buildCallTwiml(campaign: any, contact: any) {
-    const botProfile = this.buildBotProfile(campaign);
-    const message = this.buildOpeningScript(campaign, contact, botProfile);
-    const language = this.normalizeLanguageCode(campaign?.language);
-    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
-    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
-
-    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Pause length="1"/><Say${sayAttrs}>Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
-  }
-
-  private async getCallWithContext(callId: string) {
-    return this.db.callHistory.findUnique({
-      where: { id: callId },
-      include: {
-        campaign: true,
-        contact: true,
-      },
-    });
-  }
-
-  private getPublicApiBaseUrl() {
-    const configured =
-      this.configService.get<string>('PUBLIC_API_URL') ||
-      this.configService.get<string>('BACKEND_PUBLIC_URL') ||
-      this.configService.get<string>('API_BASE_URL');
-    const base =
-      configured?.trim() ||
-      `http://localhost:${this.configService.get<number>('PORT', 3001)}`;
-    const withoutSlash = base.replace(/\/+$/, '');
-    return withoutSlash.endsWith('/api') ? withoutSlash : `${withoutSlash}/api`;
-  }
-
-  private assertPublicTwilioWebhookUrl() {
-    const webhookBaseUrl = this.getPublicApiBaseUrl();
-    if (this.isLocalWebhookUrl(webhookBaseUrl)) {
-      throw new BadRequestException(
-        `Twilio calling requires PUBLIC_API_URL to be a public HTTPS backend URL. Current webhook base is ${webhookBaseUrl}. For local testing, use an HTTPS tunnel such as ngrok and set PUBLIC_API_URL=https://your-tunnel-url/api.`,
-      );
-    }
-
-    if (!webhookBaseUrl.startsWith('https://')) {
-      throw new BadRequestException(
-        `Twilio calling requires PUBLIC_API_URL to use HTTPS. Current webhook base is ${webhookBaseUrl}.`,
-      );
-    }
-  }
-
-  private isLocalWebhookUrl(value: string) {
-    return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(
-      value,
-    );
-  }
-
-  private getTwilioWebhookUrl(
-    type: 'answer' | 'respond' | 'status' | 'recording',
-    callId: string,
-  ) {
-    return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/${type}/${encodeURIComponent(callId)}`;
-  }
-
-  private async buildTwilioGather(
-    campaign: any,
-    message: string,
-    callId: string,
-  ) {
-    const language = this.normalizeLanguageCode(campaign?.language);
-    const gatherLanguage = this.resolveTwilioGatherLanguage(language);
-    const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
-    const speech = await this.buildTwilioSpeechNoun(
-      campaign,
-      message,
-      language,
-    );
-    const gatherPrompt = this.buildTwilioSayNoun(
-      campaign,
-      'Please speak after the beep.',
-      gatherLanguage || language,
-    );
-
-    return `<Response>${speech}<Gather input="speech dtmf" action="${action}" method="POST" speechModel="phone_call"${gatherLanguage ? ` language="${this.escapeXml(gatherLanguage)}"` : ''} speechTimeout="auto" timeout="8" actionOnEmptyResult="true">${gatherPrompt}<Pause length="1"/></Gather><Redirect method="POST">${action}</Redirect></Response>`;
-  }
-
-  private async buildTwilioSayHangup(message: string, campaign?: any) {
-    const language = this.normalizeLanguageCode(campaign?.language);
-    const speech = await this.buildTwilioSpeechNoun(
-      campaign,
-      message,
-      language,
-    );
-
-    return `<Response>${speech}<Hangup /></Response>`;
-  }
-
-  private async buildTwilioSpeechNoun(
-    campaign: any,
-    message: string,
-    language?: string,
-  ) {
-    if (campaign?.voiceQuality === 'hd' && TWILIO_HD_PLAY_ENABLED) {
-      const googleTtsVoice = this.resolveGoogleTtsVoice(
-        campaign?.voice,
-        language,
-      );
-      const audioId = await this.registerGoogleSpeech(
-        message,
-        googleTtsVoice,
-        language,
-      );
-      if (audioId) {
-        const audioUrl = this.getTwilioTtsUrl(audioId);
-        this.logger.debug(
-          'Prepared HD Twilio TTS audio: audioId=' +
-            audioId +
-            ', url=' +
-            audioUrl +
-            ', textLength=' +
-            String(message.length),
-        );
-        return `<Play>${this.escapeXml(audioUrl)}</Play>`;
-      }
-    }
-
-    return this.buildTwilioSayNoun(campaign, message, language);
-  }
-
-  private buildTwilioSayNoun(campaign: any, message: string, language?: string) {
-    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
-    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
-    return `<Say${sayAttrs}>${this.escapeXml(message)}</Say>`;
-  }
-
   private async registerGoogleSpeech(
     text: string,
     voice: string,
     language?: string,
   ) {
     const now = Date.now();
+    // Opportunistic eviction of stale entries (periodic pruner in onModuleInit
+    // handles background cleanup; this cleans entries created within same request).
     for (const [id, cached] of this.googleSpeechCache.entries()) {
       if (now - cached.createdAt > 10 * 60 * 1000) {
         this.googleSpeechCache.delete(id);
@@ -1644,10 +1607,7 @@ Return ONLY valid JSON with exactly these fields:
       }
 
       const audioId = randomUUID();
-      this.googleSpeechCache.set(audioId, {
-        audio,
-        createdAt: now,
-      });
+      this.googleSpeechCache.set(audioId, { audio, createdAt: now });
       return audioId;
     } catch (error) {
       const reason =
@@ -1665,8 +1625,329 @@ Return ONLY valid JSON with exactly these fields:
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Relaunch helpers
+  // ---------------------------------------------------------------------------
+
+  private async resetCallsForRelaunch(calls: any[]) {
+    for (const call of calls) {
+      await this.db.callHistory.update({
+        where: { id: call.id },
+        data: {
+          duration: 0,
+          outcome: 'PENDING',
+          status: 'PENDING',
+          transcript: null,
+          recordingUrl: null,
+          scripts: [],
+          summary: null,
+          sentimentScore: 5.0,
+          keyOutcomes: null,
+          analysis: null,
+          topicsCovered: [],
+          endCallReason: null,
+          sessionStatus: 'pending',
+          selectedLanguage: null,
+          selectedVoice: null,
+          startedAt: null,
+          connectedAt: null,
+          endedAt: null,
+          startupTime: null,
+          totalTime: null,
+          sessionErrors: [],
+          deviceLogs: null,
+          provider: null,
+          providerCallSid: null,
+          providerStatus: null,
+          errorMessage: null,
+          timestamp: new Date(),
+        },
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Twilio API client
+  // ---------------------------------------------------------------------------
+
+  private hasUsableTwilioSettings(settings?: TwilioSettings | null) {
+    return Boolean(
+      settings?.twilioStatus === 'CONNECTED' &&
+        settings.twilioAccountSid?.trim() &&
+        settings.twilioAuthToken?.trim() &&
+        settings.twilioPhoneNumber?.trim(),
+    );
+  }
+
+  private async createTwilioCall({
+    accountSid,
+    authToken,
+    from,
+    to,
+    url,
+    statusCallback,
+    recordingStatusCallback,
+  }: {
+    accountSid: string;
+    authToken: string;
+    from: string;
+    to: string;
+    url: string;
+    statusCallback: string;
+    recordingStatusCallback: string;
+  }): Promise<
+    { ok: true; sid: string; status: string } | { ok: false; error: string }
+  > {
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const body = new URLSearchParams({
+      To: to,
+      From: from,
+      Url: url,
+      Method: 'POST',
+      StatusCallback: statusCallback,
+      StatusCallbackMethod: 'POST',
+      Record: 'true',
+      RecordingStatusCallback: recordingStatusCallback,
+      RecordingStatusCallbackMethod: 'POST',
+    });
+   [
+  'initiated',
+  'ringing',
+  'answered',
+  'completed',
+].forEach((event) => body.append('StatusCallbackEvent', event));
+
+body.append('MachineDetection', 'Enable');
+body.append('AsyncAmd', 'true');
+
+    try {
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body,
+        },
+      );
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          error:
+            data?.message ||
+            data?.error_message ||
+            `Twilio API error ${response.status} ${response.statusText}`,
+        };
+      }
+
+      return {
+        ok: true,
+        sid: data?.sid || '',
+        status: data?.status || 'queued',
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TwiML builders
+  // ---------------------------------------------------------------------------
+
+  private buildCallTwiml(campaign: any, contact: any) {
+    const botProfile = this.buildBotProfile(campaign);
+    const message = this.buildOpeningScript(campaign, contact, botProfile);
+    const language = this.normalizeLanguageCode(campaign?.language);
+    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
+
+    return `<Response><Say${sayAttrs}>${this.escapeXml(message)}</Say><Pause length="1"/><Say${sayAttrs}>Thanks for your time. I will let the team know and they will follow up with the next step.</Say></Response>`;
+  }
+
+  private async buildTwilioGather(
+  campaign: any,
+  message: string,
+  callId: string,
+) {
+  const language = this.normalizeLanguageCode(campaign?.language);
+  const gatherLanguage = this.resolveTwilioGatherLanguage(language);
+
+  const action = this.escapeXml(
+    this.getTwilioWebhookUrl('respond', callId),
+  );
+
+  let prompt = '';
+
+  if (campaign?.voiceQuality === 'hd' && TWILIO_HD_PLAY_ENABLED) {
+    const googleVoice = this.resolveGoogleTtsVoice(
+      campaign?.voice,
+      language,
+    );
+
+    const audioId = await this.registerGoogleSpeech(
+      message,
+      googleVoice,
+      language,
+    );
+
+    if (audioId) {
+      prompt = `<Play>${this.escapeXml(
+        this.getTwilioTtsUrl(audioId),
+      )}</Play>`;
+    }
+  }
+
+  if (!prompt) {
+    prompt = this.buildTwilioSayNoun(
+      campaign,
+      message,
+      gatherLanguage || language,
+    );
+  }
+
+  return `
+<Response>
+  <Gather
+    input="speech"
+    action="${action}"
+    method="POST"
+    speechTimeout="auto"
+    timeout="15"
+    actionOnEmptyResult="true"
+    enhanced="true"
+    profanityFilter="false"
+    ${gatherLanguage ? `language="${gatherLanguage}"` : ''}
+  >
+    ${prompt}
+  </Gather>
+
+  <Redirect method="POST">
+    ${action}
+  </Redirect>
+</Response>
+`.trim();
+}
+
+  private async buildTwilioSayHangup(message: string, campaign?: any) {
+    const language = this.normalizeLanguageCode(campaign?.language);
+    const speech = await this.buildTwilioSpeechNoun(
+      campaign,
+      message,
+      language,
+    );
+
+    return `<Response>${speech}<Hangup /></Response>`;
+  }
+
+  private async buildTwilioSpeechNoun(
+    campaign: any,
+    message: string,
+    language?: string,
+  ) {
+    if (campaign?.voiceQuality === 'hd' && TWILIO_HD_PLAY_ENABLED) {
+      const googleTtsVoice = this.resolveGoogleTtsVoice(
+        campaign?.voice,
+        language,
+      );
+      const audioId = await this.registerGoogleSpeech(
+        message,
+        googleTtsVoice,
+        language,
+      );
+      if (audioId) {
+        const audioUrl = this.getTwilioTtsUrl(audioId);
+        this.logger.debug(
+          'Prepared HD Twilio TTS audio: audioId=' +
+            audioId +
+            ', url=' +
+            audioUrl +
+            ', textLength=' +
+            String(message.length),
+        );
+        return `<Play>${this.escapeXml(audioUrl)}</Play>`;
+      }
+    }
+
+    return this.buildTwilioSayNoun(campaign, message, language);
+  }
+
+  private buildTwilioSayNoun(
+    campaign: any,
+    message: string,
+    language?: string,
+  ) {
+    const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+    const sayAttrs = this.buildSayAttributes(twilioVoice, language);
+    return `<Say${sayAttrs}>${this.escapeXml(message)}</Say>`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // URL helpers
+  // ---------------------------------------------------------------------------
+
   private getTwilioTtsUrl(audioId: string) {
     return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/tts/${encodeURIComponent(audioId)}`;
+  }
+
+  private getPublicApiBaseUrl() {
+    const configured =
+      this.configService.get<string>('PUBLIC_API_URL') ||
+      this.configService.get<string>('BACKEND_PUBLIC_URL') ||
+      this.configService.get<string>('API_BASE_URL');
+    const base =
+      configured?.trim() ||
+      `http://localhost:${this.configService.get<number>('PORT', 3001)}`;
+    const withoutSlash = base.replace(/\/+$/, '');
+    return withoutSlash.endsWith('/api') ? withoutSlash : `${withoutSlash}/api`;
+  }
+
+  private assertPublicTwilioWebhookUrl() {
+    const webhookBaseUrl = this.getPublicApiBaseUrl();
+    if (this.isLocalWebhookUrl(webhookBaseUrl)) {
+      throw new BadRequestException(
+        `Twilio calling requires PUBLIC_API_URL to be a public HTTPS backend URL. Current webhook base is ${webhookBaseUrl}. For local testing, use an HTTPS tunnel such as ngrok and set PUBLIC_API_URL=https://your-tunnel-url/api.`,
+      );
+    }
+
+    if (!webhookBaseUrl.startsWith('https://')) {
+      throw new BadRequestException(
+        `Twilio calling requires PUBLIC_API_URL to use HTTPS. Current webhook base is ${webhookBaseUrl}.`,
+      );
+    }
+  }
+
+  private isLocalWebhookUrl(value: string) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(
+      value,
+    );
+  }
+
+  private getTwilioWebhookUrl(
+    type: 'answer' | 'respond' | 'status' | 'recording',
+    callId: string,
+  ) {
+    return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/${type}/${encodeURIComponent(callId)}`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conversation / script helpers
+  // ---------------------------------------------------------------------------
+
+  private async getCallWithContext(callId: string) {
+    return this.db.callHistory.findUnique({
+      where: { id: callId },
+      include: {
+        campaign: true,
+        contact: true,
+      },
+    });
   }
 
   private buildBotProfile(campaign: any) {
@@ -1832,6 +2113,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ];
   }
 
+  // ---------------------------------------------------------------------------
+  // AI turn generation
+  // ---------------------------------------------------------------------------
+
   private async generateNextCallingTurn(
     call: any,
     latestUserSpeech: string,
@@ -1854,9 +2139,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       4,
     );
     const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
-    const serviceAccount = this.parseGoogleServiceAccountCredentials(
-      serviceAccountJson,
-    );
+    const serviceAccount =
+      this.parseGoogleServiceAccountCredentials(serviceAccountJson);
     if (!serviceAccount) {
       this.logger.warn(
         'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
@@ -1924,12 +2208,8 @@ JSON Schema:
   "topicsCovered": ["Objective"]
 }`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      VERTEX_TWILIO_TIMEOUT_MS,
-    );
-
+    // FIX 5: Each model attempt gets its own AbortController and timeout so that
+    // a slow or aborted first attempt does not cancel subsequent model retries.
     try {
       const accessToken = await this.getGoogleTtsAccessToken();
       if (!accessToken) {
@@ -1951,45 +2231,69 @@ JSON Schema:
       let lastFailureReason = 'unknown error';
 
       for (const model of uniqueModels) {
-        const response = await fetch(
-          `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(VERTEX_LOCATION)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            signal: controller.signal,
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              generationConfig: {
-                temperature: 0.4,
-                maxOutputTokens: 450,
-                responseMimeType: 'application/json',
+        // FIX 5: Fresh controller per model so a previous timeout/abort does not
+        // immediately cancel the next model's fetch.
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () => controller.abort(),
+          VERTEX_TWILIO_TIMEOUT_MS,
+        );
+
+        try {
+          const response = await fetch(
+            `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(VERTEX_LOCATION)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
               },
-            }),
-          },
-        );
-        const data = await response.json().catch(() => null);
-        if (!response.ok) {
-          lastFailureReason =
-            data?.error?.message || response.statusText || 'request failed';
-          continue;
+              signal: controller.signal,
+              body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                generationConfig: {
+                  temperature: 0.4,
+                  maxOutputTokens: 450,
+                  responseMimeType: 'application/json',
+                },
+              }),
+            },
+          );
+          const data = await response.json().catch(() => null);
+          if (!response.ok) {
+            lastFailureReason =
+              data?.error?.message || response.statusText || 'request failed';
+            continue;
+          }
+          const content = data?.candidates?.[0]?.content?.parts
+            ?.map((part: any) =>
+              typeof part?.text === 'string' ? part.text : '',
+            )
+            .join('\n')
+            .trim();
+          if (!content) {
+            lastFailureReason = 'empty model response';
+            continue;
+          }
+          return this.normalizeConversationGeneration(
+            this.parseJsonObject(content),
+            fallback,
+          );
+        } catch (modelErr) {
+          // Catch per-model errors (including AbortError) so the loop continues.
+          const reason =
+            modelErr instanceof Error && modelErr.name === 'AbortError'
+              ? `timed out after ${VERTEX_TWILIO_TIMEOUT_MS}ms`
+              : modelErr instanceof Error
+                ? modelErr.message
+                : String(modelErr);
+          lastFailureReason = reason;
+          this.logger.warn(
+            `Vertex AI model ${model} failed for live calling turn: ${reason}`,
+          );
+        } finally {
+          clearTimeout(timeout);
         }
-        const content = data?.candidates?.[0]?.content?.parts
-          ?.map((part: any) =>
-            typeof part?.text === 'string' ? part.text : '',
-          )
-          .join('\n')
-          .trim();
-        if (!content) {
-          lastFailureReason = 'empty model response';
-          continue;
-        }
-        return this.normalizeConversationGeneration(
-          this.parseJsonObject(content),
-          fallback,
-        );
       }
 
       this.logger.warn(
@@ -2001,11 +2305,8 @@ JSON Schema:
         `Vertex AI live calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       return fallback;
-    } finally {
-      clearTimeout(timeout);
     }
   }
-
 
   private normalizeConversationGeneration(
     value: any,
@@ -2127,8 +2428,9 @@ JSON Schema:
         summary: `${this.buildBotProfile(call.campaign).name} completed the AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
         sentimentScore: generation.sentimentScore,
         keyOutcomes: generation.keyOutcomes,
+        // FIX 4: Use safeAnalysis() to prevent spreading a non-object JSON value.
         analysis: {
-          ...(call.analysis || {}),
+          ...this.safeAnalysis(call.analysis),
           collectedData: generation.collectedData,
           finalDecision: {
             shouldEnd: generation.shouldEnd,
@@ -2143,6 +2445,10 @@ JSON Schema:
       },
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Analysis / metadata builders
+  // ---------------------------------------------------------------------------
 
   private buildCallAnalysis(
     campaign: any,
@@ -2216,6 +2522,10 @@ JSON Schema:
     return value.replace(/\{\{(\w+)\}\}/g, (_, key) => variables[key] || '');
   }
 
+  // ---------------------------------------------------------------------------
+  // Text utilities
+  // ---------------------------------------------------------------------------
+
   private sentenceFromText(value?: string) {
     const text = value?.replace(/\s+/g, ' ').trim();
     if (!text) return '';
@@ -2247,6 +2557,10 @@ JSON Schema:
     return value.replace(/(\.\.\.|[.!?])+$/g, '').trim();
   }
 
+  // ---------------------------------------------------------------------------
+  // Language / voice resolution
+  // ---------------------------------------------------------------------------
+
   private normalizeLanguageCode(language?: string) {
     const normalized = language?.trim();
     if (normalized === 'hi') return 'hi-IN';
@@ -2271,116 +2585,12 @@ JSON Schema:
     const normalized = this.normalizeLanguageCode(language);
     if (!normalized) return undefined;
 
+    // Twilio STT does not support en-IN natively; map to en-US.
     if (normalized === 'en-IN') {
       return 'en-US';
     }
 
     return normalized;
-  }
-
-  private async getGoogleTtsAccessToken() {
-    if (
-      this.googleTtsAccessToken &&
-      this.googleTtsAccessToken.expiresAt > Date.now() + 60 * 1000
-    ) {
-      return this.googleTtsAccessToken.accessToken;
-    }
-
-    const settings = decryptSystemSettings(
-      await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-        select: { googleServiceAccountJson: true },
-      }),
-    );
-    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
-    if (!serviceAccountJson) return '';
-
-    try {
-      const credentials = JSON.parse(serviceAccountJson);
-      const clientEmail = String(credentials.client_email || '').trim();
-      const privateKey = String(credentials.private_key || '').trim();
-      if (!clientEmail || !privateKey) {
-        throw new Error(
-          'service account JSON must include client_email and private_key',
-        );
-      }
-
-      const assertion = this.signGoogleServiceAccountJwt(
-        clientEmail,
-        privateKey,
-      );
-      const response = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-          assertion,
-        }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.access_token) {
-        throw new Error(
-          data?.error_description || data?.error || response.statusText,
-        );
-      }
-
-      this.googleTtsAccessToken = {
-        accessToken: data.access_token,
-        expiresAt:
-          Date.now() +
-          Math.max(Number(data.expires_in || 3600) - 60, 60) * 1000,
-      };
-      return this.googleTtsAccessToken.accessToken;
-    } catch (error) {
-      this.googleTtsAccessToken = null;
-      this.logger.warn(
-        `Google service account auth failed for HD AI calling audio; falling back to Twilio Say. Reason: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return '';
-    }
-  }
-
-  private signGoogleServiceAccountJwt(clientEmail: string, privateKey: string) {
-    const now = Math.floor(Date.now() / 1000);
-    const header = this.base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-    const payload = this.base64Url(
-      JSON.stringify({
-        iss: clientEmail,
-        scope: GOOGLE_TTS_SCOPE,
-        aud: 'https://oauth2.googleapis.com/token',
-        iat: now,
-        exp: now + 3600,
-      }),
-    );
-    const unsignedJwt = `${header}.${payload}`;
-    const signature = createSign('RSA-SHA256')
-      .update(unsignedJwt)
-      .sign(privateKey);
-    return `${unsignedJwt}.${this.base64Url(signature)}`;
-  }
-
-  private base64Url(value: string | Buffer) {
-    return Buffer.from(value)
-      .toString('base64')
-      .replace(/=/g, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_');
-  }
-
-  private parseGoogleServiceAccountCredentials(serviceAccountJson?: string) {
-    if (!serviceAccountJson) return null;
-    try {
-      const credentials = JSON.parse(serviceAccountJson);
-      const clientEmail = String(credentials?.client_email || '').trim();
-      const privateKey = String(credentials?.private_key || '').trim();
-      const projectId = String(credentials?.project_id || '').trim();
-      if (!clientEmail || !privateKey || !projectId) {
-        return null;
-      }
-      return { clientEmail, privateKey, projectId };
-    } catch {
-      return null;
-    }
   }
 
   private normalizeCampaignVoice(voice?: string, language?: string) {
@@ -2488,6 +2698,131 @@ JSON Schema:
     return voiceName === 'Kore' || voiceName === 'Aoede'
       ? 'Google.en-IN-Wavenet-A'
       : 'Google.en-IN-Wavenet-D';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Google service account auth
+  // ---------------------------------------------------------------------------
+
+  private async getGoogleTtsAccessToken() {
+    if (
+      this.googleTtsAccessToken &&
+      this.googleTtsAccessToken.expiresAt > Date.now() + 60 * 1000
+    ) {
+      return this.googleTtsAccessToken.accessToken;
+    }
+
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+        select: { googleServiceAccountJson: true },
+      }),
+    );
+    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
+    if (!serviceAccountJson) return '';
+
+    try {
+      const credentials = JSON.parse(serviceAccountJson);
+      const clientEmail = String(credentials.client_email || '').trim();
+      const privateKey = String(credentials.private_key || '').trim();
+      if (!clientEmail || !privateKey) {
+        throw new Error(
+          'service account JSON must include client_email and private_key',
+        );
+      }
+
+      const assertion = this.signGoogleServiceAccountJwt(
+        clientEmail,
+        privateKey,
+      );
+      const response = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion,
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.access_token) {
+        throw new Error(
+          data?.error_description || data?.error || response.statusText,
+        );
+      }
+
+      this.googleTtsAccessToken = {
+        accessToken: data.access_token,
+        expiresAt:
+          Date.now() +
+          Math.max(Number(data.expires_in || 3600) - 60, 60) * 1000,
+      };
+      return this.googleTtsAccessToken.accessToken;
+    } catch (error) {
+      this.googleTtsAccessToken = null;
+      this.logger.warn(
+        `Google service account auth failed for HD AI calling audio; falling back to Twilio Say. Reason: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return '';
+    }
+  }
+
+  private signGoogleServiceAccountJwt(clientEmail: string, privateKey: string) {
+    const now = Math.floor(Date.now() / 1000);
+    const header = this.base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = this.base64Url(
+      JSON.stringify({
+        iss: clientEmail,
+        scope: GOOGLE_TTS_SCOPE,
+        aud: 'https://oauth2.googleapis.com/token',
+        iat: now,
+        exp: now + 3600,
+      }),
+    );
+    const unsignedJwt = `${header}.${payload}`;
+    const signature = createSign('RSA-SHA256')
+      .update(unsignedJwt)
+      .sign(privateKey);
+    return `${unsignedJwt}.${this.base64Url(signature)}`;
+  }
+
+  private base64Url(value: string | Buffer) {
+    return Buffer.from(value)
+      .toString('base64')
+      .replace(/=/g, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+  }
+
+  private parseGoogleServiceAccountCredentials(serviceAccountJson?: string) {
+    if (!serviceAccountJson) return null;
+    try {
+      const credentials = JSON.parse(serviceAccountJson);
+      const clientEmail = String(credentials?.client_email || '').trim();
+      const privateKey = String(credentials?.private_key || '').trim();
+      const projectId = String(credentials?.project_id || '').trim();
+      if (!clientEmail || !privateKey || !projectId) {
+        return null;
+      }
+      return { clientEmail, privateKey, projectId };
+    } catch {
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Misc utilities
+  // ---------------------------------------------------------------------------
+
+  /**
+   * FIX 4 & 8: Safely coerce a Prisma JSON field value to a plain object.
+   * Prisma JSON fields can be null, a primitive, or an array depending on what
+   * was previously stored. Spreading a non-object crashes at runtime.
+   */
+  private safeAnalysis(value: unknown): Record<string, unknown> {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return {};
   }
 
   private escapeXml(value: string) {
