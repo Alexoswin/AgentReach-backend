@@ -370,20 +370,22 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const vertexBody = JSON.parse(
       (global.fetch as jest.Mock).mock.calls[0][1].body,
     );
-    const promptText = vertexBody.contents[0].parts[0].text;
+    const systemPrompt = vertexBody.systemInstruction.parts[0].text;
+    const userPrompt = vertexBody.contents[0].parts[0].text;
     expect(vertexBody.generationConfig.maxOutputTokens).toBe(400);
-    expect(promptText).toContain('ROLEPLAY SETUP');
-    expect(promptText).toContain('IDEAL CONVERSATION PATH');
-    expect(promptText).toContain('CALL BEHAVIOR RULES');
-    expect(promptText).toContain('OUTPUT REQUIREMENTS');
-    expect(promptText).toContain('OUTSIDE CONTEXT POLICY');
-    expect(promptText).toContain('safe general world knowledge');
-    expect(promptText).toContain(
-      'answer with useful high-level general context',
+    expect(systemPrompt).toContain('<identity>');
+    expect(systemPrompt).toContain('<conversation_policy>');
+    expect(systemPrompt).toContain('<output_contract>');
+    expect(systemPrompt).toContain('Selected language: en-IN');
+    expect(systemPrompt).toContain(
+      'Selected voice: google:en-IN-Chirp3-HD-Puck',
     );
-    expect(promptText).toContain('Selected language: en-IN');
-    expect(promptText).toContain('Selected voice: google:en-IN-Chirp3-HD-Puck');
-    expect(promptText).toContain('You MUST speak and reply in Indian English');
+    expect(systemPrompt).toContain(
+      'You MUST speak and reply in Indian English',
+    );
+    expect(userPrompt).toContain('<rac_context>');
+    expect(userPrompt).toContain('<campaign_context>');
+    expect(userPrompt).toContain('<latest_user_message>');
   });
 
   it('falls back safely when Google service account JSON is missing', async () => {
@@ -475,7 +477,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       ],
     );
 
-    expect(result.reply).toMatch(/details|overview|features|safety|technology/i);
+    expect(result.reply).toMatch(
+      /details|overview|features|safety|technology/i,
+    );
     expect(result.reply).not.toContain('callback');
     expect(result.reply).not.toContain('That helps');
   });

@@ -13,3 +13,12 @@ export class ChatAiCallingBotDto {
   @Max(8)
   topK?: number;
 
+  @ApiProperty({
+    required: false,
+    example:
+      'Customer: We are considering an EV fleet.\nAI Agent: Sure, what range do you need?',
+  })
+  @IsOptional()
+  @IsString()
+  history?: string;
+}
