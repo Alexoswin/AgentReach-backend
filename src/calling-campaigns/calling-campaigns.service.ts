@@ -2097,6 +2097,19 @@ Return ONLY valid JSON with exactly these fields:
     };
   }
 
+  private async resolveBotProfile(campaign: any) {
+    const defaults = campaign.aiCallingBotId
+      ? await this.aiCallingBotsService.getCampaignDefaults(
+          campaign.aiCallingBotId,
+        )
+      : {};
+    return this.buildBotProfile({
+      ...defaults,
+      ...campaign,
+      botKnowledge: campaign.botKnowledge || defaults.botKnowledge,
+    });
+  }
+
   private buildOpeningScript(campaign: any, contact: any, botProfile: any) {
     const company = contact.company || 'your team';
     const objective =
@@ -2144,18 +2157,6 @@ Return ONLY valid JSON with exactly these fields:
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
     );
-    const scenario = this.detectCallingScenario(campaign, botProfile);
-
-    if (scenario.isAutomotive) {
-      const automotiveContext = scenario.isTata
-        ? 'from Tata Motors about the new Tata Sierra'
-        : `about ${objective}`;
-      return this.compactForSpeech(
-        `${firstSentence} I am calling ${automotiveContext}. I will keep this brief. Is now a good time?`,
-        220,
-      );
-    }
-
     return this.compactForSpeech(
       `${firstSentence} I am calling about ${objective}. I will keep this brief. Is now a good time?`,
       220,
@@ -2258,39 +2259,15 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ];
   }
 
-  private detectCallingScenario(campaign: any, botProfile: any) {
-    const text = [
-      campaign.objective,
-      campaign.prompt,
-      botProfile.role,
-      botProfile.knowledge,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-    return {
-      isSales:
-        /\b(sales|sell|lead|prospect|customer|demo|book|booking|purchase|buy|interested|qualification)\b/.test(
-          text,
-        ),
-      isAutomotive:
-        /\b(tata|motors|car|vehicle|suv|sierra|seira|test drive|variant|on-road|showroom|booking)\b/.test(
-          text,
-        ),
-      isTata: /\b(tata|sierra|seira)\b/.test(text),
-    };
-  }
-
   private buildSalesFallbackReply(
     call: any,
     botProfile: any,
     userTurns: number,
     latestUserSpeech: string,
     language?: string,
+    knowledgeContext = '',
   ) {
     const firstName = call.contact.firstName || 'there';
-    const scenario = this.detectCallingScenario(call.campaign, botProfile);
     const hindi = this.isHindiLanguage(language);
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(
@@ -2301,91 +2278,93 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         90,
       ),
     );
+    const campaignTopic =
+      this.stripSentenceEnding(
+        this.compactForSpeech(
+          knowledgeContext ||
+            botProfile.knowledge ||
+            call.campaign.prompt ||
+            objective ||
+            'this product',
+          110,
+        ),
+      ) || 'this product';
+    const localized = (english: string, hindiText: string) =>
+      hindi ? hindiText : english;
 
-    if (scenario.isAutomotive) {
-      const automotiveContext = scenario.isTata
-        ? 'from Tata Motors about the new Tata Sierra'
-        : `about ${objective}`;
-      const asksAboutPrice =
-        /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis)\b/i.test(
-          latestUserSpeech,
-        );
-      const asksAboutDetails =
-        /\b(detail|details|information|info|tell me more|more about)\b/i.test(
-          latestUserSpeech,
-        );
-      const asksAboutFeatures =
-        /\b(feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology)\b/i.test(
-          latestUserSpeech,
-        );
-      const asksAboutVariants =
-        /\b(variant|variants|model|models|trim|trims|option|options)\b/i.test(
-          latestUserSpeech,
-        );
-      const asksAboutTestDrive =
-        /\b(test drive|drive|demo|showroom|visit|callback|call back|booking|book)\b/i.test(
-          latestUserSpeech,
-        );
-      const asksIfHeard =
-        /\b(can you hear me|are you hearing|hello|hullo)\b/i.test(
-          latestUserSpeech,
-        );
+    const asksAboutPrice =
+      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|offer|offers|discount|discounts)\b/i.test(
+        latestUserSpeech,
+      );
+    const asksAboutDetails =
+      /\b(detail|details|information|info|tell me more|more about|explain)\b/i.test(
+        latestUserSpeech,
+      );
+    const asksAboutFeatures =
+      /\b(feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology)\b/i.test(
+        latestUserSpeech,
+      );
+    const asksAboutVariants =
+      /\b(variant|variants|model|models|trim|trims|option|options|best variant|best option|which one)\b/i.test(
+        latestUserSpeech,
+      );
+    const asksAboutTestDrive =
+      /\b(test drive|drive|demo|showroom|visit|callback|call back|booking|book)\b/i.test(
+        latestUserSpeech,
+      );
+    const asksIfHeard =
+      /\b(can you hear me|are you hearing|hello|hullo)\b/i.test(
+        latestUserSpeech,
+      );
 
-      if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures && !asksAboutDetails) {
-        return hindi
-          ? 'हाँ, मैं सुन रहा हूँ. कृपया बताइए.'
-          : 'Yes, I can hear you. Please go ahead.';
-      }
-      if (asksAboutPrice) {
-        return hindi
-          ? 'हाँ, मैं कीमत के बारे में मदद कर सकता हूँ. सिएरा की अंतिम कीमत वेरिएंट, शहर और ऑफर्स पर निर्भर करती है, इसलिए मैं नवीनतम ऑन-रोड कीमत के लिए कॉलबैक अरेंज कर सकता हूँ. आप किस शहर में हैं?'
-          : 'Yes, I can help with price details. Exact Sierra pricing depends on variant, city, and offers, so I can arrange a dealer callback with the latest on-road price. Which city are you in?';
-      }
-      if (asksAboutDetails || asksAboutFeatures) {
-        return hindi
-          ? 'सिएरा के बारे में संक्षेप में: यह आराम, सेफ्टी, इंफोटेनमेंट, और वेरिएंट-आधारित विकल्पों के साथ एक SUV है. सटीक फीचर्स वेरिएंट पर निर्भर करते हैं, तो क्या मैं स्पेशलिस्ट कॉलबैक अरेंज करूँ?'
-          : 'For Sierra details, I can share a quick overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
-      }
-      if (asksAboutVariants) {
-        return hindi
-          ? 'सिएरा के वेरिएंट फीचर्स, पावरट्रेन और कीमत के हिसाब से अलग हो सकते हैं. मैं सटीक लिस्ट का अनुमान नहीं लगाना चाहता, लेकिन नज़दीकी डीलर से मौजूदा वेरिएंट साझा करवाया जा सकता है. आप किस शहर में हैं?'
-          : 'Sierra variants can differ by features, powertrain, and price. I do not want to guess the exact lineup, but I can have the nearest dealer share current variants. Which city are you in?';
-      }
-      if (asksAboutTestDrive) {
-        return hindi
-          ? 'ज़रूर, मैं टेस्ट ड्राइव या बुकिंग कॉलबैक में मदद कर सकता हूँ. आपके लिए कौन सा शहर या शोरूम सुविधाजनक है?'
-          : 'Sure, I can help with a Sierra test drive or booking callback. Which city or showroom location would be convenient for you?';
-      }
-      return userTurns <= 1
-        ? hindi
-          ? `धन्यवाद, ${firstName}. मैं ${automotiveContext} के बारे में कॉल कर रहा हूँ. क्या आप कीमत, वेरिएंट, या टेस्ट ड्राइव में रुचि रखते हैं?`
-          : `Thanks, ${firstName}. I am calling ${automotiveContext}. Are you interested in price, variants, or booking a test drive?`
-        : hindi
-          ? 'समझ गया. क्या मैं टेस्ट ड्राइव कॉलबैक, कीमत की जानकारी, या इसे अभी के लिए अप्रासंगिक दर्ज कर दूँ?'
-          : 'That helps. Would you like me to arrange a test drive callback, share pricing details, or note that this is not relevant right now?';
+    if (
+      asksIfHeard &&
+      !asksAboutPrice &&
+      !asksAboutFeatures &&
+      !asksAboutDetails &&
+      !asksAboutVariants
+    ) {
+      return localized(
+        'Yes, I can hear you. Please go ahead.',
+        'हाँ, मैं सुन रहा हूँ. कृपया बताइए.',
+      );
     }
-
-    if (scenario.isSales) {
-      return userTurns <= 1
-        ? hindi
-          ? `धन्यवाद, ${firstName}. संक्षेप में, यह ${objective} के बारे में है. क्या आप जानकारी, कीमत, या फॉलो-अप कॉल चाहेंगे?`
-          : `Thanks, ${firstName}. Briefly, this is about ${objective}. Are you interested in details, pricing, or a follow-up call?`
-        : hindi
-          ? 'समझ गया. क्या मैं कॉलबैक अरेंज करूँ, विवरण भेजूँ, या इसे अभी के लिए अप्रासंगिक मार्क कर दूँ?'
-          : 'That makes sense. Should I arrange a callback, send details, or mark this as not relevant for now?';
+    if (asksAboutPrice) {
+      return localized(
+        `I can help with pricing for ${campaignTopic}. Exact pricing depends on the configuration and the latest market details, so I can share a concise next step if you want the latest figures.`,
+        `${campaignTopic} की pricing में मैं मदद कर सकता हूँ. Exact price configuration और latest market details पर निर्भर हो सकती है, इसलिए मैं latest figures के लिए next step बता सकता हूँ.`,
+      );
     }
-
+    if (asksAboutDetails || asksAboutFeatures) {
+      return localized(
+        `I can share a quick overview of ${campaignTopic} from the available knowledge: the main features, comfort, safety, and technology. If you want, I can narrow it to one area.`,
+        `${campaignTopic} का quick overview मैं available knowledge से दे सकता हूँ: main features, comfort, safety, और technology. अगर चाहें, तो मैं किसी एक area पर focus कर सकता हूँ.`,
+      );
+    }
+    if (asksAboutVariants) {
+      return localized(
+        `The best option for ${campaignTopic} depends on what matters most to you. If you care about value, balance, or features, I can narrow it down from the knowledge I have.`,
+        `${campaignTopic} के लिए best option आपकी priority पर depend करता है. Value, balance, या features में से जो important हो, उसके हिसाब से मैं knowledge के आधार पर option narrow कर सकता हूँ.`,
+      );
+    }
+    if (asksAboutTestDrive) {
+      return localized(
+        `Sure, I can help with a test drive or booking callback for ${campaignTopic}. If you share your city, I can suggest the next step.`,
+        `${campaignTopic} के लिए मैं test drive या booking callback में मदद कर सकता हूँ. अगर आप अपना city बताएं, तो मैं next step बता सकता हूँ.`,
+      );
+    }
     return userTurns <= 1
-      ? hindi
-        ? `धन्यवाद, ${firstName}. संक्षेप में, यह ${objective} के बारे में है. क्या आप इसके बारे में जानकारी चाहेंगे?`
-        : `Thanks, ${firstName}. Briefly, this is about ${objective}. Is this something you would like details on?`
-      : hindi
-        ? 'समझ गया. क्या आप कॉलबैक, संदेश में विवरण, या इसे अप्रासंगिक मार्क करना चाहेंगे?'
-        : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
+      ? localized(
+          `Thanks, ${firstName}. I am calling about ${campaignTopic}. What matters most to you right now: details, pricing, or a next step?`,
+          `धन्यवाद, ${firstName}. मैं ${campaignTopic} के बारे में कॉल कर रहा हूँ. अभी आपके लिए सबसे important क्या है: details, pricing, या next step?`,
+        )
+      : localized(
+          'That helps. Do you want more details, pricing, a test drive, or a follow-up from the team?',
+          'समझ गया. क्या आप more details, pricing, test drive, या team से follow-up चाहेंगे?',
+        );
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
-    const scenario = this.detectCallingScenario(campaign, botProfile);
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(
         campaign.objective ||
@@ -2396,36 +2375,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       ),
     );
 
-    if (scenario.isAutomotive) {
-      return [
-        'Confirm the contact has a moment to talk.',
-        `Position yourself as ${botProfile.name}, ${botProfile.role}, calling ${
-          scenario.isTata
-            ? 'from Tata Motors about the new Tata Sierra'
-            : `about ${objective}`
-        }.`,
-        'Answer direct product questions first using provided knowledge, including questions about features, specifications, variants, safety, mileage, or technology.',
-        'Then ask one practical buyer-intent question at a time: price, variants, test drive, booking, location, callback, or details by message.',
-        'If the contact asks for pricing or offers, say final pricing and offers should be confirmed by an authorized dealership, then offer a callback or details.',
-        'If the contact is interested, capture the preferred next step and end politely.',
-      ].join('\n- ');
-    }
-
-    if (scenario.isSales) {
-      return [
-        'Confirm the contact has a moment to talk.',
-        `Explain the value of ${objective} in one short sentence using the provided context.`,
-        'Ask one qualification question at a time: interest, need, timing, budget, decision process, or preferred callback.',
-        'Handle objections briefly, then offer details, callback, demo, or opt-out.',
-        'If the next step is clear, summarize it and end politely.',
-      ].join('\n- ');
-    }
-
     return [
       'Confirm the contact has a moment to talk.',
       `Explain the reason for calling: ${objective}.`,
-      'Ask one relevant question at a time.',
-      'Offer a clear next step: callback, details by message, or mark not relevant.',
+      'Use the campaign objective, bot knowledge, and retrieved training context to answer direct questions first.',
+      'Ask one relevant question at a time: details, pricing, features, variants, timing, or next step.',
+      'Offer a clear next step when useful: callback, details by message, demo, or mark not relevant.',
       'End politely when the contact declines or the next step is captured.',
     ].join('\n- ');
   }
@@ -2445,12 +2400,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       scripts,
     );
-    const fallback = this.buildFallbackCallingTurn(
-      call,
-      latestUserSpeech,
-      scripts,
-      conversationLanguage,
-    );
     const [ragContext, serviceAccountJson] = await Promise.all([
       this.aiCallingBotsService.buildCallingContext(
         call.campaign.aiCallingBotId,
@@ -2461,6 +2410,13 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ]);
     const serviceAccount =
       this.parseGoogleServiceAccountCredentials(serviceAccountJson);
+    const fallback = this.buildFallbackCallingTurn(
+      call,
+      latestUserSpeech,
+      scripts,
+      conversationLanguage,
+      ragContext,
+    );
     if (!serviceAccount) {
       this.logger.warn(
         'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
@@ -2716,8 +2672,10 @@ Return ONLY valid JSON. No markdown. No extra text.
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
     conversationLanguage?: string,
+    ragContext = '',
+    botProfileOverride?: any,
   ): ConversationGeneration {
-    const botProfile = this.buildBotProfile(call.campaign);
+    const botProfile = botProfileOverride || this.buildBotProfile(call.campaign);
     const userTurns = this.countScriptTurns(scripts, 'contact');
     const lower = latestUserSpeech.toLowerCase();
     const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
@@ -2775,6 +2733,7 @@ Return ONLY valid JSON. No markdown. No extra text.
           userTurns,
           latestUserSpeech,
           language,
+          ragContext,
         );
 
     return {

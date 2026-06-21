@@ -54,29 +54,28 @@ describe('CallingCampaignsService.normalizeLanguageCode', () => {
 });
 
 describe('CallingCampaignsService live sales scripting', () => {
-  it('turns Tata automotive campaign context into a natural sales opening', () => {
+  it('turns automotive campaign context into a natural sales opening', () => {
     const service = Object.create(CallingCampaignsService.prototype);
 
     const opening = service.buildLiveOpeningScript(
       {
-        objective: 'Sales for tata seira car',
-        prompt:
-          'You are Alex, a Tata Motors sales person calling about the new Tata Sierra.',
+        objective: 'Sales for a new SUV',
+        prompt: 'You are Alex, a sales person calling about the new SUV.',
         botName: 'Alex',
         botRole: 'Sales person',
-        botKnowledge: 'Tata Motors sales context for the Tata Sierra.',
+        botKnowledge: 'Sales context for the new SUV.',
       },
       { firstName: 'Oswin' },
       service.buildBotProfile({
         botName: 'Alex',
         botRole: 'Sales person',
-        botKnowledge: 'Tata Motors sales context for the Tata Sierra.',
+        botKnowledge: 'Sales context for the new SUV.',
       }),
     );
 
-    expect(opening).toContain('Tata Motors');
-    expect(opening).toContain('Tata Sierra');
-    expect(opening).not.toContain('Sales for tata seira car');
+    expect(opening).toContain('new SUV');
+    expect(opening).not.toContain('Tata');
+    expect(opening).not.toContain('Sierra');
   });
 });
 
@@ -404,16 +403,16 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     );
   });
 
-  it('uses product-specific automotive sales fallback when Vertex AI is unavailable', async () => {
+  it('uses a generic automotive sales fallback when Vertex AI is unavailable', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for Tata Sierra car';
+    call.campaign.objective = 'Sales for a new SUV';
     call.campaign.prompt =
-      'You are Alex, a Tata Motors sales person calling about the new Tata Sierra. Qualify interest and offer pricing, variant, booking, or test drive help.';
+      'You are Alex, a sales person calling about a new SUV. Qualify interest and offer pricing, variant, booking, or test drive help.';
     call.campaign.botRole = 'Sales person';
     call.campaign.botKnowledge =
-      'Tata Motors sales context for the Tata Sierra, including variants, pricing interest, booking support, and test drive follow-up.';
+      'Sales context for the new SUV, including variants, pricing interest, booking support, and test drive follow-up.';
     call.contact.firstName = 'Oswin';
 
     const result = await service.generateNextCallingTurn(
@@ -422,19 +421,18 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       [{ speaker: 'contact', label: 'Customer', text: 'Yes, it is. Okay.' }],
     );
 
-    expect(result.reply).toContain('Tata Motors');
-    expect(result.reply).toContain('Tata Sierra');
-    expect(result.reply).toMatch(/price|variants|test drive/i);
-    expect(result.reply).not.toContain('What would you want to understand');
+    expect(result.reply).toContain('new SUV');
+    expect(result.reply).toMatch(/price|features|variants|test drive/i);
+    expect(result.reply).not.toContain('specialist callback');
   });
 
   it('acknowledges automotive feature requests when verified details are unavailable', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for Tata Sierra car';
-    call.campaign.prompt = 'Call about the new Tata Sierra.';
-    call.campaign.botRole = 'Tata Motors sales person';
+    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.prompt = 'Call about the new SUV.';
+    call.campaign.botRole = 'Sales person';
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -448,8 +446,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       ],
     );
 
-    expect(result.reply).toMatch(/features/i);
-    expect(result.reply).toMatch(/general|verified|specialist/i);
+    expect(result.reply).toMatch(/overview|comfort|safety|technology/i);
     expect(result.reply).not.toContain('That helps');
   });
 
@@ -457,9 +454,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for Tata Sierra car';
-    call.campaign.prompt = 'Call about the new Tata Sierra.';
-    call.campaign.botRole = 'Tata Motors sales person';
+    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.prompt = 'Call about the new SUV.';
+    call.campaign.botRole = 'Sales person';
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -478,10 +475,39 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       ],
     );
 
-    expect(result.reply).toMatch(/details|overview|features|safety|infotainment/i);
-    expect(result.reply).not.toContain(
-      'Would you like me to arrange a test drive callback',
+    expect(result.reply).toMatch(/details|overview|features|safety|technology/i);
+    expect(result.reply).not.toContain('callback');
+    expect(result.reply).not.toContain('That helps');
+  });
+
+  it('answers a best variant question without pushing a callback first', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.prompt = 'Call about the new SUV.';
+    call.campaign.botRole = 'Sales person';
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Can you tell me the best variant?',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you tell me the features for the motors?',
+        },
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Can you tell me the best variant?',
+        },
+      ],
     );
+
+    expect(result.reply).toMatch(/base|mid|top|best fit|priority/i);
+    expect(result.reply).not.toContain('specialist callback');
+    expect(result.reply).not.toContain('city');
     expect(result.reply).not.toContain('That helps');
   });
 
@@ -489,9 +515,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for Tata Sierra car';
-    call.campaign.prompt = 'Call about the new Tata Sierra.';
-    call.campaign.botRole = 'Tata Motors sales person';
+    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.prompt = 'Call about the new SUV.';
+    call.campaign.botRole = 'Sales person';
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -512,7 +538,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     );
 
     expect(result.reply).toMatch(/price|pricing/i);
-    expect(result.reply).toMatch(/city|dealer|on-road/i);
+    expect(result.reply).not.toContain('city');
     expect(result.reply).not.toContain('That helps');
   });
 
@@ -520,9 +546,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for Tata Sierra car';
-    call.campaign.prompt = 'Call about the new Tata Sierra.';
-    call.campaign.botRole = 'Tata Motors sales person';
+    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.prompt = 'Call about the new SUV.';
+    call.campaign.botRole = 'Sales person';
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -751,15 +777,15 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       scripts: [],
       analysis: {},
       campaign: {
-        objective: 'Sales for Tata Sierra car',
-        prompt: 'Call about the new Tata Sierra.',
+        objective: 'Sales for a new SUV',
+        prompt: 'Call about the new SUV.',
         language: 'en-IN',
         voice: 'google:en-IN-Chirp3-HD-Puck',
         voiceQuality: 'standard',
         botName: 'Alex',
         botRole: 'Sales person',
         botPersonality: 'warm and concise',
-        botKnowledge: 'Tata Sierra product information.',
+        botKnowledge: 'SUV product information.',
         botRules: 'Keep responses brief.',
         botObjectionHandling: 'Offer callback.',
         botGreeting: 'Hi {{firstName}}, this is {{botName}}.',
