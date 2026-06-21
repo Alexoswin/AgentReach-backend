@@ -634,7 +634,7 @@ Return ONLY valid JSON with exactly these fields:
             this.logger.debug(
               `Creating Twilio call ${call.id} from ${settings.twilioPhoneNumber} to ${this.maskPhoneNumber(contact.phoneNumber)}; language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${campaign.voiceQuality || 'standard'}`,
             );
-            const botProfile = this.buildBotProfile(campaign);
+            const botProfile = await this.resolveBotProfile(campaign);
             const openingScript = this.buildLiveOpeningScript(
               campaign,
               contact,
@@ -889,7 +889,7 @@ Return ONLY valid JSON with exactly these fields:
           const recordingUrl =
             recordingUrls[Math.floor(Math.random() * recordingUrls.length)];
           const sentimentScore = parseFloat((Math.random() * 3 + 7).toFixed(1));
-          const botProfile = this.buildBotProfile(campaign);
+          const botProfile = await this.resolveBotProfile(campaign);
           const summary = `${botProfile.name} spoke with ${contact.firstName} about ${campaign.objective || 'the campaign objective'} and captured the next step.`;
           const keyOutcomes = this.buildKeyOutcomes(campaign);
           const transcript = this.buildSimulatedTranscript(
@@ -1029,7 +1029,7 @@ Return ONLY valid JSON with exactly these fields:
         );
       }
 
-      const botProfile = this.buildBotProfile(call.campaign);
+      const botProfile = await this.resolveBotProfile(call.campaign);
       const opening = this.buildLiveOpeningScript(
         call.campaign,
         call.contact,
@@ -1131,6 +1131,7 @@ Return ONLY valid JSON with exactly these fields:
       );
       const scripts = this.ensureScripts(call.scripts);
       const userTurnCount = this.countScriptTurns(scripts, 'contact');
+      const botProfile = await this.resolveBotProfile(call.campaign);
 
       // FIX 4: Use safeAnalysis() to guard against non-object JSON values stored
       // in the Prisma JSON field (e.g. null, string, array from old records).
@@ -1157,7 +1158,7 @@ Return ONLY valid JSON with exactly these fields:
             keyOutcomes: 'Call ended because no clear speech was detected.',
             topicsCovered: this.buildTopicsCovered(
               call.campaign,
-              this.buildBotProfile(call.campaign),
+              await this.resolveBotProfile(call.campaign),
             ),
           });
           return await this.buildTwilioSayHangup(
@@ -1221,6 +1222,8 @@ Return ONLY valid JSON with exactly these fields:
                 speech,
                 withUserTurn,
                 conversationLanguage,
+                '',
+                botProfile,
               );
             },
           ),
@@ -1235,6 +1238,8 @@ Return ONLY valid JSON with exactly these fields:
                   speech,
                   withUserTurn,
                   conversationLanguage,
+                  '',
+                  botProfile,
                 ),
               );
             }, TWILIO_RESPONSE_BUDGET_MS);
@@ -1271,7 +1276,7 @@ Return ONLY valid JSON with exactly these fields:
             selectedVoice: conversationVoice,
             scripts: nextScripts,
             transcript: this.scriptsToTranscript(nextScripts),
-            summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
+            summary: `${botProfile.name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
             sentimentScore: generation.sentimentScore,
             keyOutcomes: generation.keyOutcomes,
             topicsCovered: generation.topicsCovered,
@@ -2289,79 +2294,22 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           110,
         ),
       ) || 'this product';
-    const localized = (english: string, hindiText: string) =>
-      hindi ? hindiText : english;
+    const userNeed = this.stripSentenceEnding(
+      this.compactForSpeech(latestUserSpeech || 'the latest question', 90),
+    );
+    const contextSummary = this.stripSentenceEnding(
+      this.compactForSpeech(campaignTopic, 120),
+    );
 
-    const asksAboutPrice =
-      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|offer|offers|discount|discounts)\b/i.test(
-        latestUserSpeech,
-      );
-    const asksAboutDetails =
-      /\b(detail|details|information|info|tell me more|more about|explain)\b/i.test(
-        latestUserSpeech,
-      );
-    const asksAboutFeatures =
-      /\b(feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology)\b/i.test(
-        latestUserSpeech,
-      );
-    const asksAboutVariants =
-      /\b(variant|variants|model|models|trim|trims|option|options|best variant|best option|which one)\b/i.test(
-        latestUserSpeech,
-      );
-    const asksAboutTestDrive =
-      /\b(test drive|drive|demo|showroom|visit|callback|call back|booking|book)\b/i.test(
-        latestUserSpeech,
-      );
-    const asksIfHeard =
-      /\b(can you hear me|are you hearing|hello|hullo)\b/i.test(
-        latestUserSpeech,
-      );
+    if (hindi) {
+      return userTurns <= 1
+        ? `धन्यवाद, ${firstName}. मैं ${objective} के बारे में कॉल कर रहा हूँ. आपने "${userNeed}" पूछा है. उपलब्ध संदर्भ के आधार पर मैं संक्षेप में मदद कर सकता हूँ: ${contextSummary}. क्या आप इसी दिशा में आगे बढ़ना चाहेंगे?`
+        : `समझ गया. आपने "${userNeed}" कहा है. उपलब्ध संदर्भ के अनुसार अगला उपयोगी बिंदु है: ${contextSummary}. क्या मैं इसी पर आगे बढ़ूँ?`;
+    }
 
-    if (
-      asksIfHeard &&
-      !asksAboutPrice &&
-      !asksAboutFeatures &&
-      !asksAboutDetails &&
-      !asksAboutVariants
-    ) {
-      return localized(
-        'Yes, I can hear you. Please go ahead.',
-        'हाँ, मैं सुन रहा हूँ. कृपया बताइए.',
-      );
-    }
-    if (asksAboutPrice) {
-      return localized(
-        `I can help with pricing for ${campaignTopic}. Exact pricing depends on the configuration and the latest market details, so I can share a concise next step if you want the latest figures.`,
-        `${campaignTopic} की pricing में मैं मदद कर सकता हूँ. Exact price configuration और latest market details पर निर्भर हो सकती है, इसलिए मैं latest figures के लिए next step बता सकता हूँ.`,
-      );
-    }
-    if (asksAboutDetails || asksAboutFeatures) {
-      return localized(
-        `I can share a quick overview of ${campaignTopic} from the available knowledge: the main features, comfort, safety, and technology. If you want, I can narrow it to one area.`,
-        `${campaignTopic} का quick overview मैं available knowledge से दे सकता हूँ: main features, comfort, safety, और technology. अगर चाहें, तो मैं किसी एक area पर focus कर सकता हूँ.`,
-      );
-    }
-    if (asksAboutVariants) {
-      return localized(
-        `The best option for ${campaignTopic} depends on what matters most to you. If you care about value, balance, or features, I can narrow it down from the knowledge I have.`,
-        `${campaignTopic} के लिए best option आपकी priority पर depend करता है. Value, balance, या features में से जो important हो, उसके हिसाब से मैं knowledge के आधार पर option narrow कर सकता हूँ.`,
-      );
-    }
-    if (asksAboutTestDrive) {
-      return localized(
-        `Sure, I can help with a test drive or booking callback for ${campaignTopic}. If you share your city, I can suggest the next step.`,
-        `${campaignTopic} के लिए मैं test drive या booking callback में मदद कर सकता हूँ. अगर आप अपना city बताएं, तो मैं next step बता सकता हूँ.`,
-      );
-    }
     return userTurns <= 1
-      ? localized(
-          `Thanks, ${firstName}. I am calling about ${campaignTopic}. What matters most to you right now: details, pricing, or a next step?`,
-          `धन्यवाद, ${firstName}. मैं ${campaignTopic} के बारे में कॉल कर रहा हूँ. अभी आपके लिए सबसे important क्या है: details, pricing, या next step?`,
-        )
-      : localized(
-          'That helps. Do you want more details, pricing, a test drive, or a follow-up from the team?',
-          'समझ गया. क्या आप more details, pricing, test drive, या team से follow-up चाहेंगे?',
-        );
+      ? `Thanks, ${firstName}. I am calling about ${objective}. You asked about "${userNeed}". Based on available context, I can continue with this: ${contextSummary}. Should I continue in this direction?`
+      : `Understood. You asked about "${userNeed}". Based on available context, the most relevant point is: ${contextSummary}. Should I continue with that?`;
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -2394,20 +2342,19 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
   ): Promise<ConversationGeneration> {
-    const botProfile = this.buildBotProfile(call.campaign);
-    const conversationLanguage = this.detectConversationLanguage(
-      call,
-      latestUserSpeech,
-      scripts,
-    );
-    const [ragContext, serviceAccountJson] = await Promise.all([
-      this.aiCallingBotsService.buildCallingContext(
-        call.campaign.aiCallingBotId,
-        latestUserSpeech,
-        4,
-      ),
-      this.getServiceAccountJson(),
-    ]);
+    const [botProfile, conversationLanguage, ragContext, serviceAccountJson] =
+      await Promise.all([
+        this.resolveBotProfile(call.campaign),
+        Promise.resolve(
+          this.detectConversationLanguage(call, latestUserSpeech, scripts),
+        ),
+        this.aiCallingBotsService.buildCallingContext(
+          call.campaign.aiCallingBotId,
+          latestUserSpeech,
+          4,
+        ),
+        this.getServiceAccountJson(),
+      ]);
     const serviceAccount =
       this.parseGoogleServiceAccountCredentials(serviceAccountJson);
     const fallback = this.buildFallbackCallingTurn(
@@ -2416,6 +2363,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       scripts,
       conversationLanguage,
       ragContext,
+      botProfile,
     );
     if (!serviceAccount) {
       this.logger.warn(
@@ -2490,7 +2438,7 @@ CALL BEHAVIOR RULES
 8. If information is not available, say you do not have that exact detail and offer a callback or details from the right team.
 9. If the contact is interested, move toward a concrete next step: test drive, callback, demo, details by message, booking, or follow-up.
 10. If the contact declines, is busy, or asks to stop, politely acknowledge and set shouldEnd to true.
-11. For automotive sales, behave like a practical sales representative: discuss price interest, variants, test drive, booking, location, callback, or details by message.
+11. Behave like a practical calling agent for this campaign: answer the latest question from campaign context first, then move to the most relevant next step.
 12. Never ask vague filler questions like "what would you want to understand" when product context is available.
 13. Answer the contact's latest direct question before offering a callback, test drive, pricing, or another next step.
 14. Never repeat a question or menu of options already given in the transcript.
@@ -2680,9 +2628,11 @@ Return ONLY valid JSON. No markdown. No extra text.
     const lower = latestUserSpeech.toLowerCase();
     const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
     const language = this.normalizeLanguageCode(conversationLanguage);
+    const normalizedUtterance = latestUserSpeech.trim();
     const isDirectInformationRequest =
-      /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis|detail|details|information|info|tell me more|more about|feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology|variant|variants|model|models|trim|trims|test drive|demo|booking|book|can you hear me)\b/i.test(
-        latestUserSpeech,
+      normalizedUtterance.includes('?') ||
+      /\b(what|why|how|can|could|would|where|when|which|tell|explain)\b/i.test(
+        normalizedUtterance,
       );
 
     if (this.isImmediateEndSpeech(latestUserSpeech)) {
@@ -2719,22 +2669,14 @@ Return ONLY valid JSON. No markdown. No extra text.
       };
     }
 
-    const outOfContext =
-      /(weather|politics|sports|movie|recipe|homework|capital of|stock price)/i.test(
-        latestUserSpeech,
-      );
-    const reply = outOfContext
-      ? this.isHindiLanguage(language)
-        ? `मेरे पास इस कॉल में वह जानकारी नहीं है, लेकिन मैं ${call.campaign.objective || 'जिस कारण मैं कॉल कर रहा हूँ'} के बारे में मदद कर सकता हूँ. क्या यह आपके लिए अभी प्रासंगिक है?`
-        : `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
-      : this.buildSalesFallbackReply(
-          call,
-          botProfile,
-          userTurns,
-          latestUserSpeech,
-          language,
-          ragContext,
-        );
+    const reply = this.buildSalesFallbackReply(
+      call,
+      botProfile,
+      userTurns,
+      latestUserSpeech,
+      language,
+      ragContext,
+    );
 
     return {
       reply: this.compactForSpeech(reply, 240),
@@ -2832,6 +2774,7 @@ Return ONLY valid JSON. No markdown. No extra text.
   ) {
     const endedAt = new Date();
     const startedAt = call.startedAt ? new Date(call.startedAt) : endedAt;
+    const botProfile = await this.resolveBotProfile(call.campaign);
     await this.db.callHistory.update({
       where: { id: call.id },
       data: {
@@ -2840,7 +2783,7 @@ Return ONLY valid JSON. No markdown. No extra text.
         sessionStatus: 'completed',
         scripts,
         transcript: this.scriptsToTranscript(scripts),
-        summary: `${this.buildBotProfile(call.campaign).name} completed the AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
+        summary: `${botProfile.name} completed the AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
         sentimentScore: generation.sentimentScore,
         keyOutcomes: generation.keyOutcomes,
         // FIX 4: Use safeAnalysis() to prevent spreading a non-object JSON value.
