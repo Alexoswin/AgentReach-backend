@@ -1465,12 +1465,7 @@ Return ONLY valid JSON with exactly these fields:
           'AI Agent',
           generation.reply,
         );
-        const shouldEnd = this.shouldEndConversationNow(
-          call,
-          speech,
-          generation,
-          botProfile,
-        );
+        const shouldEnd = this.shouldEndConversationNow(speech, generation);
         const finalGeneration = shouldEnd
           ? {
               ...generation,
@@ -2615,12 +2610,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       170,
       scripts,
     );
-    const followUpQuestion = this.buildKnowledgeFollowUpQuestion(
-      contextualKnowledge,
-      objective,
-    );
-    const lowInformationTurn =
-      this.isLowInformationUserTurn(latestUserSpeech);
+    const lowInformationTurn = this.isLowInformationUserTurn(latestUserSpeech);
     const asksForPrompt = this.isPromptExposureRequest(latestUserSpeech);
 
     if (asksForPrompt) {
@@ -2640,7 +2630,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     if (lowInformationTurn) {
-      return `Thanks, ${firstName}. ${contextSummary} ${followUpQuestion}`;
+      return `Thanks, ${firstName}. ${contextSummary} What would you like to cover next?`;
     }
 
     return userTurns <= 1
@@ -2662,12 +2652,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       return 'I do not yet have enough verified detail in the training context.';
     }
 
-    const availableSentences = sentences.filter(
-      (sentence) => !this.wasKnowledgeSentenceRecentlySaid(sentence, scripts),
-    );
-    const searchSpace = availableSentences.length
-      ? availableSentences
-      : sentences;
+    const searchSpace = sentences;
     const matchedQuestionTerms = this.buildKnowledgeQueryTerms(
       question,
       searchSpace.join(' '),
@@ -2678,19 +2663,17 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         : matchedQuestionTerms;
 
     if (terms.length === 0) {
-      const overview = searchSpace
-        .filter((sentence) => this.hasUsefulKnowledgeSignal(sentence))
-        .slice(0, 2)
-        .join(' ')
-        .trim();
-      const fallbackOverview = overview || searchSpace.slice(0, 2).join(' ');
+      const fallbackOverview = this.selectKnowledgeContinuation(
+        searchSpace,
+        scripts,
+      );
       return this.compactKnowledgeSummary(fallbackOverview, maxLength);
     }
 
     const scored = searchSpace.map((sentence, index) => {
       const lowered = sentence.toLowerCase();
       const sentenceTerms = this.buildKnowledgeQueryTerms(lowered);
-      const score = terms.reduce((sum, term) => {
+      const score = terms.reduce<number>((sum, term) => {
         if (lowered.includes(term)) return sum + 1;
         return this.hasApproximateTermMatch(term, sentenceTerms)
           ? sum + 0.75
@@ -2727,7 +2710,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
   private buildKnowledgeCandidateSentences(value?: string) {
     let skipProceduralSection = false;
-    let currentContentHeading = '';
     return String(value || '')
       .replaceAll('\u0000', '')
       .replace(/\r/g, '\n')
@@ -2737,18 +2719,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         if (!cleanLine) return [];
         if (this.isKnowledgeSectionHeading(cleanLine)) {
           skipProceduralSection = this.isProceduralKnowledgeHeading(cleanLine);
-          currentContentHeading = skipProceduralSection
-            ? ''
-            : this.humanizeKnowledgeTopicLabel(cleanLine.replace(/:$/g, ''));
           return [];
         }
         if (skipProceduralSection) return [];
         if (this.shouldSkipKnowledgeLine(cleanLine)) return [];
-        return cleanLine.split(/(?<=[.!?])\s+/).map((sentence) => {
-          const trimmed = sentence.trim();
-          if (!currentContentHeading) return trimmed;
-          return `${currentContentHeading}: ${trimmed}`;
-        });
+        return cleanLine.split(/(?<=[.!?])\s+/);
       })
       .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
       .filter(Boolean)
@@ -2778,9 +2753,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
   }
 
-  private buildKnowledgeQueryTerms(value?: string, referenceText?: string) {
+  private buildKnowledgeQueryTerms(
+    value?: string,
+    referenceText?: string,
+  ): string[] {
     const seen = new Set<string>();
-    const referenceTerms = referenceText
+    const referenceTerms: string[] = referenceText
       ? this.buildKnowledgeQueryTerms(referenceText)
       : [];
     return String(value || '')
@@ -2923,9 +2901,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   }
 
   private compactKnowledgeSummary(value: string, maxLength: number) {
-    const summary = this.stripGeneratedKnowledgeHeadingPrefixes(value)
-      .replace(/\s+/g, ' ')
-      .trim();
+    const summary = value.replace(/\s+/g, ' ').trim();
     if (!summary || this.looksLikeLivePromptEcho(summary)) {
       return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
     }
@@ -2934,88 +2910,20 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       : summary;
   }
 
-  private stripGeneratedKnowledgeHeadingPrefixes(value: string) {
-    return value.replace(/(^|[.!?]\s+)[a-z][a-z0-9 &/()_-]{2,70}:\s+/g, '$1');
-  }
-
-  private wasKnowledgeSentenceRecentlySaid(
-    sentence: string,
+  private selectKnowledgeContinuation(
+    sentences: string[],
     scripts: Array<Record<string, any>>,
   ) {
-    const normalizedSentence = this.normalizeReplyForComparison(
-      this.stripKnowledgeHeadingPrefix(sentence),
+    const usefulSentences = sentences.filter((sentence) =>
+      this.hasUsefulKnowledgeSignal(sentence),
     );
-    if (normalizedSentence.length < 20) return false;
-    const recentAgentText = scripts
-      .filter((script) => script?.speaker === 'agent')
-      .map((script) => this.normalizeReplyForComparison(script?.text || ''))
-      .filter(Boolean)
-      .slice(-4)
-      .join(' ');
-    if (!recentAgentText) return false;
-    if (recentAgentText.includes(normalizedSentence)) return true;
-    const importantWords = normalizedSentence
-      .split(' ')
-      .filter((word) => word.length > 4)
-      .slice(0, 8);
-    if (!importantWords.length) return false;
-    return importantWords.every((word) => recentAgentText.includes(word));
-  }
-
-  private stripKnowledgeHeadingPrefix(value: string) {
-    return value.replace(/^[a-z0-9 &/()_-]{2,70}:\s+/i, '').trim();
-  }
-
-  private buildKnowledgeFollowUpQuestion(knowledge: string, objective: string) {
-    const topics = this.extractKnowledgeTopicLabels(knowledge).slice(0, 3);
-    if (topics.length >= 2) {
-      const options =
-        topics.length === 2
-          ? `${topics[0]} or ${topics[1]}`
-          : `${topics[0]}, ${topics[1]}, or ${topics[2]}`;
-      return `Would you like me to cover ${options} next?`;
-    }
-    return `What would be most useful for you to cover first around ${objective}?`;
-  }
-
-  private extractKnowledgeTopicLabels(value?: string) {
-    const seen = new Set<string>();
-    return String(value || '')
-      .replaceAll('\u0000', '')
-      .replace(/\r/g, '\n')
-      .split(/\n+/)
-      .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
-      .filter((line) => this.isKnowledgeSectionHeading(line))
-      .map((line) => line.replace(/:$/g, '').trim())
-      .filter((line) => !this.isProceduralKnowledgeHeading(line))
-      .map((line) => this.humanizeKnowledgeTopicLabel(line))
-      .filter((line) => !this.isLowValueKnowledgeTopicLabel(line))
-      .filter((line) => {
-        const normalized = this.normalizeReplyForComparison(line);
-        if (!normalized || seen.has(normalized)) return false;
-        seen.add(normalized);
-        return true;
-      });
-  }
-
-  private isLowValueKnowledgeTopicLabel(value: string) {
-    const normalized = this.normalizeReplyForComparison(value);
-    return /\b(version|document|manual|guide)\b/.test(normalized);
-  }
-
-  private humanizeKnowledgeTopicLabel(value: string) {
-    const words = value
-      .replace(/[_-]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .split(' ');
-    return words
-      .map((word) =>
-        /^[A-Z0-9&/()]+$/.test(word)
-          ? word
-          : `${word.charAt(0).toLowerCase()}${word.slice(1)}`,
-      )
-      .join(' ');
+    if (!usefulSentences.length) return sentences.slice(0, 2).join(' ');
+    const agentTurns = this.countScriptTurns(scripts, 'agent');
+    const start = Math.min(
+      agentTurns,
+      Math.max(usefulSentences.length - 1, 0),
+    );
+    return usefulSentences.slice(start, start + 2).join(' ');
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -3475,21 +3383,15 @@ ${latestUserSpeech}
   }
 
   private shouldEndConversationNow(
-    call: any,
     latestUserSpeech: string,
     generation: ConversationGeneration,
-    botProfile: any,
   ) {
     // Strict end gate: only end when the contact declines or the configured goal is met.
     if (this.isImmediateEndSpeech(latestUserSpeech)) return true;
-    return this.isGoalMarkedAsMet(generation, call, botProfile);
+    return this.isGoalMarkedAsMet(generation);
   }
 
-  private isGoalMarkedAsMet(
-    generation: ConversationGeneration,
-    call?: any,
-    botProfile?: any,
-  ) {
+  private isGoalMarkedAsMet(generation: ConversationGeneration) {
     const data = generation.collectedData || {};
     const readString = (value: unknown) =>
       typeof value === 'string' ? value : '';

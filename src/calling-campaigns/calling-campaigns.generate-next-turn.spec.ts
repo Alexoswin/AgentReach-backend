@@ -35,7 +35,8 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
         botName: 'Alex',
         botRole: 'calling specialist',
         botPersonality: 'warm and concise',
-        botKnowledge: 'Product details',
+        botKnowledge:
+          'Configured bot knowledge explains the campaign context, available details, and next-step guidance for the selected contact.',
         botRules: 'Keep responses short',
         botObjectionHandling: 'Offer callback',
         aiCallingBotId: 'bot-1',
@@ -165,13 +166,6 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Qualify interest in an onboarding platform';
-    call.campaign.prompt =
-      'Qualify whether the contact needs a better onboarding workflow.';
-    call.campaign.botRole = 'workflow consultant';
-    call.campaign.botKnowledge =
-      'The onboarding platform centralizes checklists, reminders, document collection, and manager approvals for new hires.';
-    call.contact.firstName = 'Oswin';
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -179,9 +173,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       [{ speaker: 'contact', label: 'Customer', text: 'Yes, it is. Okay.' }],
     );
 
-    expect(result.reply).toMatch(
-      /onboarding|checklists|reminders|approvals/i,
-    );
+    expect(result.reply).toContain(call.campaign.botKnowledge);
     expect(result.reply).not.toMatch(/objective|rules|common objections/i);
   });
 
