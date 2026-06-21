@@ -181,4 +181,13 @@ export class CallingCampaignsController {
   async relaunchCampaign(@Param('id') id: string) {
     return this.callingCampaignsService.relaunchCampaign(id);
   }
+
+  @Post(':id/stop')
+  @ApiOperation({
+    summary:
+      'Stop a running or queuing AI calling campaign and cancel pending calls',
+  })
+  async stopCampaign(@Param('id') id: string) {
+    return this.callingCampaignsService.stopCampaign(id);
+  }
 }

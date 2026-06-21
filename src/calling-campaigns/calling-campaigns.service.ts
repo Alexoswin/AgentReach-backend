@@ -613,6 +613,130 @@ Return ONLY valid JSON with exactly these fields:
     return this.launchCampaign(id, { forceRelaunch: true });
   }
 
+  async stopCampaign(id: string) {
+    this.logger.debug(`Stop requested for calling campaign ${id}`);
+    const campaign = await this.db.callingCampaign.findUnique({
+      where: { id },
+      include: {
+        calls: true,
+      },
+    });
+
+    if (!campaign) {
+      throw new BadRequestException('Calling campaign not found');
+    }
+
+    if (!['RUNNING', 'LAUNCHING'].includes(campaign.status || '')) {
+      throw new BadRequestException(
+        'Calling campaign is not running or queued',
+      );
+    }
+
+    await this.db.callingCampaign.update({
+      where: { id },
+      data: { status: 'STOPPED' },
+    });
+
+    const callsToCancel = (campaign.calls || []).filter((call: any) =>
+      this.isCallCancellable(call),
+    );
+
+    const settings = decryptSystemSettings(
+      await this.db.systemSettings.findUnique({
+        where: { id: 'default' },
+      }),
+    );
+    const hasTwilio = this.hasUsableTwilioSettings(settings);
+    const now = new Date();
+    const stopResults = await Promise.all(
+      callsToCancel.map(async (call: any) => {
+        let stopError: string | null = null;
+        let twilioStopAttempted = false;
+
+        if (
+          hasTwilio &&
+          call.provider === 'TWILIO' &&
+          typeof call.providerCallSid === 'string' &&
+          call.providerCallSid.trim()
+        ) {
+          twilioStopAttempted = true;
+          const result = await this.stopTwilioCall({
+            accountSid: settings?.twilioAccountSid || '',
+            authToken: settings?.twilioAuthToken || '',
+            callSid: call.providerCallSid,
+          });
+          if (!result.ok) {
+            stopError = result.error;
+          }
+        }
+
+        const nextSessionErrors = Array.isArray(call.sessionErrors)
+          ? [...call.sessionErrors]
+          : [];
+        if (stopError) {
+          nextSessionErrors.push({
+            errorCode: 'TWILIO_STOP_FAILED',
+            errorMessage: stopError,
+          });
+        }
+
+        await this.db.callHistory.update({
+          where: { id: call.id },
+          data: {
+            status: 'CANCELLED',
+            outcome: 'CANCELLED',
+            sessionStatus: 'cancelled',
+            endedAt: call.endedAt || now,
+            endCallReason: 'Campaign was stopped by user.',
+            providerStatus:
+              call.provider === 'TWILIO' &&
+              call.providerCallSid &&
+              twilioStopAttempted
+                ? stopError
+                  ? call.providerStatus || 'stop_failed'
+                  : 'canceled'
+                : call.providerStatus,
+            errorMessage: stopError
+              ? `Could not cancel provider call: ${stopError}`
+              : null,
+            sessionErrors: nextSessionErrors,
+            timestamp: now,
+          },
+        });
+
+        return {
+          attemptedTwilioStop: twilioStopAttempted,
+          twilioStopFailed: Boolean(stopError),
+          error: stopError,
+        };
+      }),
+    );
+
+    const twilioStopped = stopResults.filter(
+      (item) => item.attemptedTwilioStop && !item.twilioStopFailed,
+    ).length;
+    const twilioFailed = stopResults.filter((item) => item.twilioStopFailed)
+      .length;
+    const errors = stopResults
+      .map((item) => item.error)
+      .filter((value): value is string => typeof value === 'string');
+
+    this.logger.debug(
+      `Campaign ${id} stopped; callsCancelled=${callsToCancel.length}; twilioStopped=${twilioStopped}; twilioFailed=${twilioFailed}`,
+    );
+
+    return {
+      success: true,
+      message: 'Calling campaign stopped',
+      cancelledCalls: callsToCancel.length,
+      twilio: {
+        stopped: twilioStopped,
+        failed: twilioFailed,
+        errors,
+      },
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Twilio outbound calling
   // ---------------------------------------------------------------------------
@@ -674,6 +798,20 @@ Return ONLY valid JSON with exactly these fields:
       }
 
       for (const batch of batches) {
+        const latestCampaign = await this.db.callingCampaign.findUnique({
+          where: { id: campaignId },
+          select: { status: true },
+        });
+        if (latestCampaign?.status === 'STOPPED') {
+          this.logger.warn(
+            `Stopping Twilio queueing for campaign ${campaignId}: campaign was manually stopped`,
+          );
+          resultSummary.errors.push(
+            'Campaign was stopped before queueing completed.',
+          );
+          return resultSummary;
+        }
+
         await Promise.all(
           batch.map(async (call) => {
             const contact = call.contact;
@@ -683,6 +821,20 @@ Return ONLY valid JSON with exactly these fields:
                 `Skipping Twilio call ${call.id} in campaign ${campaignId}: contact ${call.contactId} has no phone number`,
               );
               return; // FIX 9: use return instead of continue inside async map
+            }
+
+            const latestCall = await this.db.callHistory.findUnique({
+              where: { id: call.id },
+              select: { status: true, outcome: true },
+            });
+            if (
+              latestCall?.status === 'CANCELLED' ||
+              latestCall?.outcome === 'CANCELLED'
+            ) {
+              this.logger.debug(
+                `Skipping Twilio call ${call.id} in campaign ${campaignId}: call was already cancelled`,
+              );
+              return;
             }
 
             this.logger.debug(
@@ -866,6 +1018,17 @@ Return ONLY valid JSON with exactly these fields:
       ];
 
       for (const call of campaign.calls) {
+        const latestCampaign = await this.db.callingCampaign.findUnique({
+          where: { id: campaignId },
+          select: { status: true },
+        });
+        if (latestCampaign?.status === 'STOPPED') {
+          this.logger.warn(
+            `Stopping simulation for campaign ${campaignId}: campaign was manually stopped`,
+          );
+          return;
+        }
+
         const contact = call.contact;
         if (!this.hasCallablePhone(contact)) {
           this.logger.warn(
@@ -1426,7 +1589,9 @@ Return ONLY valid JSON with exactly these fields:
           ? 'BUSY'
           : status === 'no-answer'
             ? 'NO_ANSWER'
-            : 'FAILED';
+            : status === 'canceled'
+              ? 'CANCELLED'
+              : 'FAILED';
       data.outcome = data.status;
       data.sessionStatus = status === 'failed' ? 'failed' : 'completed';
       data.endedAt = new Date();
@@ -1896,6 +2061,29 @@ Return ONLY valid JSON with exactly these fields:
     );
   }
 
+  private isCallCancellable(call: any) {
+    const status = String(call?.status || '').toUpperCase();
+    const outcome = String(call?.outcome || '').toUpperCase();
+    return [
+      'PENDING',
+      'QUEUING',
+      'QUEUED',
+      'DIALING',
+      'RINGING',
+      'CONNECTED',
+      'IN_PROGRESS',
+    ].includes(status) ||
+      [
+        'PENDING',
+        'QUEUING',
+        'QUEUED',
+        'DIALING',
+        'RINGING',
+        'CONNECTED',
+        'IN_PROGRESS',
+      ].includes(outcome);
+  }
+
   // ---------------------------------------------------------------------------
   // Twilio API client
   // ---------------------------------------------------------------------------
@@ -1981,6 +2169,49 @@ Return ONLY valid JSON with exactly these fields:
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+
+  private async stopTwilioCall({
+    accountSid,
+    authToken,
+    callSid,
+  }: {
+    accountSid: string;
+    authToken: string;
+    callSid: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    let lastError = 'Twilio stop request failed';
+    const attempts = ['canceled', 'completed'];
+
+    for (const status of attempts) {
+      try {
+        const body = new URLSearchParams({ Status: status });
+        const response = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Basic ${auth}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body,
+          },
+        );
+        const data = await response.json().catch(() => null);
+        if (response.ok) {
+          return { ok: true };
+        }
+        lastError =
+          data?.message ||
+          data?.error_message ||
+          `Twilio API error ${response.status} ${response.statusText}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    return { ok: false, error: lastError };
   }
 
   // ---------------------------------------------------------------------------
