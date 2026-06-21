@@ -12,5 +12,4 @@ export class ChatAiCallingBotDto {
   @Min(1)
   @Max(8)
   topK?: number;
-}
 
