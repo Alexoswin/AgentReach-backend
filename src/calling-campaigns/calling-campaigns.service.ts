@@ -582,6 +582,14 @@ Return ONLY valid JSON with exactly these fields:
         Number(campaign.concurrencyLimit) || 50,
       );
       const allCalls = campaign.calls as any[];
+      const selectedLanguage = this.resolveGoogleVoiceLanguage(
+        campaign.language,
+        campaign.voice,
+      );
+      const selectedVoice = this.resolveGoogleTtsVoice(
+        campaign.voice,
+        selectedLanguage,
+      );
       const batches: (typeof allCalls)[] = [];
       for (let i = 0; i < allCalls.length; i += concurrencyLimit) {
         batches.push(allCalls.slice(i, i + concurrencyLimit));
@@ -618,8 +626,8 @@ Return ONLY valid JSON with exactly these fields:
                 outcome: 'QUEUING',
                 sessionStatus: 'inprogress',
                 callType: 'phone_call',
-                selectedLanguage: campaign.language ?? null,
-                selectedVoice: campaign.voice ?? null,
+                selectedLanguage,
+                selectedVoice,
                 startedAt: new Date(),
                 scripts: this.transcriptToScripts(openingTranscript),
                 transcript: openingTranscript,
@@ -792,6 +800,14 @@ Return ONLY valid JSON with exactly these fields:
           `Dialing call ${call.id} for ${contact.firstName} ${contact.lastName} at ${this.maskPhoneNumber(contact.phoneNumber)}`,
         );
         const startedAt = new Date();
+        const selectedLanguage = this.resolveGoogleVoiceLanguage(
+          campaign.language,
+          campaign.voice,
+        );
+        const selectedVoice = this.resolveGoogleTtsVoice(
+          campaign.voice,
+          selectedLanguage,
+        );
 
         // 1. DIALING
         await this.db.callHistory.update({
@@ -802,8 +818,8 @@ Return ONLY valid JSON with exactly these fields:
             outcome: 'DIALING',
             sessionStatus: 'inprogress',
             callType: 'phone_call',
-            selectedLanguage: campaign.language ?? null,
-            selectedVoice: campaign.voice ?? null,
+            selectedLanguage,
+            selectedVoice,
             startedAt,
             scripts: [],
             sessionErrors: [],
@@ -1003,6 +1019,14 @@ Return ONLY valid JSON with exactly these fields:
         ? scripts
         : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
       const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
+      const selectedLanguage = this.resolveGoogleVoiceLanguage(
+        call.campaign.language,
+        call.campaign.voice,
+      );
+      const selectedVoice = this.resolveGoogleTtsVoice(
+        call.campaign.voice,
+        selectedLanguage,
+      );
 
       await this.db.callHistory.update({
         where: { id: callId },
@@ -1015,8 +1039,8 @@ Return ONLY valid JSON with exactly these fields:
           sessionStatus: 'connected',
           startedAt,
           connectedAt: call.connectedAt || new Date(),
-          selectedLanguage: call.campaign.language ?? null,
-          selectedVoice: call.campaign.voice ?? null,
+          selectedLanguage,
+          selectedVoice,
           scripts: nextScripts,
           transcript: this.scriptsToTranscript(nextScripts),
           summary: `${botProfile.name} opened a live AI calling conversation with ${call.contact.firstName || 'the contact'}.`,
@@ -1554,23 +1578,41 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   private async applyAiCallingBotDefaults(data: Record<string, any>) {
-    if (!data.aiCallingBotId) return data;
-    const defaults = await this.aiCallingBotsService.getCampaignDefaults(
-      data.aiCallingBotId,
-    );
-    return {
+    const hasVoiceOrLanguage =
+      Object.prototype.hasOwnProperty.call(data, 'voice') ||
+      Object.prototype.hasOwnProperty.call(data, 'language');
+    if (!data.aiCallingBotId && !hasVoiceOrLanguage) return data;
+
+    const defaults: Record<string, any> = data.aiCallingBotId
+      ? await this.aiCallingBotsService.getCampaignDefaults(data.aiCallingBotId)
+      : {};
+    const merged: Record<string, any> = {
       ...defaults,
       ...data,
-      voice: data.voice || defaults.voice,
-      language: data.language || defaults.language,
-      botName: data.botName || defaults.botName,
-      botRole: data.botRole || defaults.botRole,
-      botPersonality: data.botPersonality || defaults.botPersonality,
-      botKnowledge: data.botKnowledge || defaults.botKnowledge,
-      botRules: data.botRules || defaults.botRules,
+      voice: data.voice || defaults?.voice,
+      language: data.language || defaults?.language,
+      botName: data.botName || defaults?.botName,
+      botRole: data.botRole || defaults?.botRole,
+      botPersonality: data.botPersonality || defaults?.botPersonality,
+      botKnowledge: data.botKnowledge || defaults?.botKnowledge,
+      botRules: data.botRules || defaults?.botRules,
       botObjectionHandling:
-        data.botObjectionHandling || defaults.botObjectionHandling,
-      botGreeting: data.botGreeting || defaults.botGreeting,
+        data.botObjectionHandling || defaults?.botObjectionHandling,
+      botGreeting: data.botGreeting || defaults?.botGreeting,
+    };
+    if (!merged.aiCallingBotId && merged.voiceQuality !== 'hd') {
+      return merged;
+    }
+
+    const language = this.resolveGoogleVoiceLanguage(
+      merged.language,
+      merged.voice,
+    );
+
+    return {
+      ...merged,
+      language,
+      voice: this.normalizeCampaignVoice(merged.voice, language),
     };
   }
 
@@ -2630,12 +2672,10 @@ JSON Schema:
 
   private normalizeCampaignVoice(voice?: string, language?: string) {
     const normalized = voice?.trim();
-    if (
-      normalized &&
-      /^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(normalized)
-    ) {
-      const voiceName = this.extractGeminiVoiceName(normalized);
-      return `google:${this.resolveGoogleVoiceLanguage(language, normalized)}-Chirp3-HD-${voiceName}`;
+    const withoutProvider = normalized?.replace(/^google:/i, '');
+    if (normalized) {
+      const voiceName = this.extractGeminiVoiceName(withoutProvider);
+      return `google:${this.resolveGoogleVoiceLanguage(language, withoutProvider)}-Chirp3-HD-${voiceName}`;
     }
 
     const profiles = this.aiCallingBotsService?.getGoogleVoiceProfiles() || [];
