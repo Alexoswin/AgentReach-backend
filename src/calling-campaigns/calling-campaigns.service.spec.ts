@@ -53,6 +53,39 @@ describe('CallingCampaignsService.normalizeLanguageCode', () => {
   });
 });
 
+describe('CallingCampaignsService.normalizeCampaignVoiceInput', () => {
+  it('maps selectedLanguage/selectedVoice aliases into language/voice', () => {
+    const service = Object.create(CallingCampaignsService.prototype);
+
+    const normalized = service.normalizeCampaignVoiceInput({
+      selectedLanguage: 'hi-IN',
+      selectedVoice: 'google:hi-IN-Chirp3-HD-Kore',
+      name: 'Hindi campaign',
+    });
+
+    expect(normalized.language).toBe('hi-IN');
+    expect(normalized.voice).toBe('google:hi-IN-Chirp3-HD-Kore');
+    expect(normalized.selectedLanguage).toBeUndefined();
+    expect(normalized.selectedVoice).toBeUndefined();
+  });
+
+  it('keeps explicit language/voice over selected aliases when both are provided', () => {
+    const service = Object.create(CallingCampaignsService.prototype);
+
+    const normalized = service.normalizeCampaignVoiceInput({
+      language: 'en-US',
+      voice: 'google:en-US-Chirp3-HD-Puck',
+      selectedLanguage: 'hi-IN',
+      selectedVoice: 'google:hi-IN-Chirp3-HD-Kore',
+    });
+
+    expect(normalized.language).toBe('en-US');
+    expect(normalized.voice).toBe('google:en-US-Chirp3-HD-Puck');
+    expect(normalized.selectedLanguage).toBeUndefined();
+    expect(normalized.selectedVoice).toBeUndefined();
+  });
+});
+
 describe('CallingCampaignsService live sales scripting', () => {
   it('turns automotive campaign context into a natural sales opening', () => {
     const service = Object.create(CallingCampaignsService.prototype);

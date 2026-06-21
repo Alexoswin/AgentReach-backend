@@ -45,6 +45,16 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   language?: string;
 
+  @ApiProperty({ required: false, example: 'en-IN' })
+  @IsString()
+  @IsOptional()
+  selectedLanguage?: string;
+
+  @ApiProperty({ required: false, example: 'google:en-IN-Chirp3-HD-Puck' })
+  @IsString()
+  @IsOptional()
+  selectedVoice?: string;
+
   @ApiProperty({ required: false, example: 'ai-calling-bot-id' })
   @IsString()
   @IsOptional()

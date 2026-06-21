@@ -277,7 +277,8 @@ export class CallingCampaignsService implements OnModuleInit {
     this.logger.debug(
       `Creating calling campaign "${rest.name}" with ${contactIds?.length || 0} requested contacts`,
     );
-    const campaignData = await this.applyAiCallingBotDefaults(rest);
+    const normalizedInput = this.normalizeCampaignVoiceInput(rest);
+    const campaignData = await this.applyAiCallingBotDefaults(normalizedInput);
     const campaign = await this.db.callingCampaign.create({
       data: campaignData,
     });
@@ -456,7 +457,8 @@ Return ONLY valid JSON with exactly these fields:
     this.logger.debug(
       `Updating calling campaign ${id}; fields=${Object.keys(rest).join(',') || 'none'}; requestedContacts=${contactIds?.length || 0}`,
     );
-    const campaignData = await this.applyAiCallingBotDefaults(rest);
+    const normalizedInput = this.normalizeCampaignVoiceInput(rest);
+    const campaignData = await this.applyAiCallingBotDefaults(normalizedInput);
     const campaign = await this.db.callingCampaign.update({
       where: { id },
       data: campaignData,
@@ -1941,6 +1943,36 @@ Return ONLY valid JSON with exactly these fields:
       language,
       voice: this.normalizeCampaignVoice(merged.voice, language),
     };
+  }
+
+  private normalizeCampaignVoiceInput(data: Record<string, any>) {
+    const rawLanguage =
+      typeof data.language === 'string' ? data.language.trim() : '';
+    const rawVoice = typeof data.voice === 'string' ? data.voice.trim() : '';
+    const selectedLanguage =
+      typeof data.selectedLanguage === 'string'
+        ? data.selectedLanguage.trim()
+        : '';
+    const selectedVoice =
+      typeof data.selectedVoice === 'string' ? data.selectedVoice.trim() : '';
+
+    const next = { ...data } as Record<string, any>;
+    if (!rawLanguage && selectedLanguage) {
+      next.language = selectedLanguage;
+    } else if (rawLanguage) {
+      next.language = rawLanguage;
+    }
+
+    if (!rawVoice && selectedVoice) {
+      next.voice = selectedVoice;
+    } else if (rawVoice) {
+      next.voice = rawVoice;
+    }
+
+    delete next.selectedLanguage;
+    delete next.selectedVoice;
+
+    return next;
   }
 
   // ---------------------------------------------------------------------------
