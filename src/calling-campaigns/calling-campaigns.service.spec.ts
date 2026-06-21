@@ -21,6 +21,20 @@ describe('CallingCampaignsService.resolveTwilioVoice', () => {
     );
   });
 
+  it('rebuilds the HD voice family when the language changes', () => {
+    const service = Object.create(CallingCampaignsService.prototype) as any;
+
+    expect(service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'hi-IN')).toBe(
+      'Google.hi-IN-Neural2-C',
+    );
+    expect(service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'en-IN')).toBe(
+      'Google.en-IN-Wavenet-D',
+    );
+    expect(service.resolveTwilioVoice('google:en-IN-Chirp3-HD-Puck', 'en-US')).toBe(
+      'Google.en-US-Neural2-D',
+    );
+  });
+
   it('uses a Google fallback voice when the campaign voice is unknown', () => {
     const service = Object.create(CallingCampaignsService.prototype) as any;
 

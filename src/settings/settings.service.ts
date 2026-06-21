@@ -376,10 +376,6 @@ export class SettingsService {
       ? normalizedVoice.slice('google:'.length)
       : normalizedVoice;
 
-    if (/^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(withoutProvider)) {
-      return withoutProvider;
-    }
-
     const rawName = withoutProvider.split('-').at(-1) || 'Puck';
     const formattedName = `${rawName.charAt(0).toUpperCase()}${rawName
       .slice(1)

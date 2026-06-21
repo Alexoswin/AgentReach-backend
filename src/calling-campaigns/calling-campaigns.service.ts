@@ -2036,17 +2036,9 @@ Return ONLY valid JSON with exactly these fields:
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
     );
-    const knowledge = this.firstSentence(
-      this.compactForSpeech(
-        botProfile.knowledge ||
-          campaign.prompt ||
-          'I have a quick update that may help.',
-        120,
-      ),
-    );
 
     return this.compactForSpeech(
-      `${firstSentence} I am calling about ${objective}. ${knowledge} Is now okay for one quick question?`,
+      `${firstSentence} I am calling about ${objective}. Is now okay for one quick question?`,
       220,
     );
   }
@@ -2212,6 +2204,7 @@ STRICT CONVERSATIONAL RULES:
 7. Prefer the bot greeting, objection handling, and knowledge below over generic filler.
 8. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
 9. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
+10. Never read the campaign prompt, bot knowledge, or bot intro text verbatim. Use it to inform the answer, but speak naturally in your own words.
 
 CAMPAIGN CONTEXT:
 - Objective: ${call.campaign.objective || 'Identify next steps or interest.'}
@@ -2637,12 +2630,12 @@ JSON Schema:
 
   private normalizeCampaignVoice(voice?: string, language?: string) {
     const normalized = voice?.trim();
-    if (normalized?.startsWith('google:')) return normalized;
     if (
       normalized &&
       /^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(normalized)
     ) {
-      return `google:${normalized}`;
+      const voiceName = this.extractGeminiVoiceName(normalized);
+      return `google:${this.resolveGoogleVoiceLanguage(language, normalized)}-Chirp3-HD-${voiceName}`;
     }
 
     const profiles = this.aiCallingBotsService?.getGoogleVoiceProfiles() || [];
@@ -2673,18 +2666,17 @@ JSON Schema:
   }
 
   private resolveGoogleTtsVoice(voice?: string, language?: string) {
-    const normalizedLanguage = this.normalizeLanguageCode(language) || 'en-IN';
     const normalizedVoice = voice?.trim() || '';
     const withoutProvider = normalizedVoice.startsWith('google:')
       ? normalizedVoice.slice('google:'.length)
       : normalizedVoice;
 
-    if (/^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(withoutProvider)) {
-      return withoutProvider;
-    }
-
     const voiceName = this.extractGeminiVoiceName(withoutProvider);
-    return `${normalizedLanguage}-Chirp3-HD-${voiceName}`;
+    return `${this.resolveGoogleVoiceLanguage(language, withoutProvider)}-Chirp3-HD-${voiceName}`;
+  }
+
+  private resolveGoogleVoiceLanguage(language?: string, voice?: string) {
+    return this.normalizeLanguageCode(language) || this.inferLanguageFromVoice(voice) || 'en-IN';
   }
 
   private extractGeminiVoiceName(value?: string) {
