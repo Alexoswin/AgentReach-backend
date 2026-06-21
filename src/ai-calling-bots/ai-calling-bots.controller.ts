@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Delete,
   Get,
@@ -18,6 +19,8 @@ import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
 import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
 import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
+
+const MAX_TRAINING_PDF_BYTES = 8 * 1024 * 1024;
 
 @ApiTags('ai-calling-bots')
 @Controller('ai-calling-bots')
@@ -63,7 +66,21 @@ export class AiCallingBotsController {
   }
 
   @Post(':id/train-pdf')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_TRAINING_PDF_BYTES },
+      fileFilter: (_req, file, cb) => {
+        const isPdf =
+          file.mimetype === 'application/pdf' ||
+          file.originalname?.toLowerCase().endsWith('.pdf');
+        if (!isPdf) {
+          cb(new BadRequestException('Training file must be a PDF'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Train an AI calling bot from a PDF file' })

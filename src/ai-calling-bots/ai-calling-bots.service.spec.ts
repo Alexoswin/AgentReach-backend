@@ -130,4 +130,36 @@ describe('AiCallingBotsService.trainFromPdf', () => {
       }),
     );
   });
+
+  it('does not delete existing embeddings until replacement training succeeds', async () => {
+    const service = new AiCallingBotsService({
+      aiCallingBot: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'bot-1',
+          embeddingModel: 'local-hash-embedding-v1',
+        }),
+      },
+      aiCallingBotEmbedding: {
+        create: jest
+          .fn()
+          .mockResolvedValueOnce({})
+          .mockRejectedValueOnce(new Error('embedding write failed')),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn(),
+      },
+    } as any);
+
+    const content = 'Replacement safety test content. '.repeat(30);
+
+    await expect(
+      service.train('bot-1', {
+        content,
+        replace: true,
+      }),
+    ).rejects.toThrow('embedding write failed');
+
+    expect(
+      (service as any).db.aiCallingBotEmbedding.deleteMany,
+    ).not.toHaveBeenCalled();
+  });
 });

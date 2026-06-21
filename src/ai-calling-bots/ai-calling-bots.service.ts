@@ -124,15 +124,13 @@ export class AiCallingBotsService {
     if (!content)
       throw new BadRequestException('Training content is required.');
 
+    const shouldReplace = dto.replace !== false;
+    const trainingBatchId = shouldReplace ? randomUUID() : undefined;
     const chunks = this.chunkText(
       content,
       this.clampNumber(dto.chunkSize, 300, 1600, DEFAULT_CHUNK_SIZE),
       this.clampNumber(dto.chunkOverlap, 0, 400, DEFAULT_CHUNK_OVERLAP),
     );
-
-    if (dto.replace !== false) {
-      await this.db.aiCallingBotEmbedding.deleteMany({ where: { botId: id } });
-    }
 
     for (const [index, chunk] of chunks.entries()) {
       await this.db.aiCallingBotEmbedding.create({
@@ -145,7 +143,17 @@ export class AiCallingBotsService {
             ...(dto.metadata || {}),
             sourceName: dto.sourceName || 'manual-training',
             chunkIndex: index,
+            ...(trainingBatchId ? { trainingBatchId } : {}),
           },
+        },
+      });
+    }
+
+    if (shouldReplace) {
+      await this.db.aiCallingBotEmbedding.deleteMany({
+        where: {
+          botId: id,
+          'metadata.trainingBatchId': { $ne: trainingBatchId },
         },
       });
     }
@@ -182,6 +190,12 @@ export class AiCallingBotsService {
   async searchBotKnowledge(botId: string, query: string, topK = 4) {
     const embeddings = await this.db.aiCallingBotEmbedding.findMany({
       where: { botId },
+      select: {
+        id: true,
+        content: true,
+        embedding: true,
+        metadata: true,
+      },
     });
     const queryEmbedding = this.embed(query);
 
@@ -249,8 +263,9 @@ export class AiCallingBotsService {
       throw new BadRequestException('Training PDF must be 8 MB or smaller');
     }
 
-    const parser = new PDFParse({ data: file.buffer });
+    let parser: PDFParse | null = null;
     try {
+      parser = new PDFParse({ data: file.buffer });
       const parsed = await parser.getText();
       const text = this.cleanTrainingText(parsed.text || '');
 
@@ -271,7 +286,7 @@ export class AiCallingBotsService {
         error.message || 'We could not read that PDF. Please try another file.',
       );
     } finally {
-      await parser.destroy();
+      await parser?.destroy();
     }
   }
 
