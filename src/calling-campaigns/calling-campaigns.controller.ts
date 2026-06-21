@@ -172,4 +172,13 @@ export class CallingCampaignsController {
   async launchCampaign(@Param('id') id: string) {
     return this.callingCampaignsService.launchCampaign(id);
   }
+
+  @Post(':id/relaunch')
+  @ApiOperation({
+    summary:
+      'Relaunch AI calling campaign from the beginning (resets prior call outcomes)',
+  })
+  async relaunchCampaign(@Param('id') id: string) {
+    return this.callingCampaignsService.relaunchCampaign(id);
+  }
 }

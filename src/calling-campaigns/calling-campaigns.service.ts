@@ -474,7 +474,8 @@ Return ONLY valid JSON with exactly these fields:
   // Launch
   // ---------------------------------------------------------------------------
 
-  async launchCampaign(id: string) {
+  async launchCampaign(id: string, options?: { forceRelaunch?: boolean }) {
+    const forceRelaunch = Boolean(options?.forceRelaunch);
     this.logger.debug(`Launch requested for calling campaign ${id}`);
     const campaign = await this.db.callingCampaign.findUnique({
       where: { id },
@@ -541,7 +542,9 @@ Return ONLY valid JSON with exactly these fields:
       );
     }
 
-    if (pendingCallableCalls.length === 0) {
+    const shouldResetForRelaunch =
+      forceRelaunch || pendingCallableCalls.length === 0;
+    if (shouldResetForRelaunch) {
       this.logger.debug(
         `Relaunch requested for campaign ${id}; resetting ${callableCalls.length} previous calls to PENDING`,
       );
@@ -599,11 +602,15 @@ Return ONLY valid JSON with exactly these fields:
     return {
       success: true,
       message:
-        pendingCallableCalls.length === 0
+        shouldResetForRelaunch
           ? `Calling campaign relaunched in ${launchMode} mode`
           : `Calling campaign started in ${launchMode} mode`,
       twilio: twilioQueueResult,
     };
+  }
+
+  async relaunchCampaign(id: string) {
+    return this.launchCampaign(id, { forceRelaunch: true });
   }
 
   // ---------------------------------------------------------------------------
@@ -2757,7 +2764,11 @@ ${latestUserSpeech}
             lastFailureReason = 'invalid JSON response or missing reply';
             continue;
           }
-          return this.normalizeConversationGeneration(parsedContent, fallback);
+          return this.normalizeConversationGeneration(
+            parsedContent,
+            fallback,
+            scripts,
+          );
         } catch (modelErr) {
           // Catch per-model errors (including AbortError) so the loop continues.
           const reason =
@@ -2790,14 +2801,16 @@ ${latestUserSpeech}
   private normalizeConversationGeneration(
     value: any,
     fallback: ConversationGeneration,
+    scripts: Array<Record<string, any>>,
   ): ConversationGeneration {
     const reply =
       typeof value?.reply === 'string' && value.reply.trim()
         ? value.reply.trim()
         : fallback.reply;
     const compactReply = this.compactForSpeech(reply, 260);
+    const safeReply = this.sanitizeLiveReply(compactReply, fallback.reply, scripts);
     return {
-      reply: compactReply,
+      reply: safeReply,
       shouldEnd:
         typeof value?.shouldEnd === 'boolean'
           ? value.shouldEnd
@@ -2821,6 +2834,50 @@ ${latestUserSpeech}
         ? value.topicsCovered.map(String).filter(Boolean)
         : fallback.topicsCovered,
     };
+  }
+
+  private sanitizeLiveReply(
+    reply: string,
+    fallbackReply: string,
+    scripts: Array<Record<string, any>>,
+  ) {
+    const cleanReply = this.compactForSpeech(reply || '', 260);
+    const cleanFallback = this.compactForSpeech(fallbackReply || '', 240);
+    if (!cleanReply) return cleanFallback;
+    if (this.looksLikeLivePromptEcho(cleanReply)) return cleanFallback;
+
+    const recentAgentReplies = scripts
+      .filter((script) => script?.speaker === 'agent')
+      .map((script) => this.normalizeReplyForComparison(String(script?.text || '')))
+      .filter(Boolean)
+      .slice(-2);
+
+    const normalizedReply = this.normalizeReplyForComparison(cleanReply);
+    if (recentAgentReplies.includes(normalizedReply)) {
+      if (
+        cleanFallback &&
+        this.normalizeReplyForComparison(cleanFallback) !== normalizedReply
+      ) {
+        return cleanFallback;
+      }
+      return 'I hear you. Tell me the one specific detail you want first, and I will answer directly.';
+    }
+
+    return cleanReply;
+  }
+
+  private looksLikeLivePromptEcho(value: string) {
+    return /<identity>|<campaign_setup>|<conversation_policy>|<output_contract>|return only valid json|you are a live outbound calling agent|system prompt|developer instructions/i.test(
+      value,
+    );
+  }
+
+  private normalizeReplyForComparison(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private buildFallbackCallingTurn(

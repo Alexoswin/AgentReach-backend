@@ -879,6 +879,43 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     );
   });
 
+  it('force relaunch resets calls even when pending rows exist', async () => {
+    const service = createService();
+    service.resetCallsForRelaunch = jest.fn().mockResolvedValue(undefined);
+    service.runCallSimulation = jest.fn();
+    service.db.callingCampaign.findUnique.mockResolvedValue({
+      id: 'campaign-1',
+      status: 'COMPLETED',
+      language: 'en-IN',
+      voice: 'google:en-IN-Chirp3-HD-Puck',
+      voiceQuality: 'standard',
+      calls: [
+        {
+          id: 'call-1',
+          outcome: 'PENDING',
+          contact: { phoneNumber: '+15550000001' },
+        },
+        {
+          id: 'call-2',
+          outcome: 'FAILED',
+          contact: { phoneNumber: '+15550000002' },
+        },
+      ],
+    });
+
+    const result = await service.launchCampaign('campaign-1', {
+      forceRelaunch: true,
+    });
+
+    expect(service.resetCallsForRelaunch).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'call-1' }),
+        expect.objectContaining({ id: 'call-2' }),
+      ]),
+    );
+    expect(result.message).toContain('relaunched');
+  });
+
   it('reuses cached service-account JSON across repeated live turns', async () => {
     const service = createService(
       JSON.stringify({

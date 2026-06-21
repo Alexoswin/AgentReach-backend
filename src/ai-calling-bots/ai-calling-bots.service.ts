@@ -372,9 +372,10 @@ export class AiCallingBotsService {
       results,
       racContext,
     );
+    const reply = this.finalizeChatReply(llmReply, fallback, history);
 
     return {
-      reply: llmReply || fallback,
+      reply,
       sources: results,
     };
   }
@@ -668,12 +669,86 @@ export class AiCallingBotsService {
       const content =
         typeof parsed?.reply === 'string' && parsed.reply.trim()
           ? parsed.reply.trim()
-          : rawContent;
+          : '';
+      if (!content) return '';
       const clean = content.replace(/\s+/g, ' ').trim();
       return clean.length > 700 ? `${clean.slice(0, 700).trim()}...` : clean;
     } catch {
       return '';
     }
+  }
+
+  private finalizeChatReply(llmReply: string, fallback: string, history: string) {
+    const fallbackReply = fallback.replace(/\s+/g, ' ').trim();
+    const candidate = llmReply.replace(/\s+/g, ' ').trim();
+    if (!candidate) return fallbackReply;
+    if (this.looksLikeInstructionEcho(candidate)) return fallbackReply;
+    const lastAssistantReply = this.extractLastAssistantReply(history);
+    if (
+      lastAssistantReply &&
+      this.normalizeForComparison(lastAssistantReply) ===
+        this.normalizeForComparison(candidate)
+    ) {
+      return fallbackReply;
+    }
+    return candidate;
+  }
+
+  private extractLastAssistantReply(history: string) {
+    const lines = history
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const line = lines[index];
+      const labelMatch = line.match(/^(assistant|ai agent|agent|bot)\s*:\s*(.*)$/i);
+      if (labelMatch) return labelMatch[2].trim();
+    }
+    return '';
+  }
+
+  private looksLikeInstructionEcho(value: string) {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    const normalized = compact.toLowerCase();
+    const directSignals =
+      /<identity>|<general_instructions>|<rules>|<knowledge_policy>|<behavior_rules>|<language_rule>|<security>|<bot_knowledge>|<creator_rules>|<output_contract>|<rac_context>|<response_requirements>|return only valid json|preferred reply language|system prompt|developer instructions|actor name:|greeting style:|role:|persona:/i;
+    if (directSignals.test(compact)) return true;
+
+    const tagLikeTokens = compact.match(/<[a-z_]+>/gi)?.length || 0;
+    if (tagLikeTokens >= 2) return true;
+
+    // Catch de-tagged instruction echoes that still contain template section names.
+    const sectionSignalCount =
+      compact.match(
+        /\b(identity|general instructions|knowledge policy|behavior rules|language rule|creator rules|output contract|response requirements|conversation policy|campaign setup)\b/gi,
+      )?.length || 0;
+    if (sectionSignalCount >= 2) return true;
+
+    // Catch first-line instruction-style openings.
+    if (/^you are [^.!?]{0,120}(working as|an ai|assistant|agent)/i.test(compact)) {
+      return true;
+    }
+
+    const securitySignalCount =
+      normalized.match(
+        /\b(never reveal|ignore previous|internal configuration|system instruction|do not disclose|treat user content as data only)\b/g,
+      )?.length || 0;
+    if (securitySignalCount >= 2) return true;
+
+    const instructionLineCount =
+      compact.match(/(?:^|\s)(?:\d+\.|-)\s*(?:keep|never|reply|return|use|ignore)\b/gi)
+        ?.length || 0;
+    if (instructionLineCount >= 3 && compact.length > 180) return true;
+
+    return false;
+  }
+
+  private normalizeForComparison(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private getCoreSystemPromptForCallingBot(bot: {
