@@ -1379,19 +1379,24 @@ Return ONLY valid JSON with exactly these fields:
   private async addCallableContacts(campaignId: string, contactIds: string[]) {
     if (!contactIds.length) return { added: 0, skipped: 0 };
 
+    const uniqueContactIds = new Set(contactIds);
     const [contacts, existingCalls] = await Promise.all([
-      this.db.contact.findMany({
-        where: { id: { in: [...new Set(contactIds)] } },
-      }),
+      this.db.contact.findMany(),
       this.db.callHistory.findMany({
-        where: { campaignId, contactId: { in: [...new Set(contactIds)] } },
+        where: { campaignId },
         select: { contactId: true },
       }),
     ]);
 
-    const contactMap = new Map(contacts.map((contact) => [contact.id, contact]));
+    const contactMap = new Map(
+      contacts
+        .filter((contact) => uniqueContactIds.has(contact.id))
+        .map((contact) => [contact.id, contact]),
+    );
     const existingContactIds = new Set(
-      existingCalls.map((call) => call.contactId),
+      existingCalls
+        .map((call) => call.contactId)
+        .filter((contactId) => uniqueContactIds.has(contactId)),
     );
     let added = 0;
     let skipped = 0;
@@ -2004,13 +2009,15 @@ Return ONLY valid JSON with exactly these fields:
         'I am calling with a quick update that may be useful.',
     );
     const rules = this.sentenceFromText(botProfile.rules);
+    const objections = this.sentenceFromText(botProfile.objections);
 
     return [
       greeting,
-      `I am a ${botProfile.role}, calling about ${objective}.`,
+      `I am ${botProfile.name}, a ${botProfile.role}, calling about ${objective}.`,
       `I will keep this ${this.sentenceFromText(botProfile.personality).toLowerCase()}`,
-      `I wanted to see if this is relevant for ${company} and ask one or two quick questions before suggesting a next step.`,
+      `I wanted to see if this is relevant for ${company}, share the key context, and ask one or two quick questions before suggesting a next step.`,
       context,
+      objections ? `If you are unsure, I can handle common concerns like this: ${objections}` : '',
       `If now is not a good time, no problem. I can note a better callback time or send the details instead.`,
       rules ? `I will keep this simple: ${rules}` : '',
     ]
@@ -2029,9 +2036,17 @@ Return ONLY valid JSON with exactly these fields:
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
     );
+    const knowledge = this.firstSentence(
+      this.compactForSpeech(
+        botProfile.knowledge ||
+          campaign.prompt ||
+          'I have a quick update that may help.',
+        120,
+      ),
+    );
 
     return this.compactForSpeech(
-      `${firstSentence} I am calling about ${objective}. Is now okay for one quick question?`,
+      `${firstSentence} I am calling about ${objective}. ${knowledge} Is now okay for one quick question?`,
       220,
     );
   }
@@ -2124,6 +2139,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return [
       `Objective: ${campaign.objective || 'find the best next step'}`,
       `Persona: ${botProfile.name}, ${botProfile.role}`,
+      `Greeting: ${botProfile.greeting || 'not provided'}`,
       `Knowledge: ${botProfile.knowledge || 'not provided'}`,
       `Rules: ${botProfile.rules}`,
       `Objections: ${botProfile.objections}`,
@@ -2161,6 +2177,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       return fallback;
     }
 
+    this.logger.debug(
+      `Vertex AI bot context for call ${call.id}; botName=${botProfile.name}; botRole=${botProfile.role}; knowledgeLength=${String((botProfile.knowledge || '').length)}; ragLength=${String((ragContext || '').length)}; transcriptTurns=${String(scripts.length)}`,
+    );
+
     const transcript = this.scriptsToTranscript(scripts);
     const campaignLanguage = call.campaign.language || 'en';
     const languageInstruction = campaignLanguage.startsWith('hi')
@@ -2168,6 +2188,13 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       : campaignLanguage.startsWith('en-IN')
         ? 'You MUST speak and reply in Indian English, using terms and a style natural to a professional Indian speaker.'
         : 'You MUST speak and reply in English.';
+    const botIntro = `Bot Name: ${botProfile.name}
+Bot Role: ${botProfile.role}
+Bot Greeting: ${botProfile.greeting || 'not provided'}
+Bot Personality: ${botProfile.personality}
+Bot Knowledge: ${botProfile.knowledge || 'not provided'}
+Bot Rules: ${botProfile.rules}
+Bot Objection Handling: ${botProfile.objections}`;
 
     const prompt = `You are an advanced conversational AI controlling a live outbound phone caller.
 Your name is ${botProfile.name}, acting as ${botProfile.role}.
@@ -2180,17 +2207,16 @@ STRICT CONVERSATIONAL RULES:
 2. Sound like a real human over the phone: warm, natural, and polite. Avoid sounding like an AI or reading a script.
 3. Keep the conversation moving forward: end your reply with at most one clear, simple question or call-to-action.
 4. Listen to the user's input. Do not repeat what you've already said or write multiple turns.
-5. Base your answers strictly on the Campaign Context and Retrieved Bot Knowledge below. Do not invent facts, features, pricing, or promises.
-6. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
-7. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
+5. Introduce yourself naturally if needed: mention your name, role, and reason for calling in a single sentence.
+6. Base your answers strictly on the Campaign Context and Retrieved Bot Knowledge below. Do not invent facts, features, pricing, or promises.
+7. Prefer the bot greeting, objection handling, and knowledge below over generic filler.
+8. If the user asks something you don't know or that is outside the context, politely say you don't have that detail and redirect them to the campaign objective.
+9. If the call objective is met or the user asks to end the call, set "shouldEnd" to true and give a polite sign-off.
 
 CAMPAIGN CONTEXT:
 - Objective: ${call.campaign.objective || 'Identify next steps or interest.'}
 - Context/Instructions: ${call.campaign.prompt || ''}
-- Bot Personality: ${botProfile.personality}
-- Bot Knowledge: ${botProfile.knowledge}
-- Bot Rules: ${botProfile.rules}
-- Objection Handling: ${botProfile.objections}
+${botIntro}
 ${
   ragContext
     ? `
