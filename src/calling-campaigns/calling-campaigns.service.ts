@@ -46,8 +46,10 @@ type GoogleTtsAccessToken = {
 };
 
 const GOOGLE_TTS_TIMEOUT_MS = 3500;
-const VERTEX_TWILIO_TIMEOUT_MS = 3500;
-const TWILIO_RESPONSE_BUDGET_MS = 8000;
+const VERTEX_TWILIO_TIMEOUT_MS = 2500;
+const TWILIO_RESPONSE_BUDGET_MS = 5000;
+const TWILIO_SPEECH_TIMEOUT_SECONDS = 1;
+const MAX_VERTEX_LIVE_CALL_MODELS = 2;
 const TWILIO_HD_PLAY_ENABLED = true;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const VERTEX_LOCATION = 'global';
@@ -1062,7 +1064,7 @@ Return ONLY valid JSON with exactly these fields:
       });
 
       const twiml = await this.buildTwilioGather(
-        call.campaign,
+        this.buildCallSpeechCampaign(call),
         opening,
         callId,
       );
@@ -1134,7 +1136,10 @@ Return ONLY valid JSON with exactly these fields:
               this.buildBotProfile(call.campaign),
             ),
           });
-          return await this.buildTwilioSayHangup(closing, call.campaign);
+          return await this.buildTwilioSayHangup(
+            closing,
+            this.buildCallSpeechCampaign(call),
+          );
         }
 
         await this.db.callHistory.update({
@@ -1148,7 +1153,7 @@ Return ONLY valid JSON with exactly these fields:
           },
         });
         return await this.buildTwilioGather(
-          call.campaign,
+          this.buildCallSpeechCampaign(call),
           'Sorry, I did not catch that. Could you say that again?',
           callId,
         );
@@ -1199,7 +1204,10 @@ Return ONLY valid JSON with exactly these fields:
 
         if (shouldEnd) {
           await this.completeTwilioConversation(call, nextScripts, generation);
-          return await this.buildTwilioSayHangup(generation.reply, call.campaign);
+          return await this.buildTwilioSayHangup(
+            generation.reply,
+            this.buildCallSpeechCampaign(call),
+          );
         }
 
         await this.db.callHistory.update({
@@ -1227,7 +1235,11 @@ Return ONLY valid JSON with exactly these fields:
         },
       });
 
-        return await this.buildTwilioGather(call.campaign, generation.reply, callId);
+        return await this.buildTwilioGather(
+          this.buildCallSpeechCampaign(call),
+          generation.reply,
+          callId,
+        );
       } finally {
         if (responseBudgetTimer) {
           clearTimeout(responseBudgetTimer);
@@ -1871,7 +1883,11 @@ Return ONLY valid JSON with exactly these fields:
 
     const action = this.escapeXml(this.getTwilioWebhookUrl('respond', callId));
 
-    const prompt = this.buildTwilioSayNoun(campaign, message, language);
+    const prompt = await this.buildTwilioSpeechNoun(
+      campaign,
+      message,
+      language,
+    );
 
     return `
 <Response>
@@ -1879,7 +1895,7 @@ Return ONLY valid JSON with exactly these fields:
     input="speech"
     action="${action}"
     method="POST"
-    speechTimeout="auto"
+    speechTimeout="${TWILIO_SPEECH_TIMEOUT_SECONDS}"
     timeout="15"
     actionOnEmptyResult="true"
     enhanced="true"
@@ -2309,12 +2325,14 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       scripts,
     );
-    const ragContext = await this.aiCallingBotsService.buildCallingContext(
-      call.campaign.aiCallingBotId,
-      latestUserSpeech,
-      4,
-    );
-    const serviceAccountJson = await this.getServiceAccountJson();
+    const [ragContext, serviceAccountJson] = await Promise.all([
+      this.aiCallingBotsService.buildCallingContext(
+        call.campaign.aiCallingBotId,
+        latestUserSpeech,
+        4,
+      ),
+      this.getServiceAccountJson(),
+    ]);
     const serviceAccount =
       this.parseGoogleServiceAccountCredentials(serviceAccountJson);
     if (!serviceAccount) {
@@ -2430,7 +2448,10 @@ Return ONLY valid JSON. No markdown. No extra text.
         ...(configuredModel ? [configuredModel] : []),
         ...DEFAULT_VERTEX_MODELS,
       ].filter(Boolean);
-      const uniqueModels = Array.from(new Set(candidateModels));
+      const uniqueModels = Array.from(new Set(candidateModels)).slice(
+        0,
+        MAX_VERTEX_LIVE_CALL_MODELS,
+      );
       let lastFailureReason = 'unknown error';
 
       for (const model of uniqueModels) {
@@ -2456,7 +2477,7 @@ Return ONLY valid JSON. No markdown. No extra text.
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 generationConfig: {
                   temperature: 0.4,
-                  maxOutputTokens: 450,
+                  maxOutputTokens: 250,
                   responseMimeType: 'application/json',
                 },
               }),
@@ -2792,6 +2813,19 @@ Return ONLY valid JSON. No markdown. No extra text.
     return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
       ? normalized
       : undefined;
+  }
+
+  private buildCallSpeechCampaign(call: any) {
+    const campaign = call?.campaign || {};
+    const language = this.resolveGoogleVoiceLanguage(
+      call?.selectedLanguage || campaign.language,
+      call?.selectedVoice || campaign.voice,
+    );
+    const voice =
+      call?.selectedVoice ||
+      this.resolveGoogleTtsVoice(campaign.voice, language);
+
+    return { ...campaign, language, voice };
   }
 
   private buildSayAttributes(voice?: string, language?: string) {

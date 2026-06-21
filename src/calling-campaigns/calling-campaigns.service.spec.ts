@@ -214,6 +214,16 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
 
   it('uses Indian English for speech while mapping Gather STT to en-US', async () => {
     const service = createService();
+    service.googleTtsAccessToken = {
+      accessToken: 'google-oauth-token',
+      expiresAt: Date.now() + 3600 * 1000,
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        audioContent: Buffer.from('gather-audio').toString('base64'),
+      }),
+    } as any);
 
     const twiml = await service.buildTwilioGather(
       {
@@ -226,9 +236,33 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
 
     expect(twiml).toContain('language="en-US"');
-    expect(twiml).toContain(
-      '<Say voice="Google.en-IN-Wavenet-D" language="en-IN">Hi, is now okay for one quick question?</Say>',
+    expect(twiml).toContain('speechTimeout="1"');
+    expect(twiml).toContain('<Play>');
+    const ttsBody = JSON.parse(
+      (global.fetch as jest.Mock).mock.calls[0][1].body,
     );
+    expect(ttsBody.voice).toEqual({
+      languageCode: 'en-IN',
+      name: 'en-IN-Chirp3-HD-Puck',
+    });
+  });
+
+  it('keeps the voice and language selected for the individual call', () => {
+    const service = createService();
+
+    const speechCampaign = service.buildCallSpeechCampaign({
+      selectedLanguage: 'hi-IN',
+      selectedVoice: 'hi-IN-Chirp3-HD-Kore',
+      campaign: {
+        language: 'en-US',
+        voice: 'google:en-US-Chirp3-HD-Puck',
+        voiceQuality: 'hd',
+      },
+    });
+
+    expect(speechCampaign.language).toBe('hi-IN');
+    expect(speechCampaign.voice).toBe('hi-IN-Chirp3-HD-Kore');
+    expect(speechCampaign.voiceQuality).toBe('hd');
   });
 });
 
@@ -339,6 +373,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       (global.fetch as jest.Mock).mock.calls[0][1].body,
     );
     const promptText = vertexBody.contents[0].parts[0].text;
+    expect(vertexBody.generationConfig.maxOutputTokens).toBe(250);
     expect(promptText).toContain('ROLEPLAY SETUP');
     expect(promptText).toContain('IDEAL CONVERSATION PATH');
     expect(promptText).toContain('CALL BEHAVIOR RULES');
