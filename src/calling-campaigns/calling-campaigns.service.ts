@@ -1181,6 +1181,25 @@ Return ONLY valid JSON with exactly these fields:
         'Customer',
         speech,
       );
+      const conversationLanguage = this.detectConversationLanguage(
+        call,
+        speech,
+        withUserTurn,
+      );
+      const conversationVoice = this.resolveGoogleTtsVoice(
+        call.campaign.voice,
+        conversationLanguage,
+      );
+      if (
+        call.selectedLanguage !== conversationLanguage ||
+        call.selectedVoice !== conversationVoice
+      ) {
+        this.logger.debug(
+          `Twilio language switch for call ${callId}; detectedLanguage=${conversationLanguage}; selectedLanguage=${call.selectedLanguage || 'not set'}; selectedVoice=${call.selectedVoice || 'not set'}`,
+        );
+      }
+      call.selectedLanguage = conversationLanguage;
+      call.selectedVoice = conversationVoice;
       let responseBudgetTimer: NodeJS.Timeout | null = null;
       try {
         const generation = await Promise.race([
@@ -1193,6 +1212,7 @@ Return ONLY valid JSON with exactly these fields:
                 call,
                 speech,
                 withUserTurn,
+                conversationLanguage,
               );
             },
           ),
@@ -1201,7 +1221,14 @@ Return ONLY valid JSON with exactly these fields:
               this.logger.warn(
                 `Twilio response generation timed out for call ${callId}; using fallback response.`,
               );
-              resolve(this.buildFallbackCallingTurn(call, speech, withUserTurn));
+              resolve(
+                this.buildFallbackCallingTurn(
+                  call,
+                  speech,
+                  withUserTurn,
+                  conversationLanguage,
+                ),
+              );
             }, TWILIO_RESPONSE_BUDGET_MS);
           }),
         ]);
@@ -1228,10 +1255,12 @@ Return ONLY valid JSON with exactly these fields:
 
         await this.db.callHistory.update({
           where: { id: callId },
-        data: {
-          status: 'IN_PROGRESS',
-          outcome: 'IN_PROGRESS',
-          sessionStatus: 'connected',
+          data: {
+            status: 'IN_PROGRESS',
+            outcome: 'IN_PROGRESS',
+            sessionStatus: 'connected',
+            selectedLanguage: conversationLanguage,
+            selectedVoice: conversationVoice,
             scripts: nextScripts,
             transcript: this.scriptsToTranscript(nextScripts),
             summary: `${this.buildBotProfile(call.campaign).name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
@@ -1245,11 +1274,11 @@ Return ONLY valid JSON with exactly these fields:
               lastAiDecision: {
                 shouldEnd: generation.shouldEnd,
                 endReason: generation.endReason,
+              },
             },
+            timestamp: new Date(),
           },
-          timestamp: new Date(),
-        },
-      });
+        });
 
         return await this.buildTwilioGather(
           this.buildCallSpeechCampaign(call),
@@ -2249,9 +2278,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     botProfile: any,
     userTurns: number,
     latestUserSpeech: string,
+    language?: string,
   ) {
     const firstName = call.contact.firstName || 'there';
     const scenario = this.detectCallingScenario(call.campaign, botProfile);
+    const hindi = this.isHindiLanguage(language);
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(
         call.campaign.objective ||
@@ -2288,34 +2319,54 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         );
 
       if (asksIfHeard && !asksAboutPrice && !asksAboutFeatures) {
-        return 'Yes, I can hear you. Please go ahead.';
+        return hindi ? 'हाँ, मैं सुन रहा हूँ. कृपया बताइए.' : 'Yes, I can hear you. Please go ahead.';
       }
       if (asksAboutPrice) {
-        return 'Yes, I can help with price details. Exact Sierra pricing depends on variant, city, and offers, so I can arrange a dealer callback with the latest on-road price. Which city are you in?';
+        return hindi
+          ? 'हाँ, मैं कीमत के बारे में मदद कर सकता हूँ. सिएरा की अंतिम कीमत वेरिएंट, शहर और ऑफर्स पर निर्भर करती है, इसलिए मैं नवीनतम ऑन-रोड कीमत के लिए कॉलबैक अरेंज कर सकता हूँ. आप किस शहर में हैं?'
+          : 'Yes, I can help with price details. Exact Sierra pricing depends on variant, city, and offers, so I can arrange a dealer callback with the latest on-road price. Which city are you in?';
       }
       if (asksAboutFeatures) {
-        return 'For Sierra features, I can share a general overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
+        return hindi
+          ? 'सिएरा के फीचर्स का एक सामान्य ओवरव्यू है: कम्फर्ट, सेफ्टी, इंफोटेनमेंट, और वेरिएंट के अनुसार विकल्प. सटीक फीचर्स वेरिएंट पर निर्भर करते हैं, तो क्या मैं स्पेशलिस्ट कॉलबैक अरेंज करूँ?'
+          : 'For Sierra features, I can share a general overview: SUV comfort, safety, infotainment, connected features, and variant-based options. Exact features vary by variant, so should I arrange a specialist callback?';
       }
       if (asksAboutVariants) {
-        return 'Sierra variants can differ by features, powertrain, and price. I do not want to guess the exact lineup, but I can have the nearest dealer share current variants. Which city are you in?';
+        return hindi
+          ? 'सिएरा के वेरिएंट फीचर्स, पावरट्रेन और कीमत के हिसाब से अलग हो सकते हैं. मैं सटीक लिस्ट का अनुमान नहीं लगाना चाहता, लेकिन नज़दीकी डीलर से मौजूदा वेरिएंट साझा करवाया जा सकता है. आप किस शहर में हैं?'
+          : 'Sierra variants can differ by features, powertrain, and price. I do not want to guess the exact lineup, but I can have the nearest dealer share current variants. Which city are you in?';
       }
       if (asksAboutTestDrive) {
-        return 'Sure, I can help with a Sierra test drive or booking callback. Which city or showroom location would be convenient for you?';
+        return hindi
+          ? 'ज़रूर, मैं टेस्ट ड्राइव या बुकिंग कॉलबैक में मदद कर सकता हूँ. आपके लिए कौन सा शहर या शोरूम सुविधाजनक है?'
+          : 'Sure, I can help with a Sierra test drive or booking callback. Which city or showroom location would be convenient for you?';
       }
       return userTurns <= 1
-        ? `Thanks, ${firstName}. I am calling ${automotiveContext}. Are you interested in price, variants, or booking a test drive?`
-        : 'That helps. Would you like me to arrange a test drive callback, share pricing details, or note that this is not relevant right now?';
+        ? hindi
+          ? `धन्यवाद, ${firstName}. मैं ${automotiveContext} के बारे में कॉल कर रहा हूँ. क्या आप कीमत, वेरिएंट, या टेस्ट ड्राइव में रुचि रखते हैं?`
+          : `Thanks, ${firstName}. I am calling ${automotiveContext}. Are you interested in price, variants, or booking a test drive?`
+        : hindi
+          ? 'समझ गया. क्या मैं टेस्ट ड्राइव कॉलबैक, कीमत की जानकारी, या इसे अभी के लिए अप्रासंगिक दर्ज कर दूँ?'
+          : 'That helps. Would you like me to arrange a test drive callback, share pricing details, or note that this is not relevant right now?';
     }
 
     if (scenario.isSales) {
       return userTurns <= 1
-        ? `Thanks, ${firstName}. Briefly, this is about ${objective}. Are you interested in details, pricing, or a follow-up call?`
-        : 'That makes sense. Should I arrange a callback, send details, or mark this as not relevant for now?';
+        ? hindi
+          ? `धन्यवाद, ${firstName}. संक्षेप में, यह ${objective} के बारे में है. क्या आप जानकारी, कीमत, या फॉलो-अप कॉल चाहेंगे?`
+          : `Thanks, ${firstName}. Briefly, this is about ${objective}. Are you interested in details, pricing, or a follow-up call?`
+        : hindi
+          ? 'समझ गया. क्या मैं कॉलबैक अरेंज करूँ, विवरण भेजूँ, या इसे अभी के लिए अप्रासंगिक मार्क कर दूँ?'
+          : 'That makes sense. Should I arrange a callback, send details, or mark this as not relevant for now?';
     }
 
     return userTurns <= 1
-      ? `Thanks, ${firstName}. Briefly, this is about ${objective}. Is this something you would like details on?`
-      : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
+      ? hindi
+        ? `धन्यवाद, ${firstName}. संक्षेप में, यह ${objective} के बारे में है. क्या आप इसके बारे में जानकारी चाहेंगे?`
+        : `Thanks, ${firstName}. Briefly, this is about ${objective}. Is this something you would like details on?`
+      : hindi
+        ? 'समझ गया. क्या आप कॉलबैक, संदेश में विवरण, या इसे अप्रासंगिक मार्क करना चाहेंगे?'
+        : 'That makes sense. Would you prefer a callback, details by message, or should I mark this as not relevant?';
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -2374,10 +2425,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     scripts: Array<Record<string, any>>,
   ): Promise<ConversationGeneration> {
     const botProfile = this.buildBotProfile(call.campaign);
+    const conversationLanguage = this.detectConversationLanguage(
+      call,
+      latestUserSpeech,
+      scripts,
+    );
     const fallback = this.buildFallbackCallingTurn(
       call,
       latestUserSpeech,
       scripts,
+      conversationLanguage,
     );
     const [ragContext, serviceAccountJson] = await Promise.all([
       this.aiCallingBotsService.buildCallingContext(
@@ -2401,16 +2458,14 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
 
     const transcript = this.scriptsToTranscript(scripts);
-    const campaignLanguage = this.resolveGoogleVoiceLanguage(
-      call.selectedLanguage || call.campaign.language,
-      call.selectedVoice || call.campaign.voice,
-    );
+    const campaignLanguage = conversationLanguage;
     const languageInstruction = this.buildLiveCallLanguageInstruction(
       campaignLanguage,
     );
-    const selectedVoice =
-      call.selectedVoice ||
-      this.resolveGoogleTtsVoice(call.campaign.voice, campaignLanguage);
+    const selectedVoice = this.resolveGoogleTtsVoice(
+      call.campaign.voice,
+      campaignLanguage,
+    );
     const idealPath = this.buildLiveCallIdealPath(call.campaign, botProfile);
     const contactName =
       `${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() ||
@@ -2428,6 +2483,7 @@ ROLEPLAY SETUP
 - Primary objective: ${call.campaign.objective || 'Identify interest and capture the next step.'}
 - Selected language: ${campaignLanguage}
 - Selected voice: ${selectedVoice}
+- Conversation language hint: ${conversationLanguage}
 
 LANGUAGE RULE
 ${languageInstruction}
@@ -2645,11 +2701,13 @@ Return ONLY valid JSON. No markdown. No extra text.
     call: any,
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
+    conversationLanguage?: string,
   ): ConversationGeneration {
     const botProfile = this.buildBotProfile(call.campaign);
     const userTurns = this.countScriptTurns(scripts, 'contact');
     const lower = latestUserSpeech.toLowerCase();
     const topicsCovered = this.buildTopicsCovered(call.campaign, botProfile);
+    const language = this.normalizeLanguageCode(conversationLanguage);
     const isDirectInformationRequest =
       /\b(price|prices|pricing|cost|rate|on[- ]?road|ex[- ]?showroom|emi|finance|budget|crisis|feature|features|specification|specifications|specs|mileage|engine|safety|interior|infotainment|technology|variant|variants|model|models|trim|trims|test drive|demo|booking|book|can you hear me)\b/i.test(
         latestUserSpeech,
@@ -2659,8 +2717,12 @@ Return ONLY valid JSON. No markdown. No extra text.
       return {
         reply:
           lower.includes('wrong number') || lower.includes('not interested')
-            ? 'Understood. I will not take more of your time. Thank you, and have a good day.'
-            : 'Thanks for your time. I will note that and let the team know. Goodbye.',
+            ? this.isHindiLanguage(language)
+              ? 'समझ गया. मैं आपका समय और नहीं लूँगा. धन्यवाद, आपका दिन शुभ हो.'
+              : 'Understood. I will not take more of your time. Thank you, and have a good day.'
+            : this.isHindiLanguage(language)
+              ? 'समझ गया. मैं इसे नोट कर दूँगा और टीम को बता दूँगा. नमस्ते.'
+              : 'Thanks for your time. I will note that and let the team know. Goodbye.',
         shouldEnd: true,
         endReason:
           'The contact declined, ended the call, or indicated a wrong number.',
@@ -2674,7 +2736,9 @@ Return ONLY valid JSON. No markdown. No extra text.
     if (userTurns >= 4 && !isDirectInformationRequest) {
       return {
         reply:
-          'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
+          this.isHindiLanguage(language)
+            ? 'यह मददगार है. मैं इसे नोट कर रहा हूँ और टीम सबसे सही अगले कदम के साथ फॉलो अप करेगी. बात करने के लिए धन्यवाद.'
+            : 'That helps. I will capture this and have the team follow up with the most relevant next step. Thanks for speaking with me.',
         shouldEnd: true,
         endReason: 'Maximum live call turns reached.',
         collectedData: { latestUserSpeech },
@@ -2689,12 +2753,15 @@ Return ONLY valid JSON. No markdown. No extra text.
         latestUserSpeech,
       );
     const reply = outOfContext
-      ? `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
+      ? this.isHindiLanguage(language)
+        ? `मेरे पास इस कॉल में वह जानकारी नहीं है, लेकिन मैं ${call.campaign.objective || 'जिस कारण मैं कॉल कर रहा हूँ'} के बारे में मदद कर सकता हूँ. क्या यह आपके लिए अभी प्रासंगिक है?`
+        : `I do not have that detail on this call, but I can help with ${call.campaign.objective || 'the reason I called'}. Is that relevant for you right now?`
       : this.buildSalesFallbackReply(
           call,
           botProfile,
           userTurns,
           latestUserSpeech,
+          language,
         );
 
     return {
@@ -2729,6 +2796,58 @@ Return ONLY valid JSON. No markdown. No extra text.
       return `You MUST speak and reply in ${normalized}. Keep it natural, polite, and conversational, like a real person calling.`;
     }
     return 'You MUST speak and reply in the campaign language. Keep it natural, polite, and conversational, like a real person calling.';
+  }
+
+  private detectConversationLanguage(
+    call: any,
+    latestUserSpeech: string,
+    scripts: Array<Record<string, any>>,
+  ) {
+    const currentLanguage = this.normalizeLanguageCode(
+      call?.selectedLanguage || call?.campaign?.language,
+    );
+    if (currentLanguage === 'hi-IN') {
+      return 'hi-IN';
+    }
+
+    const combinedSpeech = [latestUserSpeech, ...scripts.map((turn) => turn?.text || '')]
+      .join(' ')
+      .trim();
+    if (this.containsHindiScript(combinedSpeech)) {
+      return 'hi-IN';
+    }
+    if (this.looksLikeRomanizedHindi(combinedSpeech)) {
+      return 'hi-IN';
+    }
+
+    return (
+      currentLanguage ||
+      this.resolveGoogleVoiceLanguage(
+        call?.selectedLanguage || call?.campaign?.language,
+        call?.selectedVoice || call?.campaign?.voice,
+      )
+    );
+  }
+
+  private containsHindiScript(value?: string) {
+    return /[\u0900-\u097F]/.test(value || '');
+  }
+
+  private looksLikeRomanizedHindi(value?: string) {
+    const text = (value || '').toLowerCase();
+    const cues = [
+      /\b(kya|kyun|kaise|kaisa|kaisi|nahi|nahin|haan|ji|mera|meri|mere|aap|mujhe|batao|kripya|dhanyavaad|thik|theek|abhi|baad|kal|aaj|koi|kuch)\b/g,
+      /\b(haanji|sahi|zaroor|jaroor|bilkul|shayad|madad|samajh|samjha)\b/g,
+    ];
+    const matches = cues.reduce((total, pattern) => {
+      const found = text.match(pattern);
+      return total + (found?.length || 0);
+    }, 0);
+    return matches >= 2;
+  }
+
+  private isHindiLanguage(language?: string) {
+    return this.normalizeLanguageCode(language) === 'hi-IN';
   }
 
   private async completeTwilioConversation(

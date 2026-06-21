@@ -684,6 +684,63 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     expect(service.buildTwilioSayHangup).toHaveBeenCalledTimes(2);
   });
 
+  it('switches the live call to Hindi when the contact speaks in Hindi', async () => {
+    const service = createService();
+    service.db.callHistory.findUnique.mockResolvedValue({
+      id: 'call-1',
+      campaignId: 'campaign-1',
+      contactId: 'contact-1',
+      selectedLanguage: 'en-IN',
+      selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
+      startedAt: new Date('2026-06-21T12:00:00.000Z'),
+      scripts: [],
+      analysis: {},
+      campaign: {
+        objective: 'Sales for Tata Sierra car',
+        prompt: 'Call about the new Tata Sierra.',
+        language: 'en-IN',
+        voice: 'google:en-IN-Chirp3-HD-Puck',
+        voiceQuality: 'standard',
+        botName: 'Alex',
+        botRole: 'Sales person',
+        botPersonality: 'warm and concise',
+        botKnowledge: 'Tata Sierra product information.',
+        botRules: 'Keep responses brief.',
+        botObjectionHandling: 'Offer callback.',
+        botGreeting: 'Hi {{firstName}}, this is {{botName}}.',
+        aiCallingBotId: 'bot-1',
+      },
+      contact: {
+        firstName: 'Oswin',
+        lastName: 'Alex',
+        company: 'ReachConvert',
+      },
+    });
+    service.db.callHistory.update.mockResolvedValue({});
+    service.db.callingCampaign.findUnique.mockResolvedValue({
+      id: 'campaign-1',
+      status: 'RUNNING',
+      calls: [{ outcome: 'PENDING' }],
+    });
+
+    const twiml = await service.handleTwilioResponse('call-1', {
+      SpeechResult: 'कैन यू टेल मी अबाउट द फीचर्स?',
+      CallSid: 'sid-1',
+    });
+
+    expect(service.db.callHistory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({
+          selectedLanguage: 'hi-IN',
+          selectedVoice: 'google:hi-IN-Chirp3-HD-Puck',
+        }),
+      }),
+    );
+    expect(twiml).toContain('language="hi-IN"');
+    expect(twiml).toMatch(/सिएरा|फीचर्स|कॉलबैक/);
+  });
+
   it('batches contact lookups and skips duplicates and existing call rows', async () => {
     const service = createService();
     service.db.contact.findMany.mockResolvedValue([
