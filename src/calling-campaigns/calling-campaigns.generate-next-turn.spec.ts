@@ -161,16 +161,16 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     );
   });
 
-  it('uses a generic automotive sales fallback when Vertex AI is unavailable', async () => {
+  it('uses trained knowledge in fallback when Vertex AI is unavailable', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
+    call.campaign.objective = 'Qualify interest in an onboarding platform';
     call.campaign.prompt =
-      'You are Alex, a sales person calling about a new SUV. Qualify interest and offer pricing, variant, booking, or test drive help.';
-    call.campaign.botRole = 'Sales person';
+      'Qualify whether the contact needs a better onboarding workflow.';
+    call.campaign.botRole = 'workflow consultant';
     call.campaign.botKnowledge =
-      'Sales context for the new SUV, including variants, pricing interest, booking support, and test drive follow-up.';
+      'The onboarding platform centralizes checklists, reminders, document collection, and manager approvals for new hires.';
     call.contact.firstName = 'Oswin';
 
     const result = await service.generateNextCallingTurn(
@@ -179,9 +179,10 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
       [{ speaker: 'contact', label: 'Customer', text: 'Yes, it is. Okay.' }],
     );
 
-    expect(result.reply).toContain('new SUV');
-    expect(result.reply).toMatch(/price|features|variants|test drive/i);
-    expect(result.reply).not.toContain('specialist callback');
+    expect(result.reply).toMatch(
+      /onboarding|checklists|reminders|approvals/i,
+    );
+    expect(result.reply).not.toMatch(/objective|rules|common objections/i);
   });
 
   it('introduces trained knowledge after permission instead of surfacing objection scripts', async () => {
@@ -224,37 +225,47 @@ Not Looking: "No problem. I can send a short overview."`;
     );
   });
 
-  it('acknowledges automotive feature requests when verified details are unavailable', async () => {
+  it('answers direct capability questions from trained knowledge', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
-    call.campaign.prompt = 'Call about the new SUV.';
-    call.campaign.botRole = 'Sales person';
+    call.campaign.objective = 'Understand whether a team needs automation';
+    call.campaign.prompt = 'Call about workflow automation.';
+    call.campaign.botRole = 'consultant';
+    call.campaign.botKnowledge = `Overview
+FlowPilot automates intake routing for support and operations teams.
+Key Capabilities
+It can classify requests, assign owners, send reminders, and track SLA risk.
+Qualification Questions
+1. How many requests does your team handle each week?`;
 
     const result = await service.generateNextCallingTurn(
       call,
-      'Can you tell me the features?',
+      'Can you tell me the capabilities?',
       [
         {
           speaker: 'contact',
           label: 'Customer',
-          text: 'Can you tell me the features?',
+          text: 'Can you tell me the capabilities?',
         },
       ],
     );
 
-    expect(result.reply).toMatch(/overview|comfort|safety|technology/i);
-    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).toMatch(/classify|assign|reminders|SLA/i);
+    expect(result.reply).not.toMatch(/how many requests/i);
   });
 
-  it('answers a direct details question instead of repeating the menu', async () => {
+  it('answers a direct details question instead of repeating prior menu text', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
-    call.campaign.prompt = 'Call about the new SUV.';
-    call.campaign.botRole = 'Sales person';
+    call.campaign.objective = 'Share a training program overview';
+    call.campaign.prompt = 'Call about leadership training.';
+    call.campaign.botRole = 'program advisor';
+    call.campaign.botKnowledge = `Program Overview
+The leadership program includes coaching sessions, peer workshops, and practical manager playbooks.
+Delivery Details
+Teams can run the program remotely, onsite, or in a blended format.`;
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -274,104 +285,109 @@ Not Looking: "No problem. I can send a short overview."`;
     );
 
     expect(result.reply).toMatch(
-      /details|overview|features|safety|technology/i,
+      /coaching|workshops|playbooks|remote|onsite/i,
     );
-    expect(result.reply).not.toContain('callback');
-    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).not.toMatch(/better time|callback/i);
   });
 
-  it('answers a best variant question without pushing a callback first', async () => {
+  it('uses approximate matching for speech-to-text misses against trained terms', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
-    call.campaign.prompt = 'Call about the new SUV.';
-    call.campaign.botRole = 'Sales person';
+    call.campaign.objective = 'Explain membership options';
+    call.campaign.prompt = 'Call about team membership plans.';
+    call.campaign.botRole = 'membership advisor';
+    call.campaign.botKnowledge = `Pricing
+The starter membership costs 100 per month and the team membership costs 250 per month.
+Plan Details
+The team membership includes priority support and usage reporting.`;
 
     const result = await service.generateNextCallingTurn(
       call,
-      'Can you tell me the best variant?',
+      'Can you share me place?',
       [
         {
           speaker: 'contact',
           label: 'Customer',
-          text: 'Can you tell me the features for the motors?',
-        },
-        {
-          speaker: 'contact',
-          label: 'Customer',
-          text: 'Can you tell me the best variant?',
+          text: 'Can you share me place?',
         },
       ],
     );
 
-    expect(result.reply).toMatch(/base|mid|top|best fit|priority/i);
-    expect(result.reply).not.toContain('specialist callback');
-    expect(result.reply).not.toContain('city');
-    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).toMatch(/pricing|costs|100|250/i);
+    expect(result.reply).not.toMatch(/priority support|usage reporting/i);
   });
 
-  it('answers automotive pricing requests in fallback instead of repeating the menu', async () => {
+  it('continues to a new trained point when the contact says next', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
-    call.campaign.prompt = 'Call about the new SUV.';
-    call.campaign.botRole = 'Sales person';
+    call.campaign.objective = 'Explain a support package';
+    call.campaign.prompt = 'Call about managed support.';
+    call.campaign.botRole = 'support advisor';
+    call.campaign.botKnowledge = `Overview
+Managed Support gives teams a shared helpdesk and weekly health checks.
+Response Model
+Urgent issues are triaged first, then routed to the right owner with context.
+Reporting
+Monthly reports summarize open issues, response time, and recurring blockers.`;
 
     const result = await service.generateNextCallingTurn(
       call,
-      'Can you hear me? The price details?',
+      'Next.',
       [
-        { speaker: 'contact', label: 'Customer', text: 'Yes, it is.' },
         {
           speaker: 'agent',
           label: 'AI Agent',
-          text: 'Are you interested in price, variants, or booking a test drive?',
+          text: 'Managed Support gives teams a shared helpdesk and weekly health checks.',
         },
         {
           speaker: 'contact',
           label: 'Customer',
-          text: 'Can you hear me? The price details?',
+          text: 'Next.',
         },
       ],
     );
 
-    expect(result.reply).toMatch(/price|pricing/i);
-    expect(result.reply).not.toContain('city');
-    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).toMatch(/triaged|routed|reports|response time/i);
+    expect(result.reply).not.toMatch(
+      /shared helpdesk and weekly health checks/i,
+    );
   });
 
-  it('does not end the fallback call before answering a late direct product question', async () => {
+  it('does not end the fallback call before answering a late direct question', async () => {
     const service = createService('');
     global.fetch = jest.fn();
     const call = createCall();
-    call.campaign.objective = 'Sales for a new SUV';
-    call.campaign.prompt = 'Call about the new SUV.';
-    call.campaign.botRole = 'Sales person';
+    call.campaign.objective = 'Collect fit and offer a useful next step';
+    call.campaign.prompt = 'Call about analytics enablement.';
+    call.campaign.botRole = 'analytics advisor';
+    call.campaign.botKnowledge = `Capabilities
+The analytics package includes dashboard setup, source mapping, data quality checks, and stakeholder training.`;
 
     const result = await service.generateNextCallingTurn(
       call,
-      'Can you tell me the features for Tata?',
+      'Can you tell me the capabilities?',
       [
         { speaker: 'contact', label: 'Customer', text: 'Yes, it is.' },
         { speaker: 'contact', label: 'Customer', text: 'I am interested.' },
         {
           speaker: 'contact',
           label: 'Customer',
-          text: 'Can you hear me? The price details?',
+          text: 'Can you send details?',
         },
         {
           speaker: 'contact',
           label: 'Customer',
-          text: 'Can you tell me the features for Tata?',
+          text: 'Can you tell me the capabilities?',
         },
       ],
     );
 
     expect(result.shouldEnd).toBe(false);
-    expect(result.reply).toMatch(/features|safety|infotainment|variant/i);
-    expect(result.reply).not.toContain('That helps');
+    expect(result.reply).toMatch(
+      /dashboard|source mapping|quality|training/i,
+    );
     expect(result.reply).not.toContain('Thanks for speaking with me');
   });
 

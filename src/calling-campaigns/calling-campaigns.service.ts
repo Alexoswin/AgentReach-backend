@@ -2588,6 +2588,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     latestUserSpeech: string,
     language?: string,
     knowledgeContext = '',
+    scripts: Array<Record<string, any>> = [],
   ) {
     const firstName = call.contact.firstName || 'there';
     const hindi = this.isHindiLanguage(language);
@@ -2612,14 +2613,14 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       latestUserSpeech,
       contextualKnowledge,
       170,
+      scripts,
     );
-    const gavePermission = this.isPositiveConversationCue(latestUserSpeech);
-    const askedDirectQuestion =
-      this.isDirectInformationRequest(latestUserSpeech);
-    const isGreeting =
-      /\b(hi|hello|hey|good morning|good afternoon|good evening|namaste)\b/i.test(
-        latestUserSpeech,
-      );
+    const followUpQuestion = this.buildKnowledgeFollowUpQuestion(
+      contextualKnowledge,
+      objective,
+    );
+    const lowInformationTurn =
+      this.isLowInformationUserTurn(latestUserSpeech);
     const asksForPrompt = this.isPromptExposureRequest(latestUserSpeech);
 
     if (asksForPrompt) {
@@ -2630,23 +2631,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     if (hindi) {
-      if (isGreeting) {
-        return `नमस्ते ${firstName}, मैं ${botProfile.name} बोल रहा हूँ. मैं ${objective} में मदद कर सकता हूँ. आप क्या जानना चाहेंगे?`;
-      }
-      if (gavePermission && !askedDirectQuestion) {
-        return `धन्यवाद, ${firstName}. संक्षेप में, ${contextSummary}. आपके लिए सबसे उपयोगी बात पहले कौन सी रहेगी?`;
+      if (lowInformationTurn) {
+        return `धन्यवाद, ${firstName}. ${contextSummary}. आपके लिए सबसे उपयोगी बात पहले कौन सी रहेगी?`;
       }
       return userTurns <= 1
         ? `ज़रूर, ${firstName}. ${contextSummary}. अगर आप चाहें तो मैं अगला कदम भी साफ़ तरीके से बता दूँ.`
         : `समझ गया. ${contextSummary}. यदि ठीक लगे तो हम इसका अगला कदम तय कर सकते हैं.`;
     }
 
-    if (isGreeting) {
-      return `Hi ${firstName}, this is ${botProfile.name}. I can help with ${objective}. What would you like to know first?`;
-    }
-
-    if (gavePermission && !askedDirectQuestion) {
-      return `Thanks, ${firstName}. In short, ${contextSummary}. What would be most useful for you to cover first?`;
+    if (lowInformationTurn) {
+      return `Thanks, ${firstName}. ${contextSummary} ${followUpQuestion}`;
     }
 
     return userTurns <= 1
@@ -2658,78 +2652,201 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     question: string,
     knowledge: string,
     maxLength = 220,
+    scripts: Array<Record<string, any>> = [],
   ) {
-    const cleanKnowledge = this.sanitizeKnowledgeForAnswer(knowledge);
-    if (!cleanKnowledge) {
+    const sentences = this.buildKnowledgeCandidateSentences(knowledge).slice(
+      0,
+      160,
+    );
+    if (!sentences.length) {
       return 'I do not yet have enough verified detail in the training context.';
     }
-    const sentences = cleanKnowledge
-      .split(/(?<=[.!?])\s+/)
-      .map((sentence) => sentence.trim())
-      .filter(Boolean)
-      .filter((sentence) => !this.isInstructionLikeKnowledgeSentence(sentence))
-      .slice(0, 120);
-    if (!sentences.length) {
-      return cleanKnowledge.length > maxLength
-        ? `${cleanKnowledge.slice(0, maxLength).trim()}...`
-        : cleanKnowledge;
-    }
 
-    const terms = question
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter(
-        (term) => term.length > 2 && !this.isLowValueKnowledgeQueryTerm(term),
-      );
+    const availableSentences = sentences.filter(
+      (sentence) => !this.wasKnowledgeSentenceRecentlySaid(sentence, scripts),
+    );
+    const searchSpace = availableSentences.length
+      ? availableSentences
+      : sentences;
+    const matchedQuestionTerms = this.buildKnowledgeQueryTerms(
+      question,
+      searchSpace.join(' '),
+    );
+    const terms =
+      this.isLowInformationUserTurn(question) && matchedQuestionTerms.length < 2
+        ? []
+        : matchedQuestionTerms;
 
     if (terms.length === 0) {
-      const overview = sentences
+      const overview = searchSpace
         .filter((sentence) => this.hasUsefulKnowledgeSignal(sentence))
         .slice(0, 2)
         .join(' ')
         .trim();
-      const fallbackOverview = overview || sentences.slice(0, 2).join(' ');
+      const fallbackOverview = overview || searchSpace.slice(0, 2).join(' ');
       return this.compactKnowledgeSummary(fallbackOverview, maxLength);
     }
 
-    const scored = sentences.map((sentence) => {
+    const scored = searchSpace.map((sentence, index) => {
       const lowered = sentence.toLowerCase();
-      const score = terms.reduce(
-        (sum, term) => (lowered.includes(term) ? sum + 1 : sum),
-        0,
-      );
-      return { sentence, score };
+      const sentenceTerms = this.buildKnowledgeQueryTerms(lowered);
+      const score = terms.reduce((sum, term) => {
+        if (lowered.includes(term)) return sum + 1;
+        return this.hasApproximateTermMatch(term, sentenceTerms)
+          ? sum + 0.75
+          : sum;
+      }, 0);
+      return { sentence, score, index };
     });
 
     const selected = scored
-      .sort((a, b) => b.score - a.score)
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
       .slice(0, 2)
       .map((item) => item.sentence);
     const summary = selected.join(' ').trim();
-    const safeSummary = summary || sentences.slice(0, 2).join(' ').trim();
+    const safeSummary =
+      summary ||
+      searchSpace
+        .filter((sentence) => this.hasUsefulKnowledgeSignal(sentence))
+        .slice(0, 1)
+        .join(' ')
+        .trim();
     if (!safeSummary || this.looksLikeLivePromptEcho(safeSummary)) {
-      return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
+      return 'I may have missed the exact detail you want, but I can still help with the trained information. Which specific point should I cover?';
     }
     return this.compactKnowledgeSummary(safeSummary, maxLength);
   }
 
   private sanitizeKnowledgeForAnswer(value?: string) {
+    return this.buildKnowledgeCandidateSentences(value)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private buildKnowledgeCandidateSentences(value?: string) {
+    let skipProceduralSection = false;
+    let currentContentHeading = '';
     return String(value || '')
       .replaceAll('\u0000', '')
       .replace(/\r/g, '\n')
       .split(/\n+/)
       .flatMap((line) => {
         const cleanLine = line.replace(/^[\s*\-\d.)]+/, '').trim();
+        if (!cleanLine) return [];
+        if (this.isKnowledgeSectionHeading(cleanLine)) {
+          skipProceduralSection = this.isProceduralKnowledgeHeading(cleanLine);
+          currentContentHeading = skipProceduralSection
+            ? ''
+            : this.humanizeKnowledgeTopicLabel(cleanLine.replace(/:$/g, ''));
+          return [];
+        }
+        if (skipProceduralSection) return [];
         if (this.shouldSkipKnowledgeLine(cleanLine)) return [];
-        return cleanLine.split(/(?<=[.!?])\s+/);
+        return cleanLine.split(/(?<=[.!?])\s+/).map((sentence) => {
+          const trimmed = sentence.trim();
+          if (!currentContentHeading) return trimmed;
+          return `${currentContentHeading}: ${trimmed}`;
+        });
       })
       .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
       .filter(Boolean)
       .filter((line) => !this.isInstructionLikeKnowledgeSentence(line))
-      .join(' ')
+      .filter((line) => this.hasUsefulKnowledgeSignal(line));
+  }
+
+  private isKnowledgeSectionHeading(value?: string) {
+    const compact = String(value || '')
       .replace(/\s+/g, ' ')
       .trim();
+    if (!compact || compact.length > 90) return false;
+    if (/^[^:]{2,90}:$/.test(compact)) return true;
+    if (/[.!?]$/.test(compact)) return false;
+    const words = compact.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 8) return false;
+    return words.every((word) => /^[A-Z0-9&/()]+$/.test(word[0] || ''));
+  }
+
+  private isProceduralKnowledgeHeading(value?: string) {
+    const compact = String(value || '')
+      .replace(/:$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return /\b(objectives?|goals?|rules?|compliance|security|call ending|lead data|data to collect|qualification|questions?|common objections?|objections?|objection handling|behavior|policy|instructions?|ideal customers?|target audience|interest levels?|bot name|role|personality|greeting|output contract)\b/i.test(
+      compact,
+    );
+  }
+
+  private buildKnowledgeQueryTerms(value?: string, referenceText?: string) {
+    const seen = new Set<string>();
+    const referenceTerms = referenceText
+      ? this.buildKnowledgeQueryTerms(referenceText)
+      : [];
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length > 2)
+      .flatMap((term) => this.expandKnowledgeQueryTerm(term))
+      .filter((term) => {
+        if (!referenceTerms.length) return true;
+        return (
+          referenceTerms.includes(term) ||
+          this.hasApproximateTermMatch(term, referenceTerms)
+        );
+      })
+      .filter((term) => {
+        if (seen.has(term)) return false;
+        seen.add(term);
+        return true;
+      });
+  }
+
+  private expandKnowledgeQueryTerm(term: string) {
+    const variants = [term];
+    if (term.endsWith('ies') && term.length > 4) {
+      variants.push(`${term.slice(0, -3)}y`);
+    }
+    if (term.endsWith('ing') && term.length > 5) {
+      const stem = term.slice(0, -3);
+      variants.push(stem, `${stem}e`);
+    }
+    if (term.endsWith('s') && term.length > 4) {
+      variants.push(term.slice(0, -1));
+    }
+    return variants;
+  }
+
+  private hasApproximateTermMatch(term: string, candidates: string[]) {
+    if (term.length < 5) return false;
+    return candidates.some((candidate) => {
+      if (candidate.length < 5 || candidate[0] !== term[0]) return false;
+      const allowedDistance =
+        term.length <= 5 ? 2 : Math.min(2, Math.floor(term.length / 3));
+      return this.levenshteinDistance(term, candidate) <= allowedDistance;
+    });
+  }
+
+  private levenshteinDistance(left: string, right: string) {
+    const previous = Array.from(
+      { length: right.length + 1 },
+      (_, index) => index,
+    );
+    for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+      const current = [leftIndex];
+      for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+        const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+        current[rightIndex] = Math.min(
+          current[rightIndex - 1] + 1,
+          previous[rightIndex] + 1,
+          previous[rightIndex - 1] + cost,
+        );
+      }
+      previous.splice(0, previous.length, ...current);
+    }
+    return previous[right.length];
   }
 
   private shouldSkipKnowledgeLine(value?: string) {
@@ -2784,38 +2901,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return imperativeSignals >= 2 && compact.length > 40;
   }
 
-  private isPositiveConversationCue(value: string) {
-    const text = value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
-    return /\b(yes|yeah|yep|sure|okay|ok|alright|go ahead|good time|have a minute|tell me)\b/i.test(
-      text,
-    );
-  }
-
-  private isDirectInformationRequest(value: string) {
-    const text = value.toLowerCase();
-    return (
-      value.includes('?') ||
-      /\b(what|why|when|where|who|how|which|can you|could you|tell me about|explain|details|detail|cost|price|pricing|timeline|features?)\b/i.test(
-        text,
-      )
-    );
-  }
-
-  private isLowValueKnowledgeQueryTerm(term: string) {
-    return new Set([
-      'yes',
-      'yeah',
-      'yep',
-      'sure',
-      'okay',
-      'good',
-      'time',
-      'tell',
-      'more',
-      'about',
-      'this',
-      'that',
-    ]).has(term);
+  private isLowInformationUserTurn(value?: string) {
+    const normalized = String(value || '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) return true;
+    if (/[?؟]/.test(value || '')) return false;
+    const tokens = normalized.split(' ').filter(Boolean);
+    if (tokens.length <= 3) return true;
+    return normalized.length <= 28 && tokens.length <= 6;
   }
 
   private hasUsefulKnowledgeSignal(value: string) {
@@ -2823,17 +2918,104 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     if (!compact || this.isInstructionLikeKnowledgeSentence(compact)) {
       return false;
     }
+    if (compact.length < 18 && !/[\d₹$€%]/.test(compact)) return false;
     return /[A-Za-z\p{L}]{4,}/u.test(compact);
   }
 
   private compactKnowledgeSummary(value: string, maxLength: number) {
-    const summary = value.replace(/\s+/g, ' ').trim();
+    const summary = this.stripGeneratedKnowledgeHeadingPrefixes(value)
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!summary || this.looksLikeLivePromptEcho(summary)) {
       return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
     }
     return summary.length > maxLength
       ? `${summary.slice(0, maxLength).trim()}...`
       : summary;
+  }
+
+  private stripGeneratedKnowledgeHeadingPrefixes(value: string) {
+    return value.replace(/(^|[.!?]\s+)[a-z][a-z0-9 &/()_-]{2,70}:\s+/g, '$1');
+  }
+
+  private wasKnowledgeSentenceRecentlySaid(
+    sentence: string,
+    scripts: Array<Record<string, any>>,
+  ) {
+    const normalizedSentence = this.normalizeReplyForComparison(
+      this.stripKnowledgeHeadingPrefix(sentence),
+    );
+    if (normalizedSentence.length < 20) return false;
+    const recentAgentText = scripts
+      .filter((script) => script?.speaker === 'agent')
+      .map((script) => this.normalizeReplyForComparison(script?.text || ''))
+      .filter(Boolean)
+      .slice(-4)
+      .join(' ');
+    if (!recentAgentText) return false;
+    if (recentAgentText.includes(normalizedSentence)) return true;
+    const importantWords = normalizedSentence
+      .split(' ')
+      .filter((word) => word.length > 4)
+      .slice(0, 8);
+    if (!importantWords.length) return false;
+    return importantWords.every((word) => recentAgentText.includes(word));
+  }
+
+  private stripKnowledgeHeadingPrefix(value: string) {
+    return value.replace(/^[a-z0-9 &/()_-]{2,70}:\s+/i, '').trim();
+  }
+
+  private buildKnowledgeFollowUpQuestion(knowledge: string, objective: string) {
+    const topics = this.extractKnowledgeTopicLabels(knowledge).slice(0, 3);
+    if (topics.length >= 2) {
+      const options =
+        topics.length === 2
+          ? `${topics[0]} or ${topics[1]}`
+          : `${topics[0]}, ${topics[1]}, or ${topics[2]}`;
+      return `Would you like me to cover ${options} next?`;
+    }
+    return `What would be most useful for you to cover first around ${objective}?`;
+  }
+
+  private extractKnowledgeTopicLabels(value?: string) {
+    const seen = new Set<string>();
+    return String(value || '')
+      .replaceAll('\u0000', '')
+      .replace(/\r/g, '\n')
+      .split(/\n+/)
+      .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
+      .filter((line) => this.isKnowledgeSectionHeading(line))
+      .map((line) => line.replace(/:$/g, '').trim())
+      .filter((line) => !this.isProceduralKnowledgeHeading(line))
+      .map((line) => this.humanizeKnowledgeTopicLabel(line))
+      .filter((line) => !this.isLowValueKnowledgeTopicLabel(line))
+      .filter((line) => {
+        const normalized = this.normalizeReplyForComparison(line);
+        if (!normalized || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+  }
+
+  private isLowValueKnowledgeTopicLabel(value: string) {
+    const normalized = this.normalizeReplyForComparison(value);
+    return /\b(version|document|manual|guide)\b/.test(normalized);
+  }
+
+  private humanizeKnowledgeTopicLabel(value: string) {
+    const words = value
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ');
+    return words
+      .map((word) =>
+        /^[A-Z0-9&/()]+$/.test(word)
+          ? word
+          : `${word.charAt(0).toLowerCase()}${word.slice(1)}`,
+      )
+      .join(' ');
   }
 
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
@@ -2852,8 +3034,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       'Confirm the contact has a moment to talk.',
       `Explain the reason for calling: ${objective}.`,
       'Use the campaign objective, bot knowledge, and RAC (Retrieved Answer Context) to answer direct questions first.',
-      'Ask one relevant question at a time: details, pricing, features, variants, timing, or next step.',
-      'Offer a clear next step when useful: callback, details by message, demo, or mark not relevant.',
+      'Ask one relevant question at a time based on the configured bot goal and available training context.',
+      'Offer a clear next step only when it fits the configured goal and the contact intent.',
       'End politely only when the contact declines or the configured goal has been achieved.',
     ].join('\n- ');
   }
@@ -2906,8 +3088,10 @@ Objection handling: ${input.botProfile.objections || 'Handle objections calmly a
 7. If detail is missing, say that clearly and offer the best practical next step.
 8. Ask at most one useful follow-up question.
 9. Never repeat the same question/menu already asked in transcript.
-10. For "what do you offer/sell" questions, answer directly in one sentence first.
+10. For direct questions about the purpose of the call or what help is available, answer directly in one sentence first.
 11. Set "shouldEnd" true only when the contact clearly declines/opts out or when the primary goal is achieved.
+12. When the contact gives a brief acknowledgement or continuation cue, continue with a new useful factual point from RAC/knowledge and one natural follow-up.
+13. Do not use internal setup or procedural training sections as spoken answer content unless the contact directly asks about that kind of information.
 </conversation_policy>
 
 <security>
@@ -2924,7 +3108,7 @@ Return ONLY valid JSON:
   "endReason": "empty unless call should end",
   "collectedData": {
     "interest": "unknown|interested|not_interested|busy",
-    "requestedNextStep": "none|callback|details|demo|test_drive|booking|opt_out",
+    "requestedNextStep": "none|callback|details|meeting|booking|handoff|opt_out|other",
     "goalStatus": "pending|met|not_possible",
     "notes": "brief useful notes"
   },
@@ -2967,18 +3151,13 @@ ${idealPath}
       .filter(Boolean)
       .slice(-this.getRacContactTurnLimit())
       .join(' ');
-    const shouldUseCampaignContext =
-      this.isPositiveConversationCue(latestUserSpeech) &&
-      !this.isDirectInformationRequest(latestUserSpeech);
-    const campaignContext = shouldUseCampaignContext
-      ? [
-          call?.campaign?.botGoal,
-          call?.campaign?.objective,
-          call?.campaign?.prompt,
-        ]
-          .filter(Boolean)
-          .join(' ')
-      : '';
+    const campaignContext = [
+      call?.campaign?.botGoal,
+      call?.campaign?.objective,
+      call?.campaign?.prompt,
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     return [latestUserSpeech, recentContactTurns, campaignContext]
       .filter(Boolean)
@@ -3341,18 +3520,6 @@ ${latestUserSpeech}
       return true;
     }
 
-    const requestedNextStep = readString(data.requestedNextStep)
-      .toLowerCase()
-      .trim();
-    const hasGoal = Boolean(this.derivePrimaryGoal(call, botProfile));
-    if (
-      hasGoal &&
-      requestedNextStep &&
-      !['none', 'opt_out', 'unknown'].includes(requestedNextStep)
-    ) {
-      return true;
-    }
-
     return false;
   }
 
@@ -3453,6 +3620,7 @@ ${latestUserSpeech}
       latestUserSpeech,
       language,
       ragContext,
+      scripts,
     );
 
     return {
