@@ -26,7 +26,7 @@ describe('ai-calling-bots chat utils prompt echo safety', () => {
 
     expect(safe).not.toMatch(/you are agentone/i);
     expect(safe).not.toMatch(/objective:/i);
-    expect(safe).toContain('Tell me the exact model or variant');
+    expect(safe).toContain('Share the exact detail you need');
   });
 
   it('does not reuse prompt-like bot knowledge in fallback answers', () => {
@@ -51,7 +51,7 @@ describe('ai-calling-bots chat utils prompt echo safety', () => {
     const reply = finalizeChatReply('', leakedPrompt, '');
 
     expect(reply).not.toMatch(/you are agentone/i);
-    expect(reply).toContain('Tell me the exact model or variant');
+    expect(reply).toContain('Share the exact detail you need');
   });
 
   it('answers factual cost questions with a dynamic role-aligned follow-up', () => {

@@ -12,7 +12,7 @@ type ChatBotPersona = {
 };
 
 const SAFE_CHAT_FALLBACK_REPLY =
-  "I can help with pricing and product details. Tell me the exact model or variant you want, and I'll answer directly.";
+  "I can help with that. Share the exact detail you need, and I'll answer directly.";
 
 export function summarizeSnippet(value: string) {
   const cleaned = value.replace(/\s+/g, ' ').replaceAll('\u0000', '').trim();
@@ -81,19 +81,11 @@ export function synthesizeBestAnswer(
   const loweredQuestion = question.toLowerCase();
   const terms = question
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
     .filter((term) => term.length > 2);
-  const asksPricing =
-    /\b(price|pricing|cost|budget|on[-\s]?road|ex[-\s]?showroom|tax|insurance)\b/i.test(
-      loweredQuestion,
-    );
-  const asksFeatures =
-    /\b(feature|features|spec|specs|technology|safety|adas|airbag|camera|screen)\b/i.test(
-      loweredQuestion,
-    );
-  const asksVariants =
-    /\b(variant|variants|model|models|base|mid|top|petrol|diesel|ev)\b/i.test(
+  const asksForQuantifiedDetail =
+    /\b(how much|price|cost|budget|date|when|timeline|count|number|total)\b/i.test(
       loweredQuestion,
     );
 
@@ -103,30 +95,8 @@ export function synthesizeBestAnswer(
       (sum, term) => (lowered.includes(term) ? sum + 1 : sum),
       0,
     );
-    if (
-      asksPricing &&
-      /\b(price|pricing|cost|budget|on[-\s]?road|ex[-\s]?showroom|tax|insurance|lakh|₹|rs)\b/i.test(
-        text,
-      )
-    ) {
-      score += 4;
-    }
-    if (
-      asksFeatures &&
-      /\b(feature|features|technology|safety|adas|airbag|camera|screen|sunroof|connected|charger)\b/i.test(
-        text,
-      )
-    ) {
-      score += 4;
-    }
-    if (
-      asksVariants &&
-      /\b(variant|variants|model|models|base|mid|top|petrol|diesel|ev)\b/i.test(
-        text,
-      )
-    ) {
-      score += 4;
-    }
+    if (asksForQuantifiedDetail && /[\d₹$€%]/.test(text)) score += 2;
+    if (text.length >= 24 && text.length <= 280) score += 1;
     return { text, score };
   });
   scored.sort((a, b) => b.score - a.score);

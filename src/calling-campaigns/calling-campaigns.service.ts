@@ -1430,20 +1430,21 @@ Return ONLY valid JSON with exactly these fields:
       call.selectedVoice = conversationVoice;
       let responseBudgetTimer: NodeJS.Timeout | null = null;
       try {
+        const buildFallback = () =>
+          this.buildLiveTurnFallback(
+            call,
+            speech,
+            withUserTurn,
+            conversationLanguage,
+            botProfile,
+          );
         const generation = await Promise.race([
           this.generateNextCallingTurn(call, speech, withUserTurn).catch(
             (error) => {
               this.logger.warn(
                 `Vertex AI live calling turn failed for call ${callId}; using fallback response. Reason: ${error instanceof Error ? error.message : String(error)}`,
               );
-              return this.buildFallbackCallingTurn(
-                call,
-                speech,
-                withUserTurn,
-                conversationLanguage,
-                '',
-                botProfile,
-              );
+              return buildFallback();
             },
           ),
           new Promise<ConversationGeneration>((resolve) => {
@@ -1451,16 +1452,7 @@ Return ONLY valid JSON with exactly these fields:
               this.logger.warn(
                 `Twilio response generation timed out for call ${callId}; using fallback response.`,
               );
-              resolve(
-                this.buildFallbackCallingTurn(
-                  call,
-                  speech,
-                  withUserTurn,
-                  conversationLanguage,
-                  '',
-                  botProfile,
-                ),
-              );
+              resolve(buildFallback());
             }, this.getTwilioResponseBudgetMs());
           }),
         ]);
@@ -1494,9 +1486,13 @@ Return ONLY valid JSON with exactly these fields:
             };
 
         if (shouldEnd) {
-          await this.completeTwilioConversation(call, nextScripts, finalGeneration);
+          await this.completeTwilioConversation(
+            call,
+            nextScripts,
+            finalGeneration,
+          );
           return await this.buildTwilioSayHangup(
-            generation.reply,
+            finalGeneration.reply,
             this.buildCallSpeechCampaign(call),
           );
         }
@@ -1512,9 +1508,9 @@ Return ONLY valid JSON with exactly these fields:
             scripts: nextScripts,
             transcript: this.scriptsToTranscript(nextScripts),
             summary: `${botProfile.name} is speaking with ${call.contact.firstName || 'the contact'} about ${call.campaign.objective || 'the campaign objective'}.`,
-            sentimentScore: generation.sentimentScore,
-            keyOutcomes: generation.keyOutcomes,
-            topicsCovered: generation.topicsCovered,
+            sentimentScore: finalGeneration.sentimentScore,
+            keyOutcomes: finalGeneration.keyOutcomes,
+            topicsCovered: finalGeneration.topicsCovered,
             analysis: {
               ...existingAnalysis,
               noInputCount: 0,
@@ -1530,7 +1526,7 @@ Return ONLY valid JSON with exactly these fields:
 
         return await this.buildTwilioGather(
           this.buildCallSpeechCampaign(call),
-          generation.reply,
+          finalGeneration.reply,
           callId,
         );
       } finally {
@@ -2585,7 +2581,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ];
   }
 
-  private buildSalesFallbackReply(
+  private buildRoleAwareFallbackReply(
     call: any,
     botProfile: any,
     userTurns: number,
@@ -3181,9 +3177,8 @@ ${latestUserSpeech}
     generation: ConversationGeneration,
     botProfile: any,
   ) {
+    // Strict end gate: only end when the contact declines or the configured goal is met.
     if (this.isImmediateEndSpeech(latestUserSpeech)) return true;
-    if (this.isGoalMarkedAsMet(generation)) return true;
-    if (!generation.shouldEnd) return false;
     return this.isGoalMarkedAsMet(generation, call, botProfile);
   }
 
@@ -3205,7 +3200,9 @@ ${latestUserSpeech}
     const goalStatus = String(data.goalStatus || '')
       .toLowerCase()
       .trim();
-    if (['met', 'achieved', 'completed', 'done', 'resolved'].includes(goalStatus)) {
+    if (
+      ['met', 'achieved', 'completed', 'done', 'resolved'].includes(goalStatus)
+    ) {
       return true;
     }
 
@@ -3216,16 +3213,27 @@ ${latestUserSpeech}
     ]
       .join(' ')
       .toLowerCase();
-    if (/\b(goal met|objective met|goal achieved|objective achieved)\b/.test(evidence)) {
+    if (
+      /\b(goal met|objective met|goal achieved|objective achieved)\b/.test(
+        evidence,
+      )
+    ) {
       return true;
     }
 
-    const primaryGoal = this.derivePrimaryGoal(call, botProfile).toLowerCase();
-    if (!primaryGoal) return false;
-    if (!generation?.shouldEnd) return false;
-    return /\b(next step|follow[-\s]?up|booked|scheduled|captured|confirmed)\b/.test(
-      evidence,
-    );
+    const requestedNextStep = String(data.requestedNextStep || '')
+      .toLowerCase()
+      .trim();
+    const hasGoal = Boolean(this.derivePrimaryGoal(call, botProfile));
+    if (
+      hasGoal &&
+      requestedNextStep &&
+      !['none', 'opt_out', 'unknown'].includes(requestedNextStep)
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   private derivePrimaryGoal(call?: any, botProfile?: any) {
@@ -3250,6 +3258,23 @@ ${latestUserSpeech}
     const goal = this.derivePrimaryGoal(call, botProfile);
     if (!goal) return 'The primary conversation goal was achieved.';
     return `The primary conversation goal was achieved: ${goal}.`;
+  }
+
+  private buildLiveTurnFallback(
+    call: any,
+    latestUserSpeech: string,
+    scripts: Array<Record<string, any>>,
+    conversationLanguage: string,
+    botProfile: any,
+  ) {
+    return this.buildFallbackCallingTurn(
+      call,
+      latestUserSpeech,
+      scripts,
+      conversationLanguage,
+      '',
+      botProfile,
+    );
   }
 
   private looksLikeLivePromptEcho(value: string) {
@@ -3301,7 +3326,7 @@ ${latestUserSpeech}
       };
     }
 
-    const reply = this.buildSalesFallbackReply(
+    const reply = this.buildRoleAwareFallbackReply(
       call,
       botProfile,
       userTurns,
