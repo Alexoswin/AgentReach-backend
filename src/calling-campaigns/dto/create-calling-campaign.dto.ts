@@ -62,6 +62,14 @@ export class CreateCallingCampaignDto {
 
   @ApiProperty({
     required: false,
+    example: 'Understand fit and capture a clear next step.',
+  })
+  @IsString()
+  @IsOptional()
+  botGoal?: string;
+
+  @ApiProperty({
+    required: false,
     example: 'Warm, curious, concise, and naturally conversational',
   })
   @IsString()

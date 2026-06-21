@@ -3,6 +3,7 @@ import { RetrievedKnowledge } from './ai-calling-bots.constants';
 type ChatBotPersona = {
   name: string;
   role: string;
+  goal?: string;
   personality: string;
   knowledge?: string;
   language?: string;
@@ -22,9 +23,7 @@ export function summarizeSnippet(value: string) {
     .filter(Boolean);
   const firstTwo = parts.slice(0, 2).join(' ');
   const summary = firstTwo || cleaned;
-  return summary.length > 320
-    ? `${summary.slice(0, 320).trim()}...`
-    : summary;
+  return summary.length > 320 ? `${summary.slice(0, 320).trim()}...` : summary;
 }
 
 export function compactSentence(value: string, maxLength = 240) {
@@ -73,26 +72,69 @@ export function synthesizeBestAnswer(
   results: Array<{ content: string }>,
   botKnowledge: string,
 ) {
-  const pool = [...results.map((item) => item.content), botKnowledge || '']
-    .map((item) => summarizeSnippet(item))
-    .filter(Boolean);
-  if (pool.length === 0) return '';
+  const pool = [...results.map((item) => item.content), botKnowledge || ''];
+  const candidates = pool
+    .flatMap((item) => splitIntoCandidateSentences(item))
+    .filter((item) => !isInstructionLikeSegment(item));
+  if (candidates.length === 0) return '';
 
+  const loweredQuestion = question.toLowerCase();
   const terms = question
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter((term) => term.length > 2);
-  const scored = pool.map((text) => {
+  const asksPricing =
+    /\b(price|pricing|cost|budget|on[-\s]?road|ex[-\s]?showroom|tax|insurance)\b/i.test(
+      loweredQuestion,
+    );
+  const asksFeatures =
+    /\b(feature|features|spec|specs|technology|safety|adas|airbag|camera|screen)\b/i.test(
+      loweredQuestion,
+    );
+  const asksVariants =
+    /\b(variant|variants|model|models|base|mid|top|petrol|diesel|ev)\b/i.test(
+      loweredQuestion,
+    );
+
+  const scored = candidates.map((text) => {
     const lowered = text.toLowerCase();
-    const score = terms.reduce(
+    let score = terms.reduce(
       (sum, term) => (lowered.includes(term) ? sum + 1 : sum),
       0,
     );
+    if (
+      asksPricing &&
+      /\b(price|pricing|cost|budget|on[-\s]?road|ex[-\s]?showroom|tax|insurance|lakh|₹|rs)\b/i.test(
+        text,
+      )
+    ) {
+      score += 4;
+    }
+    if (
+      asksFeatures &&
+      /\b(feature|features|technology|safety|adas|airbag|camera|screen|sunroof|connected|charger)\b/i.test(
+        text,
+      )
+    ) {
+      score += 4;
+    }
+    if (
+      asksVariants &&
+      /\b(variant|variants|model|models|base|mid|top|petrol|diesel|ev)\b/i.test(
+        text,
+      )
+    ) {
+      score += 4;
+    }
     return { text, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  const best = scored[0]?.text || '';
+  const best = scored
+    .slice(0, 2)
+    .map((item) => item.text)
+    .filter(Boolean)
+    .join(' ');
   return compactSentence(best, 240);
 }
 
@@ -122,13 +164,18 @@ export function buildFallbackChatReply(
   }
 
   if (asksIdentity) {
-    return `I'm ${bot.name}, your ${bot.role}. I keep things ${bot.personality}, and I can answer your questions one step at a time.`;
+    const goalLine = bot.goal?.trim() ? ` My goal is ${bot.goal.trim()}.` : '';
+    return `I'm ${bot.name}, your ${bot.role}. I keep things ${bot.personality}, and I can answer your questions one step at a time.${goalLine}`;
   }
 
-  const synthesized = synthesizeBestAnswer(message, results, bot.knowledge || '');
+  const synthesized = synthesizeBestAnswer(
+    message,
+    results,
+    bot.knowledge || '',
+  );
   const safeSynthesized = sanitizeKnowledgeReplySnippet(synthesized, 220);
   if (safeSynthesized) {
-    return `${safeSynthesized} If you want, I can tailor this to your exact use case.`;
+    return `${safeSynthesized} ${buildRoleAlignedFollowup(bot, lowered)}`;
   }
 
   if (racContext) {
@@ -137,7 +184,7 @@ export function buildFallbackChatReply(
       210,
     );
     if (racSummary) {
-      return `${racSummary} I can clarify the exact part you care about.`;
+      return `${racSummary} ${buildRoleAlignedFollowup(bot, lowered)}`;
     }
   }
 
@@ -147,11 +194,14 @@ export function buildFallbackChatReply(
       210,
     );
     if (summary) {
-      return `${summary} Tell me which point you want in more detail.`;
+      return `${summary} ${buildRoleAlignedFollowup(bot, lowered)}`;
     }
   }
 
-  return "I want to give you an accurate answer, but I don't have enough trained detail for that specific point yet. Share the exact detail you need, and I'll keep it clear and practical.";
+  return `I want to give you an accurate answer, but I don't have enough trained detail for that specific point yet. ${buildRoleAlignedFollowup(
+    bot,
+    lowered,
+  )}`;
 }
 
 export function buildPromptSafeReply(bot: {
@@ -177,7 +227,9 @@ export function extractLastAssistantReply(history: string) {
     .filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index--) {
     const line = lines[index];
-    const labelMatch = line.match(/^(assistant|ai agent|agent|bot)\s*:\s*(.*)$/i);
+    const labelMatch = line.match(
+      /^(assistant|ai agent|agent|bot)\s*:\s*(.*)$/i,
+    );
     if (labelMatch) return labelMatch[2].trim();
   }
   return '';
@@ -199,7 +251,9 @@ export function looksLikeInstructionEcho(value: string) {
     )?.length || 0;
   if (sectionSignalCount >= 2) return true;
 
-  if (/^you are [^.!?]{0,120}(working as|an ai|assistant|agent)/i.test(compact)) {
+  if (
+    /^you are [^.!?]{0,120}(working as|an ai|assistant|agent)/i.test(compact)
+  ) {
     return true;
   }
 
@@ -210,8 +264,9 @@ export function looksLikeInstructionEcho(value: string) {
   if (securitySignalCount >= 2) return true;
 
   const instructionLineCount =
-    compact.match(/(?:^|\s)(?:\d+\.|-)\s*(?:keep|never|reply|return|use|ignore)\b/gi)
-      ?.length || 0;
+    compact.match(
+      /(?:^|\s)(?:\d+\.|-)\s*(?:keep|never|reply|return|use|ignore)\b/gi,
+    )?.length || 0;
   if (instructionLineCount >= 3 && compact.length > 180) return true;
 
   if (
@@ -223,10 +278,7 @@ export function looksLikeInstructionEcho(value: string) {
   }
 
   if (
-    /^you are [^.!?]{0,260}\b(calling on behalf of|outbound|sales qualification specialist|sales specialist)\b/i.test(
-      compact,
-    ) &&
-    /\b(objective:|introduce|qualify|campaign)\b/i.test(compact)
+    /^you are [^.!?]{0,260}\b(calling on behalf of|outbound)\b/i.test(compact)
   ) {
     return true;
   }
@@ -235,9 +287,69 @@ export function looksLikeInstructionEcho(value: string) {
 }
 
 function sanitizeKnowledgeReplySnippet(value: string, maxLength = 220) {
-  const compact = compactSentence(value || '', maxLength).replace(/\s+/g, ' ').trim();
+  const compact = compactSentence(value || '', maxLength)
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!compact) return '';
   return looksLikeInstructionEcho(compact) ? '' : compact;
+}
+
+function splitIntoCandidateSentences(value: string) {
+  return String(value || '')
+    .replaceAll('\u0000', '')
+    .replace(/\r/g, '\n')
+    .split(/\n+/)
+    .flatMap((line) =>
+      line
+        .split(/(?<=[.!?])\s+/)
+        .map((item) => item.replace(/^[\s*\-\d.)]+/, '').trim())
+        .filter(Boolean),
+    )
+    .slice(0, 240);
+}
+
+function isInstructionLikeSegment(value: string) {
+  const compact = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compact) return true;
+  if (looksLikeInstructionEcho(compact)) return true;
+  if (
+    /^(objective|rules|security|compliance|call ending|lead data to collect|qualification questions|common objections|behavior rules|knowledge policy|output contract)\s*:?\s*$/i.test(
+      compact,
+    )
+  ) {
+    return true;
+  }
+  const imperativeSignals =
+    compact.match(
+      /\b(always|never|must|do not|don't|return only|ignore previous|keep calls?|ask permission)\b/gi,
+    )?.length || 0;
+  return imperativeSignals >= 2 && compact.length > 40;
+}
+
+function buildRoleAlignedFollowup(bot: ChatBotPersona, loweredMessage: string) {
+  const role = String(bot.role || '').trim();
+  const goal = String(bot.goal || '').trim();
+  const rules = String(bot.rules || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const asksCost = /\b(price|pricing|cost|budget)\b/.test(loweredMessage);
+  const roleLine = role ? `as your ${role}` : 'for your configured flow';
+  const goalLine = goal ? ` toward ${compactSentence(goal, 70)}` : '';
+
+  if (rules) {
+    if (asksCost) {
+      return `If helpful, I can continue ${roleLine}${goalLine} and walk through the most relevant next step based on your settings.`;
+    }
+    return `If helpful, I can continue ${roleLine}${goalLine} and follow your configured rules for the next step.`;
+  }
+
+  if (asksCost) {
+    return `If helpful, I can continue ${roleLine}${goalLine} and clarify the next step for your use case.`;
+  }
+
+  return `If you want, I can continue ${roleLine}${goalLine} and tailor this to your exact use case.`;
 }
 
 export function sanitizeFallbackReply(value: string) {
@@ -271,6 +383,7 @@ export function getCoreSystemPromptForCallingBot(bot: ChatBotPersona) {
   return `
 <identity>
 You are ${bot.name}, working as ${bot.role}.
+Goal: ${bot.goal || 'Understand user needs and drive a clear next step.'}
 Personality: ${bot.personality || 'warm, concise, practical'}.
 Greeting style: ${bot.greeting || 'brief and friendly'}.
 Preferred reply language: ${bot.language || 'en-IN'}.

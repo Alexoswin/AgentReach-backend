@@ -54,6 +54,7 @@ export function normalizeBotPayload(
     'description',
     'language',
     'role',
+    'goal',
     'personality',
     'knowledge',
     'rules',

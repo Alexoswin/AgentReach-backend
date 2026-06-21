@@ -40,6 +40,9 @@ export class CallingCampaign {
   botRole?: string;
 
   @Prop()
+  botGoal?: string;
+
+  @Prop()
   botPersonality?: string;
 
   @Prop()

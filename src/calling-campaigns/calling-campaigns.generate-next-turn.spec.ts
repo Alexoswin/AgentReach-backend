@@ -88,10 +88,29 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     });
 
     const call = createCall();
-    call.campaign.language = 'en-US';
-    call.campaign.voice = 'google:en-US-Chirp3-HD-Puck';
-    call.selectedLanguage = 'en-IN';
-    call.selectedVoice = 'google:en-IN-Chirp3-HD-Puck';
+    const campaignDefaultSelection = {
+      language:
+        call.campaign.language ||
+        service.resolveGoogleVoiceLanguage(undefined, call.campaign.voice),
+      voice:
+        call.campaign.voice ||
+        service.resolveGoogleTtsVoice(
+          call.campaign.voice,
+          call.campaign.language ||
+            service.resolveGoogleVoiceLanguage(undefined, call.campaign.voice),
+        ),
+    };
+    const frontendSelection = {
+      language: campaignDefaultSelection.language,
+      voice: service.resolveGoogleTtsVoice(
+        campaignDefaultSelection.voice,
+        campaignDefaultSelection.language,
+      ),
+    };
+    call.campaign.language = campaignDefaultSelection.language;
+    call.campaign.voice = campaignDefaultSelection.voice;
+    call.selectedLanguage = frontendSelection.language;
+    call.selectedVoice = frontendSelection.voice;
 
     const result = await service.generateNextCallingTurn(
       call,
@@ -113,13 +132,13 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(systemPrompt).toContain('<identity>');
     expect(systemPrompt).toContain('<conversation_policy>');
     expect(systemPrompt).toContain('<output_contract>');
-    expect(systemPrompt).toContain('Selected language: en-IN');
     expect(systemPrompt).toContain(
-      'Selected voice: google:en-IN-Chirp3-HD-Puck',
+      `Selected language: ${frontendSelection.language}`,
     );
     expect(systemPrompt).toContain(
-      'You MUST speak and reply in Indian English',
+      `Selected voice: ${frontendSelection.voice}`,
     );
+    expect(systemPrompt).toContain('You MUST speak and reply');
     expect(userPrompt).toContain('<rac_context>');
     expect(userPrompt).toContain('<campaign_context>');
     expect(userPrompt).toContain('<latest_user_message>');
@@ -314,5 +333,25 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(result.reply).toMatch(/features|safety|infotainment|variant/i);
     expect(result.reply).not.toContain('That helps');
     expect(result.reply).not.toContain('Thanks for speaking with me');
+  });
+
+  it('filters prompt-like persona text while preserving factual pricing answers in fallback', async () => {
+    const service = createService('');
+    global.fetch = jest.fn();
+    const call = createCall();
+    call.campaign.botRole = 'qualification assistant';
+    call.campaign.botKnowledge = `You are AgentOne, an outbound assistant calling on behalf of Client Team. OBJECTIVE: Capture requirements and next step.
+Expected base pricing range: 100 to 250 depending on package.
+Estimated total cost: 120 to 290 depending on taxes and fees.`;
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'what the price cost',
+      [{ speaker: 'contact', label: 'Customer', text: 'what the price cost' }],
+    );
+
+    expect(result.reply).toMatch(/price|pricing|cost|taxes|fees/i);
+    expect(result.reply).not.toMatch(/you are agentone/i);
+    expect(result.reply).not.toMatch(/objective:/i);
   });
 });

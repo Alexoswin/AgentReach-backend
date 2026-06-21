@@ -28,6 +28,14 @@ export class CreateAiCallingBotDto {
 
   @ApiProperty({
     required: false,
+    example: 'Understand customer need and capture a clear next step.',
+  })
+  @IsString()
+  @IsOptional()
+  goal?: string;
+
+  @ApiProperty({
+    required: false,
     example: 'Warm, concise, calm, and naturally conversational',
   })
   @IsString()

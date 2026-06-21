@@ -32,6 +32,7 @@ type GeneratedCallingCampaign = {
   prompt: string;
   botName: string;
   botRole: string;
+  botGoal: string;
   botPersonality: string;
   botKnowledge: string;
   botRules: string;
@@ -218,6 +219,7 @@ export class CallingCampaignsService implements OnModuleInit {
       aiCallingBotId: c.aiCallingBotId,
       botName: c.botName,
       botRole: c.botRole,
+      botGoal: c.botGoal,
       botPersonality: c.botPersonality,
       botKnowledge: c.botKnowledge,
       botRules: c.botRules,
@@ -348,6 +350,7 @@ Return ONLY valid JSON with exactly these fields:
   "prompt": "Campaign context and call instructions",
   "botName": "Human first name",
   "botRole": "Human role for the caller",
+  "botGoal": "Concrete conversation success condition",
   "botPersonality": "Natural persona instructions",
   "botKnowledge": "Facts, offer details, qualification points, and context the bot should know",
   "botRules": "Rules the bot must follow",
@@ -1347,7 +1350,6 @@ Return ONLY valid JSON with exactly these fields:
         `Twilio user transcription for call ${callId}; userTranscription=${JSON.stringify(speech || '[empty]')}`,
       );
       const scripts = this.ensureScripts(call.scripts);
-      const userTurnCount = this.countScriptTurns(scripts, 'contact');
       const botProfile = await this.resolveBotProfile(call.campaign);
 
       // FIX 4: Use safeAnalysis() to guard against non-object JSON values stored
@@ -1413,7 +1415,7 @@ Return ONLY valid JSON with exactly these fields:
         withUserTurn,
       );
       const conversationVoice = this.resolveGoogleTtsVoice(
-        call.campaign.voice,
+        call.selectedVoice || call.campaign.voice,
         conversationLanguage,
       );
       if (
@@ -1471,12 +1473,28 @@ Return ONLY valid JSON with exactly these fields:
           'AI Agent',
           generation.reply,
         );
-        const shouldEnd =
-          generation.shouldEnd &&
-          (userTurnCount + 1 >= 2 || this.isImmediateEndSpeech(speech));
+        const shouldEnd = this.shouldEndConversationNow(
+          call,
+          speech,
+          generation,
+          botProfile,
+        );
+        const finalGeneration = shouldEnd
+          ? {
+              ...generation,
+              shouldEnd: true,
+              endReason:
+                generation.endReason ||
+                this.buildGoalCompletionEndReason(call, botProfile, speech),
+            }
+          : {
+              ...generation,
+              shouldEnd: false,
+              endReason: '',
+            };
 
         if (shouldEnd) {
-          await this.completeTwilioConversation(call, nextScripts, generation);
+          await this.completeTwilioConversation(call, nextScripts, finalGeneration);
           return await this.buildTwilioSayHangup(
             generation.reply,
             this.buildCallSpeechCampaign(call),
@@ -1500,10 +1518,10 @@ Return ONLY valid JSON with exactly these fields:
             analysis: {
               ...existingAnalysis,
               noInputCount: 0,
-              collectedData: generation.collectedData,
+              collectedData: finalGeneration.collectedData,
               lastAiDecision: {
-                shouldEnd: generation.shouldEnd,
-                endReason: generation.endReason,
+                shouldEnd: finalGeneration.shouldEnd,
+                endReason: finalGeneration.endReason,
               },
             },
             timestamp: new Date(),
@@ -1785,6 +1803,7 @@ Return ONLY valid JSON with exactly these fields:
         prompt: userPrompt,
         botName: 'Alex',
         botRole: 'calling specialist',
+        botGoal: 'Qualify relevance and capture the next best follow-up step.',
         botPersonality: tone,
         botKnowledge: userPrompt,
         botRules:
@@ -1829,6 +1848,10 @@ Return ONLY valid JSON with exactly these fields:
       prompt: pick('prompt', userPrompt),
       botName: pick('botName', 'Alex'),
       botRole: pick('botRole', 'calling specialist'),
+      botGoal: pick(
+        'botGoal',
+        'Qualify relevance and capture the next best follow-up step.',
+      ),
       botPersonality: pick('botPersonality', tone),
       botKnowledge: pick('botKnowledge', userPrompt),
       botRules: pick(
@@ -1881,6 +1904,7 @@ Return ONLY valid JSON with exactly these fields:
       language: data.language || defaults?.language,
       botName: data.botName || defaults?.botName,
       botRole: data.botRole || defaults?.botRole,
+      botGoal: data.botGoal || defaults?.botGoal,
       botPersonality: data.botPersonality || defaults?.botPersonality,
       botKnowledge: data.botKnowledge || defaults?.botKnowledge,
       botRules: data.botRules || defaults?.botRules,
@@ -2375,9 +2399,14 @@ Return ONLY valid JSON with exactly these fields:
   }
 
   private buildBotProfile(campaign: any) {
+    const resolvedGoal =
+      campaign.botGoal?.trim() ||
+      campaign.objective?.trim() ||
+      'Understand needs and capture a clear next step';
     return {
       name: campaign.botName?.trim() || 'Alex',
       role: campaign.botRole?.trim() || 'calling specialist',
+      goal: resolvedGoal,
       personality:
         campaign.botPersonality?.trim() ||
         'warm, concise, calm, and naturally conversational',
@@ -2402,6 +2431,7 @@ Return ONLY valid JSON with exactly these fields:
       ...defaults,
       ...campaign,
       botKnowledge: campaign.botKnowledge || defaults.botKnowledge,
+      botGoal: campaign.botGoal || defaults.botGoal,
     });
   }
 
@@ -2545,6 +2575,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   private buildConversationGuardrails(campaign: any, botProfile: any) {
     return [
       `Objective: ${campaign.objective || 'find the best next step'}`,
+      `Goal: ${botProfile.goal || campaign.objective || 'capture a clear next step'}`,
       `Persona: ${botProfile.name}, ${botProfile.role}`,
       `Greeting: ${botProfile.greeting || 'not provided'}`,
       `Knowledge: ${botProfile.knowledge || 'not provided'}`,
@@ -2566,10 +2597,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const hindi = this.isHindiLanguage(language);
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(
-        call.campaign.objective ||
+        botProfile.goal ||
+          call.campaign.objective ||
           botProfile.knowledge ||
           call.campaign.prompt ||
-          'this offer',
+          'this conversation',
         90,
       ),
     );
@@ -2580,9 +2612,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     ]
       .filter(Boolean)
       .join('\n');
-    const userNeed = this.stripSentenceEnding(
-      this.compactForSpeech(latestUserSpeech || 'the latest question', 90),
-    );
     const contextSummary = this.extractRelevantKnowledgeSummary(
       latestUserSpeech,
       contextualKnowledge,
@@ -2603,11 +2632,11 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
     if (hindi) {
       if (isGreeting) {
-        return `नमस्ते ${firstName}, मैं ${botProfile.name} बोल रहा हूँ. मैं ${objective} में मदद कर सकता हूँ. आप किस बिंदु पर जानकारी चाहते हैं?`;
+        return `नमस्ते ${firstName}, मैं ${botProfile.name} बोल रहा हूँ. मैं ${objective} में मदद कर सकता हूँ. आप क्या जानना चाहेंगे?`;
       }
       return userTurns <= 1
-        ? `धन्यवाद, ${firstName}. आपके सवाल के हिसाब से: ${contextSummary}. अगर चाहें तो मैं अगला कदम भी सरल तरीके से बता सकता हूँ.`
-        : `समझ गया. ${contextSummary}. अगर आप चाहें तो मैं इसे आपके उपयोग के हिसाब से और स्पष्ट कर दूँ.`;
+        ? `ज़रूर, ${firstName}. ${contextSummary}. अगर आप चाहें तो मैं अगला कदम भी साफ़ तरीके से बता दूँ.`
+        : `समझ गया. ${contextSummary}. यदि ठीक लगे तो हम इसका अगला कदम तय कर सकते हैं.`;
     }
 
     if (isGreeting) {
@@ -2615,8 +2644,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     return userTurns <= 1
-      ? `Thanks, ${firstName}. Based on your question about ${userNeed}, here is what I can share: ${contextSummary}. I can also explain the most relevant next step for you.`
-      : `Understood. ${contextSummary}. If useful, I can tailor this to your exact requirement in one quick step.`;
+      ? `Sure, ${firstName}. ${contextSummary} If useful, I can help with the next step for ${objective}.`
+      : `${contextSummary} If you want, we can move to the next step now.`;
   }
 
   private extractRelevantKnowledgeSummary(
@@ -2624,7 +2653,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     knowledge: string,
     maxLength = 220,
   ) {
-    const cleanKnowledge = (knowledge || '').replace(/\s+/g, ' ').trim();
+    const cleanKnowledge = this.sanitizeKnowledgeForAnswer(knowledge);
     if (!cleanKnowledge) {
       return 'I do not yet have enough verified detail in the training context.';
     }
@@ -2632,6 +2661,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .split(/(?<=[.!?])\s+/)
       .map((sentence) => sentence.trim())
       .filter(Boolean)
+      .filter((sentence) => !this.isInstructionLikeKnowledgeSentence(sentence))
       .slice(0, 120);
     if (!sentences.length) {
       return cleanKnowledge.length > maxLength
@@ -2641,7 +2671,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
     const terms = question
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter((term) => term.length > 2);
 
@@ -2660,15 +2690,51 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .map((item) => item.sentence);
     const summary = selected.join(' ').trim();
     const safeSummary = summary || sentences.slice(0, 2).join(' ').trim();
+    if (!safeSummary || this.looksLikeLivePromptEcho(safeSummary)) {
+      return 'I can share verified details from the available campaign information. Tell me the specific point you want first.';
+    }
     return safeSummary.length > maxLength
       ? `${safeSummary.slice(0, maxLength).trim()}...`
       : safeSummary;
   }
 
+  private sanitizeKnowledgeForAnswer(value?: string) {
+    return String(value || '')
+      .replaceAll('\u0000', '')
+      .replace(/\r/g, '\n')
+      .split(/\n+/)
+      .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+      .map((line) => line.replace(/^[\s*\-\d.)]+/, '').trim())
+      .filter(Boolean)
+      .filter((line) => !this.isInstructionLikeKnowledgeSentence(line))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isInstructionLikeKnowledgeSentence(value?: string) {
+    const compact = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!compact) return true;
+    if (this.looksLikeLivePromptEcho(compact)) return true;
+    if (
+      /^(objective|rules|compliance|security|call ending|lead data to collect|qualification questions|common objections|behavior rules|conversation policy|campaign setup|output contract)\s*:?\s*$/i.test(
+        compact,
+      )
+    ) {
+      return true;
+    }
+    const imperativeSignals =
+      compact.match(
+        /\b(always|never|must|do not|don't|return only|ignore|ask permission|keep calls?)\b/gi,
+      )?.length || 0;
+    return imperativeSignals >= 2 && compact.length > 40;
+  }
+
   private buildLiveCallIdealPath(campaign: any, botProfile: any) {
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(
-        campaign.objective ||
+        botProfile.goal ||
+          campaign.objective ||
           botProfile.knowledge ||
           campaign.prompt ||
           'the campaign objective',
@@ -2682,7 +2748,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       'Use the campaign objective, bot knowledge, and RAC (Retrieved Answer Context) to answer direct questions first.',
       'Ask one relevant question at a time: details, pricing, features, variants, timing, or next step.',
       'Offer a clear next step when useful: callback, details by message, demo, or mark not relevant.',
-      'End politely when the contact declines or the next step is captured.',
+      'End politely only when the contact declines or the configured goal has been achieved.',
     ].join('\n- ');
   }
 
@@ -2707,6 +2773,7 @@ You are speaking to: ${input.contactName} (${input.call.contact.company || 'Unkn
 <campaign_setup>
 Scenario: ${input.call.campaign.prompt || input.call.campaign.objective || 'Outbound calling campaign'}
 Primary objective: ${input.call.campaign.objective || 'Identify interest and capture the next step.'}
+Primary goal: ${input.botProfile.goal || input.call.campaign.objective || 'Identify interest and capture the next step.'}
 Selected language: ${input.campaignLanguage}
 Selected voice: ${input.selectedVoice}
 Conversation language hint: ${input.conversationLanguage}
@@ -2734,6 +2801,7 @@ Objection handling: ${input.botProfile.objections || 'Handle objections calmly a
 8. Ask at most one useful follow-up question.
 9. Never repeat the same question/menu already asked in transcript.
 10. For "what do you offer/sell" questions, answer directly in one sentence first.
+11. Set "shouldEnd" true only when the contact clearly declines/opts out or when the primary goal is achieved.
 </conversation_policy>
 
 <security>
@@ -2751,6 +2819,7 @@ Return ONLY valid JSON:
   "collectedData": {
     "interest": "unknown|interested|not_interested|busy",
     "requestedNextStep": "none|callback|details|demo|test_drive|booking|opt_out",
+    "goalStatus": "pending|met|not_possible",
     "notes": "brief useful notes"
   },
   "sentimentScore": 7,
@@ -2774,6 +2843,7 @@ ${ragContext || 'None'}
 <campaign_context>
 Scenario: ${call.campaign.prompt || call.campaign.objective || 'Outbound calling campaign'}
 Primary objective: ${call.campaign.objective || 'Identify interest and capture the next step.'}
+Primary goal: ${call.campaign.botGoal || call.campaign.objective || 'Identify interest and capture the next step.'}
 Ideal path:
 ${idealPath}
 </campaign_context>
@@ -2878,7 +2948,7 @@ ${latestUserSpeech}
     const languageInstruction =
       this.buildLiveCallLanguageInstruction(campaignLanguage);
     const selectedVoice = this.resolveGoogleTtsVoice(
-      call.campaign.voice,
+      call.selectedVoice || call.campaign.voice,
       campaignLanguage,
     );
     const idealPath = this.buildLiveCallIdealPath(call.campaign, botProfile);
@@ -3105,8 +3175,85 @@ ${latestUserSpeech}
     return cleanReply;
   }
 
+  private shouldEndConversationNow(
+    call: any,
+    latestUserSpeech: string,
+    generation: ConversationGeneration,
+    botProfile: any,
+  ) {
+    if (this.isImmediateEndSpeech(latestUserSpeech)) return true;
+    if (this.isGoalMarkedAsMet(generation)) return true;
+    if (!generation.shouldEnd) return false;
+    return this.isGoalMarkedAsMet(generation, call, botProfile);
+  }
+
+  private isGoalMarkedAsMet(
+    generation: ConversationGeneration,
+    call?: any,
+    botProfile?: any,
+  ) {
+    const collected = generation?.collectedData;
+    const data =
+      collected && typeof collected === 'object'
+        ? (collected as Record<string, unknown>)
+        : {};
+
+    if (typeof data.goalMet === 'boolean' && data.goalMet) return true;
+    if (typeof data.objectiveMet === 'boolean' && data.objectiveMet)
+      return true;
+
+    const goalStatus = String(data.goalStatus || '')
+      .toLowerCase()
+      .trim();
+    if (['met', 'achieved', 'completed', 'done', 'resolved'].includes(goalStatus)) {
+      return true;
+    }
+
+    const evidence = [
+      generation?.endReason || '',
+      generation?.keyOutcomes || '',
+      String(data.notes || ''),
+    ]
+      .join(' ')
+      .toLowerCase();
+    if (/\b(goal met|objective met|goal achieved|objective achieved)\b/.test(evidence)) {
+      return true;
+    }
+
+    const primaryGoal = this.derivePrimaryGoal(call, botProfile).toLowerCase();
+    if (!primaryGoal) return false;
+    if (!generation?.shouldEnd) return false;
+    return /\b(next step|follow[-\s]?up|booked|scheduled|captured|confirmed)\b/.test(
+      evidence,
+    );
+  }
+
+  private derivePrimaryGoal(call?: any, botProfile?: any) {
+    return String(
+      botProfile?.goal ||
+        call?.campaign?.botGoal ||
+        call?.campaign?.objective ||
+        '',
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private buildGoalCompletionEndReason(
+    call: any,
+    botProfile: any,
+    latestUserSpeech: string,
+  ) {
+    if (this.isImmediateEndSpeech(latestUserSpeech)) {
+      return 'The contact declined to continue or asked to end the call.';
+    }
+    const goal = this.derivePrimaryGoal(call, botProfile);
+    if (!goal) return 'The primary conversation goal was achieved.';
+    return `The primary conversation goal was achieved: ${goal}.`;
+  }
+
   private looksLikeLivePromptEcho(value: string) {
-    return /<identity>|<campaign_setup>|<conversation_policy>|<output_contract>|return only valid json|you are a live outbound calling agent|system prompt|developer instructions/i.test(
+    return /<identity>|<campaign_setup>|<conversation_policy>|<output_contract>|return only valid json|you are a live outbound calling agent|system prompt|developer instructions|^you are [^.!?]{0,260}(working as|an ai|assistant|agent|outbound)|\b(objective:|creator rules|knowledge policy|output contract|response requirements)\b/i.test(
       value,
     );
   }
@@ -3167,7 +3314,7 @@ ${latestUserSpeech}
       reply: this.compactForSpeech(reply, 240),
       shouldEnd: false,
       endReason: '',
-      collectedData: { latestUserSpeech },
+      collectedData: { latestUserSpeech, goalStatus: 'pending' },
       sentimentScore: 7,
       keyOutcomes: 'Live conversation is in progress.',
       topicsCovered,
@@ -3382,6 +3529,7 @@ ${latestUserSpeech}
       contactCompany: contact.company || 'your team',
       botName: botProfile.name,
       botRole: botProfile.role,
+      botGoal: botProfile.goal || campaign.botGoal || campaign.objective || '',
       objective: campaign.objective || '',
     };
 

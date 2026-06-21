@@ -302,8 +302,11 @@ export class AiCallingBotsService {
       {
         name: bot.name || 'Agent',
         role: bot.role || 'calling specialist',
+        goal:
+          bot.goal || 'Understand user needs and capture a clear next step.',
         personality: bot.personality || 'warm and concise',
         knowledge: bot.knowledge || '',
+        rules: bot.rules || '',
       },
       results,
       racContext,
@@ -319,6 +322,8 @@ export class AiCallingBotsService {
       {
         name: bot.name || 'Agent',
         role: bot.role || 'calling specialist',
+        goal:
+          bot.goal || 'Understand user needs and capture a clear next step.',
         personality: bot.personality || 'warm, concise, and helpful',
         language: bot.language || 'en-IN',
         knowledge: bot.knowledge || '',
@@ -416,6 +421,7 @@ export class AiCallingBotsService {
     bot: {
       name: string;
       role: string;
+      goal: string;
       personality: string;
       language: string;
       knowledge: string;
@@ -505,6 +511,7 @@ export class AiCallingBotsService {
       voice: bot.voice,
       botName: bot.name,
       botRole: bot.role,
+      botGoal: bot.goal,
       botPersonality: bot.personality,
       botKnowledge: bot.knowledge,
       botRules: bot.rules,

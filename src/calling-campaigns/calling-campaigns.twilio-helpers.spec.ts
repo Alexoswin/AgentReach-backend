@@ -246,6 +246,82 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     expect(twiml).toMatch(/सिएरा|फीचर्स|कॉलबैक/);
   });
 
+  it('keeps the selected voice family during live turns when language stays the same', async () => {
+    const service = createService();
+    const resolvedLanguage = service.resolveGoogleVoiceLanguage(
+      undefined,
+      undefined,
+    );
+    const campaignDefaults = {
+      language: resolvedLanguage,
+      voice: service.resolveGoogleTtsVoice(undefined, resolvedLanguage),
+    };
+    const frontendSelection = {
+      language: campaignDefaults.language,
+      voice: service.resolveGoogleTtsVoice(
+        campaignDefaults.voice,
+        campaignDefaults.language,
+      ),
+    };
+    const botContext = {
+      objective: 'Qualify interest and capture next step',
+      prompt: 'Use a concise outbound qualification flow.',
+      voiceQuality: 'standard',
+      botName: 'Agent',
+      botRole: 'qualification specialist',
+      botPersonality: 'warm and concise',
+      botKnowledge: 'Product and eligibility information.',
+      botRules: 'Keep responses brief.',
+      botObjectionHandling: 'Offer callback.',
+      botGreeting: 'Hi {{firstName}}, this is {{botName}}.',
+      aiCallingBotId: 'bot-1',
+    };
+    service.getCallWithContext = jest.fn().mockResolvedValue({
+      id: 'call-1',
+      campaignId: 'campaign-1',
+      contactId: 'contact-1',
+      selectedLanguage: frontendSelection.language,
+      selectedVoice: frontendSelection.voice,
+      startedAt: new Date('2026-06-21T12:00:00.000Z'),
+      scripts: [],
+      analysis: {},
+      campaign: {
+        ...botContext,
+        language: campaignDefaults.language,
+        voice: campaignDefaults.voice,
+      },
+      contact: {
+        firstName: 'Contact',
+        lastName: 'One',
+        company: 'Acme',
+      },
+    });
+    service.generateNextCallingTurn = jest.fn().mockResolvedValue({
+      reply: 'Sure. The expected pricing varies by variant.',
+      shouldEnd: false,
+      endReason: '',
+      collectedData: {},
+      sentimentScore: 7,
+      keyOutcomes: 'Shared pricing context.',
+      topicsCovered: ['Objective'],
+    });
+
+    await service.handleTwilioResponse('call-1', {
+      SpeechResult: 'tell me the price',
+      CallSid: 'sid-1',
+    });
+
+    expect(service.db.callHistory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({
+          selectedLanguage: frontendSelection.language,
+          selectedVoice: frontendSelection.voice,
+        }),
+      }),
+    );
+  });
+
   it('batches contact lookups and skips duplicates and existing call rows', async () => {
     const service = createService();
     service.db.contact.findMany.mockResolvedValue([
