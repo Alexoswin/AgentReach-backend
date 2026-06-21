@@ -2667,9 +2667,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .split(/(?<=[.!?])\s+/)
       .map((sentence) => sentence.trim())
       .filter(Boolean)
-      .filter(
-        (sentence) => !this.isInstructionLikeKnowledgeSentence(sentence),
-      )
+      .filter((sentence) => !this.isInstructionLikeKnowledgeSentence(sentence))
       .slice(0, 120);
     if (!sentences.length) {
       return cleanKnowledge.length > maxLength
@@ -2682,8 +2680,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter(
-        (term) =>
-          term.length > 2 && !this.isLowValueKnowledgeQueryTerm(term),
+        (term) => term.length > 2 && !this.isLowValueKnowledgeQueryTerm(term),
       );
 
     if (terms.length === 0) {
@@ -2736,7 +2733,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   }
 
   private shouldSkipKnowledgeLine(value?: string) {
-    const compact = String(value || '').replace(/\s+/g, ' ').trim();
+    const compact = String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!compact) return true;
     if (
       /^(objective|rules|compliance|security|call ending|lead data to collect|qualification questions|common objections|behavior rules|conversation policy|campaign setup|output contract)\s*:?\s*$/i.test(
@@ -2756,7 +2755,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   }
 
   private isInstructionLikeKnowledgeSentence(value?: string) {
-    const compact = String(value || '').replace(/\s+/g, ' ').trim();
+    const compact = String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!compact) return true;
     if (this.looksLikeLivePromptEcho(compact)) return true;
     if (
@@ -3029,11 +3030,7 @@ ${latestUserSpeech}
       );
     }
 
-    const racQuery = this.buildRacQueryForCall(
-      latestUserSpeech,
-      scripts,
-      call,
-    );
+    const racQuery = this.buildRacQueryForCall(latestUserSpeech, scripts, call);
     const [botProfile, conversationLanguage, ragContext, serviceAccountJson] =
       await Promise.all([
         this.resolveBotProfile(call.campaign),
@@ -3314,19 +3311,15 @@ ${latestUserSpeech}
     call?: any,
     botProfile?: any,
   ) {
-    const collected = generation?.collectedData;
-    const data =
-      collected && typeof collected === 'object'
-        ? (collected as Record<string, unknown>)
-        : {};
+    const data = generation.collectedData || {};
+    const readString = (value: unknown) =>
+      typeof value === 'string' ? value : '';
 
     if (typeof data.goalMet === 'boolean' && data.goalMet) return true;
     if (typeof data.objectiveMet === 'boolean' && data.objectiveMet)
       return true;
 
-    const goalStatus = String(data.goalStatus || '')
-      .toLowerCase()
-      .trim();
+    const goalStatus = readString(data.goalStatus).toLowerCase().trim();
     if (
       ['met', 'achieved', 'completed', 'done', 'resolved'].includes(goalStatus)
     ) {
@@ -3336,7 +3329,7 @@ ${latestUserSpeech}
     const evidence = [
       generation?.endReason || '',
       generation?.keyOutcomes || '',
-      String(data.notes || ''),
+      readString(data.notes),
     ]
       .join(' ')
       .toLowerCase();
@@ -3348,7 +3341,7 @@ ${latestUserSpeech}
       return true;
     }
 
-    const requestedNextStep = String(data.requestedNextStep || '')
+    const requestedNextStep = readString(data.requestedNextStep)
       .toLowerCase()
       .trim();
     const hasGoal = Boolean(this.derivePrimaryGoal(call, botProfile));

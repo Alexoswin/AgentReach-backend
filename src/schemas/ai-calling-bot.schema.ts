@@ -24,7 +24,9 @@ export class AiCallingBot {
   @Prop({ default: 'AI calling specialist' })
   role: string;
 
-  @Prop({ default: 'Understand the contact need and capture a clear next step.' })
+  @Prop({
+    default: 'Understand the contact need and capture a clear next step.',
+  })
   goal: string;
 
   @Prop({ default: 'warm, concise, calm, and naturally conversational' })
