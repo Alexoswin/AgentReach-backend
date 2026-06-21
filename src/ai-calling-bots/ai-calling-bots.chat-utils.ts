@@ -10,6 +10,9 @@ type ChatBotPersona = {
   greeting?: string;
 };
 
+const SAFE_CHAT_FALLBACK_REPLY =
+  "I can help with pricing and product details. Tell me the exact model or variant you want, and I'll answer directly.";
+
 export function summarizeSnippet(value: string) {
   const cleaned = value.replace(/\s+/g, ' ').replaceAll('\u0000', '').trim();
   if (!cleaned) return '';
@@ -123,21 +126,28 @@ export function buildFallbackChatReply(
   }
 
   const synthesized = synthesizeBestAnswer(message, results, bot.knowledge || '');
-  if (synthesized) {
-    return `${compactSentence(synthesized, 220)} If you want, I can tailor this to your exact use case.`;
+  const safeSynthesized = sanitizeKnowledgeReplySnippet(synthesized, 220);
+  if (safeSynthesized) {
+    return `${safeSynthesized} If you want, I can tailor this to your exact use case.`;
   }
 
   if (racContext) {
-    const racSummary = summarizeSnippet(racContext.replace(/RAC \d+:/g, ''));
+    const racSummary = sanitizeKnowledgeReplySnippet(
+      summarizeSnippet(racContext.replace(/RAC \d+:/g, '')),
+      210,
+    );
     if (racSummary) {
-      return `${compactSentence(racSummary, 210)} I can clarify the exact part you care about.`;
+      return `${racSummary} I can clarify the exact part you care about.`;
     }
   }
 
   if (bot.knowledge?.trim()) {
-    const summary = summarizeSnippet(bot.knowledge);
+    const summary = sanitizeKnowledgeReplySnippet(
+      summarizeSnippet(bot.knowledge),
+      210,
+    );
     if (summary) {
-      return `${compactSentence(summary, 210)} Tell me which point you want in more detail.`;
+      return `${summary} Tell me which point you want in more detail.`;
     }
   }
 
@@ -204,7 +214,37 @@ export function looksLikeInstructionEcho(value: string) {
       ?.length || 0;
   if (instructionLineCount >= 3 && compact.length > 180) return true;
 
+  if (
+    /^you are [^.!?]{0,260}\b(objective:|instructions?:|rules?:|campaign:)\b/i.test(
+      compact,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^you are [^.!?]{0,260}\b(calling on behalf of|outbound|sales qualification specialist|sales specialist)\b/i.test(
+      compact,
+    ) &&
+    /\b(objective:|introduce|qualify|campaign)\b/i.test(compact)
+  ) {
+    return true;
+  }
+
   return false;
+}
+
+function sanitizeKnowledgeReplySnippet(value: string, maxLength = 220) {
+  const compact = compactSentence(value || '', maxLength).replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  return looksLikeInstructionEcho(compact) ? '' : compact;
+}
+
+export function sanitizeFallbackReply(value: string) {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (!compact) return SAFE_CHAT_FALLBACK_REPLY;
+  if (looksLikeInstructionEcho(compact)) return SAFE_CHAT_FALLBACK_REPLY;
+  return compact;
 }
 
 export function finalizeChatReply(
@@ -212,7 +252,7 @@ export function finalizeChatReply(
   fallback: string,
   history: string,
 ) {
-  const fallbackReply = fallback.replace(/\s+/g, ' ').trim();
+  const fallbackReply = sanitizeFallbackReply(fallback);
   const candidate = llmReply.replace(/\s+/g, ' ').trim();
   if (!candidate) return fallbackReply;
   if (looksLikeInstructionEcho(candidate)) return fallbackReply;
