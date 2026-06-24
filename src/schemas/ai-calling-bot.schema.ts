@@ -33,6 +33,21 @@ export class AiCallingBot {
   personality: string;
 
   @Prop()
+  botObjective?: string;
+
+  @Prop()
+  botGoal?: string;
+
+  @Prop()
+  botFlow?: string;
+
+  @Prop()
+  knowledgeBaseText?: string;
+
+  @Prop({ default: false })
+  contextOutsideKnowledgeBase: boolean;
+
+  @Prop()
   knowledge?: string;
 
   @Prop({

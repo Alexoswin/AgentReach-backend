@@ -44,6 +44,43 @@ export class CreateAiCallingBotDto {
 
   @ApiProperty({
     required: false,
+    example: 'Qualify user fit and drive a clean next step.',
+  })
+  @IsString()
+  @IsOptional()
+  botObjective?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Collect core qualification and secure follow-up.',
+  })
+  @IsString()
+  @IsOptional()
+  botGoal?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Greet -> qualify -> answer -> confirm next step -> close.',
+  })
+  @IsString()
+  @IsOptional()
+  botFlow?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Product details and qualification criteria.',
+  })
+  @IsString()
+  @IsOptional()
+  knowledgeBaseText?: string;
+
+  @ApiProperty({ required: false, example: false })
+  @IsBoolean()
+  @IsOptional()
+  contextOutsideKnowledgeBase?: boolean;
+
+  @ApiProperty({
+    required: false,
     example: 'Offer details, target customer, qualification points',
   })
   @IsString()

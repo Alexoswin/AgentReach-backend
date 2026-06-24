@@ -13,10 +13,10 @@ export const MIN_TRAINING_TEXT_LENGTH = 40;
 export const EMBEDDING_BATCH_SIZE = 32;
 export const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 export const VERTEX_LOCATION = 'global';
-export const DEFAULT_CHAT_MODEL = 'gemini-2.0-flash-001';
+export const DEFAULT_CHAT_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_EMBEDDING_MODEL = 'text-embedding-005';
-export const DEFAULT_TOP_K = 4;
-export const MAX_TOP_K = 8;
+export const DEFAULT_TOP_K = 5;
+export const MAX_TOP_K = 10;
 export const DEFAULT_PROMPT_EXPOSURE_TERMS = [
   'system prompt',
   'prompt',

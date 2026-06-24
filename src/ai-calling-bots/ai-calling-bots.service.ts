@@ -101,7 +101,65 @@ export class AiCallingBotsService {
         getDefaultVoice(this.configService),
       ),
     );
-    return this.db.aiCallingBot.create({ data: normalized });
+    const bot = await this.db.aiCallingBot.create({ data: normalized });
+
+    const knowledgeBaseText =
+      dto.knowledgeBaseText?.trim() || normalized.knowledgeBaseText || '';
+    if (!knowledgeBaseText) return bot;
+
+    await this.train(bot.id, {
+      content: knowledgeBaseText,
+      sourceName: 'knowledge-base-text',
+      replace: true,
+      metadata: {
+        sourceType: 'text',
+        sourceName: 'knowledge-base-text',
+      },
+    });
+    return this.findOne(bot.id);
+  }
+
+  async createWithKnowledgeBase(
+    dto: CreateAiCallingBotDto,
+    knowledgeBasePdf?: TrainingPdfFile,
+  ) {
+    const normalized = normalizeBotPayload(dto, (rawVoice, language) =>
+      normalizeGoogleVoice(
+        rawVoice,
+        language,
+        this.getGoogleVoiceProfiles(),
+        getDefaultVoice(this.configService),
+      ),
+    );
+    const bot = await this.db.aiCallingBot.create({ data: normalized });
+    const knowledgeBaseText =
+      dto.knowledgeBaseText?.trim() ||
+      (typeof normalized.knowledgeBaseText === 'string'
+        ? normalized.knowledgeBaseText
+        : '') ||
+      '';
+
+    let trained = false;
+    if (knowledgeBaseText) {
+      await this.train(bot.id, {
+        content: knowledgeBaseText,
+        sourceName: 'knowledge-base-text',
+        replace: true,
+        metadata: {
+          sourceType: 'text',
+          sourceName: 'knowledge-base-text',
+        },
+      });
+      trained = true;
+    }
+
+    if (knowledgeBasePdf) {
+      await this.trainFromPdf(bot.id, knowledgeBasePdf, {
+        sourceName: knowledgeBasePdf.originalname,
+        replace: trained ? 'false' : 'true',
+      });
+    }
+    return this.findOne(bot.id);
   }
 
   async update(id: string, dto: Partial<CreateAiCallingBotDto>) {
@@ -273,6 +331,14 @@ export class AiCallingBotsService {
     if (!message) throw new BadRequestException('Chat message is required.');
     const history = dto.history?.trim() || '';
     const bot = await this.findOne(id);
+    const effectiveGoal = String(
+      bot.botGoal || bot.goal || 'Understand user needs and capture a clear next step.',
+    ).trim();
+    const effectiveRules = String(bot.botFlow || bot.rules || '').trim();
+    const effectiveKnowledge = String(
+      bot.knowledgeBaseText || bot.knowledge || '',
+    ).trim();
+    const strictKnowledgeBound = bot.contextOutsideKnowledgeBase !== true;
     const topK = this.resolveTopK(dto.topK ?? getDefaultTopK(this.configService));
     const retrievalQuery = buildRacQuery(
       message,
@@ -297,16 +363,23 @@ export class AiCallingBotsService {
       };
     }
 
+    if (strictKnowledgeBound && results.length === 0) {
+      return {
+        reply:
+          "I don't have enough information in the knowledge base to answer that yet. Please add more knowledge-base content or upload a PDF.",
+        sources: [],
+      };
+    }
+
     const fallback = buildFallbackChatReply(
       message,
       {
         name: bot.name || 'Agent',
         role: bot.role || 'calling specialist',
-        goal:
-          bot.goal || 'Understand user needs and capture a clear next step.',
+        goal: effectiveGoal,
         personality: bot.personality || 'warm and concise',
-        knowledge: bot.knowledge || '',
-        rules: bot.rules || '',
+        knowledge: effectiveKnowledge,
+        rules: effectiveRules,
       },
       results,
       racContext,
@@ -322,18 +395,18 @@ export class AiCallingBotsService {
       {
         name: bot.name || 'Agent',
         role: bot.role || 'calling specialist',
-        goal:
-          bot.goal || 'Understand user needs and capture a clear next step.',
+        goal: effectiveGoal,
         personality: bot.personality || 'warm, concise, and helpful',
         language: bot.language || 'en-IN',
-        knowledge: bot.knowledge || '',
-        rules: bot.rules || '',
+        knowledge: effectiveKnowledge,
+        rules: effectiveRules,
         greeting: bot.greeting || '',
       },
       message,
       history,
       results,
       racContext,
+      strictKnowledgeBound,
     );
     const reply = finalizeChatReply(llmReply, fallback, history);
 
@@ -432,6 +505,7 @@ export class AiCallingBotsService {
     history: string,
     results: RetrievedKnowledge[],
     racContext: string,
+    strictKnowledgeBound: boolean,
   ) {
     try {
       const serviceAccount = await this.getGoogleServiceAccountCredentials();
@@ -444,6 +518,9 @@ export class AiCallingBotsService {
       const effectiveRacContext =
         racContext || buildRacContextFromResults(results, getDefaultTopK(this.configService));
       const PRE_USER_PROMPT = buildChatPreUserPrompt(effectiveRacContext);
+      const strictModePrompt = strictKnowledgeBound
+        ? '\n\n<strict_grounding>\nUse only RAC context and bot knowledge for factual claims. If details are missing, say you do not have enough knowledge-base context.\n</strict_grounding>'
+        : '';
       const USER_PROMPT = buildChatUserPrompt(message, history);
 
       const model = getChatModel(this.configService);
@@ -465,7 +542,7 @@ export class AiCallingBotsService {
                 role: 'user',
                 parts: [
                   {
-                    text: `${PRE_USER_PROMPT}\n\n${USER_PROMPT}`,
+                    text: `${PRE_USER_PROMPT}${strictModePrompt}\n\n${USER_PROMPT}`,
                   },
                 ],
               },
@@ -511,10 +588,10 @@ export class AiCallingBotsService {
       voice: bot.voice,
       botName: bot.name,
       botRole: bot.role,
-      botGoal: bot.goal,
+      botGoal: bot.botGoal || bot.goal,
       botPersonality: bot.personality,
-      botKnowledge: bot.knowledge,
-      botRules: bot.rules,
+      botKnowledge: bot.knowledgeBaseText || bot.knowledge,
+      botRules: bot.botFlow || bot.rules,
       botObjectionHandling: bot.objectionHandling,
       botGreeting: bot.greeting,
     };

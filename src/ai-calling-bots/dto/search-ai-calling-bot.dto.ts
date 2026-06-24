@@ -6,7 +6,7 @@ export class SearchAiCallingBotDto {
   @IsString()
   query: string;
 
-  @ApiProperty({ required: false, example: 4 })
+  @ApiProperty({ required: false, example: 5 })
   @IsNumber()
   @IsOptional()
   topK?: number;

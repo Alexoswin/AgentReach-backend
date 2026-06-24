@@ -163,3 +163,140 @@ describe('AiCallingBotsService.trainFromPdf', () => {
     ).not.toHaveBeenCalled();
   });
 });
+
+describe('AiCallingBotsService.createWithKnowledgeBase', () => {
+  it('creates and trains from knowledge base text', async () => {
+    const service = new AiCallingBotsService({
+      aiCallingBot: {
+        create: jest.fn().mockResolvedValue({ id: 'bot-1', name: 'Bot One' }),
+      },
+    } as any);
+    const trainSpy = jest
+      .spyOn(service, 'train')
+      .mockResolvedValue({} as any);
+    const trainFromPdfSpy = jest
+      .spyOn(service, 'trainFromPdf')
+      .mockResolvedValue({} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'bot-1' } as any);
+
+    await service.createWithKnowledgeBase({
+      name: 'Bot One',
+      knowledgeBaseText: 'Knowledge base content',
+    } as any);
+
+    expect(trainSpy).toHaveBeenCalledWith(
+      'bot-1',
+      expect.objectContaining({
+        sourceName: 'knowledge-base-text',
+        replace: true,
+      }),
+    );
+    expect(trainFromPdfSpy).not.toHaveBeenCalled();
+  });
+
+  it('creates and trains from PDF when provided', async () => {
+    const service = new AiCallingBotsService({
+      aiCallingBot: {
+        create: jest.fn().mockResolvedValue({ id: 'bot-2', name: 'Bot Two' }),
+      },
+    } as any);
+    const trainSpy = jest
+      .spyOn(service, 'train')
+      .mockResolvedValue({} as any);
+    const trainFromPdfSpy = jest
+      .spyOn(service, 'trainFromPdf')
+      .mockResolvedValue({} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'bot-2' } as any);
+
+    await service.createWithKnowledgeBase(
+      { name: 'Bot Two' } as any,
+      {
+        originalname: 'kb.pdf',
+        mimetype: 'application/pdf',
+        size: 1024,
+        buffer: Buffer.from('pdf'),
+      },
+    );
+
+    expect(trainSpy).not.toHaveBeenCalled();
+    expect(trainFromPdfSpy).toHaveBeenCalledWith(
+      'bot-2',
+      expect.any(Object),
+      expect.objectContaining({ replace: 'true', sourceName: 'kb.pdf' }),
+    );
+  });
+
+  it('appends PDF training after KB text training', async () => {
+    const service = new AiCallingBotsService({
+      aiCallingBot: {
+        create: jest.fn().mockResolvedValue({ id: 'bot-3', name: 'Bot Three' }),
+      },
+    } as any);
+    const trainSpy = jest
+      .spyOn(service, 'train')
+      .mockResolvedValue({} as any);
+    const trainFromPdfSpy = jest
+      .spyOn(service, 'trainFromPdf')
+      .mockResolvedValue({} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'bot-3' } as any);
+
+    await service.createWithKnowledgeBase(
+      {
+        name: 'Bot Three',
+        knowledgeBaseText: 'Primary KB content',
+      } as any,
+      {
+        originalname: 'kb.pdf',
+        mimetype: 'application/pdf',
+        size: 1024,
+        buffer: Buffer.from('pdf'),
+      },
+    );
+
+    expect(trainSpy).toHaveBeenCalledTimes(1);
+    expect(trainFromPdfSpy).toHaveBeenCalledWith(
+      'bot-3',
+      expect.any(Object),
+      expect.objectContaining({ replace: 'false' }),
+    );
+  });
+});
+
+describe('AiCallingBotsService.chat knowledge boundary', () => {
+  it('returns strict fallback when contextOutsideKnowledgeBase is false and no retrieval results', async () => {
+    const service = new AiCallingBotsService({} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({
+      id: 'bot-1',
+      name: 'Bot',
+      role: 'specialist',
+      personality: 'calm',
+      ragEnabled: true,
+      contextOutsideKnowledgeBase: false,
+    } as any);
+    jest.spyOn(service, 'searchBotKnowledge').mockResolvedValue([]);
+
+    const result = await service.chat('bot-1', { message: 'What is pricing?' });
+    expect(String((result as any).reply || '')).toMatch(
+      /don't have enough information in the knowledge base/i,
+    );
+  });
+
+  it('continues when contextOutsideKnowledgeBase is true and no retrieval results', async () => {
+    const service = new AiCallingBotsService({} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({
+      id: 'bot-2',
+      name: 'Bot',
+      role: 'specialist',
+      personality: 'calm',
+      ragEnabled: true,
+      contextOutsideKnowledgeBase: true,
+    } as any);
+    jest.spyOn(service, 'searchBotKnowledge').mockResolvedValue([]);
+    jest
+      .spyOn(service as any, 'generateChatReplyWithGemini')
+      .mockResolvedValue('');
+
+    const result = await service.chat('bot-2', { message: 'Hello' });
+    expect(String((result as any).reply || '').length).toBeGreaterThan(0);
+  });
+});

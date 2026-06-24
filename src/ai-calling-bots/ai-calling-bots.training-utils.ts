@@ -13,6 +13,12 @@ export function parseMultipartBoolean(value?: string) {
   return !['false', '0', 'no', 'off'].includes(value.toLowerCase());
 }
 
+function parseBooleanLike(value: unknown) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return parseMultipartBoolean(value);
+  return undefined;
+}
+
 export function parseMultipartNumber(value?: string) {
   if (value === undefined || value === '') return undefined;
   const parsed = Number(value);
@@ -56,6 +62,10 @@ export function normalizeBotPayload(
     'role',
     'goal',
     'personality',
+    'botObjective',
+    'botGoal',
+    'botFlow',
+    'knowledgeBaseText',
     'knowledge',
     'rules',
     'objectionHandling',
@@ -65,7 +75,28 @@ export function normalizeBotPayload(
   if (typeof dto.voice === 'string') {
     data.voice = normalizeVoice(dto.voice, dto.language);
   }
-  if (typeof dto.ragEnabled === 'boolean') data.ragEnabled = dto.ragEnabled;
+  const ragEnabled = parseBooleanLike(dto.ragEnabled);
+  if (typeof ragEnabled === 'boolean') data.ragEnabled = ragEnabled;
+
+  const contextOutsideKnowledgeBase = parseBooleanLike(
+    dto.contextOutsideKnowledgeBase,
+  );
+  if (typeof contextOutsideKnowledgeBase === 'boolean') {
+    data.contextOutsideKnowledgeBase = contextOutsideKnowledgeBase;
+  }
+
+  if (typeof data.botGoal === 'string' && !String(data.goal || '').trim()) {
+    data.goal = data.botGoal;
+  }
+  if (typeof data.botFlow === 'string' && !String(data.rules || '').trim()) {
+    data.rules = data.botFlow;
+  }
+  if (
+    typeof data.knowledgeBaseText === 'string' &&
+    !String(data.knowledge || '').trim()
+  ) {
+    data.knowledge = data.knowledgeBaseText;
+  }
   if (dto.metadata && typeof dto.metadata === 'object') {
     data.metadata = dto.metadata;
   }

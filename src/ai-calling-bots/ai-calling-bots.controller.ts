@@ -16,9 +16,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AiCallingBotsService } from './ai-calling-bots.service';
 import { CreateAiCallingBotDto } from './dto/create-ai-calling-bot.dto';
+import { CreateAiCallingBotMultipartDto } from './dto/create-ai-calling-bot-multipart.dto';
 import { SearchAiCallingBotDto } from './dto/search-ai-calling-bot.dto';
-import { TrainAiCallingBotDto } from './dto/train-ai-calling-bot.dto';
-import { TrainAiCallingBotPdfDto } from './dto/train-ai-calling-bot-pdf.dto';
 import { ChatAiCallingBotDto } from './dto/chat-ai-calling-bot.dto';
 
 const MAX_TRAINING_PDF_BYTES = 8 * 1024 * 1024;
@@ -41,10 +40,50 @@ export class AiCallingBotsController {
   }
 
   @Post()
+  @UseInterceptors(
+    FileInterceptor('knowledgeBasePdf', {
+      limits: { fileSize: MAX_TRAINING_PDF_BYTES },
+      fileFilter: (_req, file, cb) => {
+        const isPdf =
+          file.mimetype === 'application/pdf' ||
+          file.originalname?.toLowerCase().endsWith('.pdf');
+        if (!isPdf) {
+          cb(new BadRequestException('Knowledge base file must be a PDF'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
   @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Create an AI calling bot' })
-  create(@Body() dto: CreateAiCallingBotDto) {
-    return this.aiCallingBotsService.create(dto);
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', example: 'Reach Agent Calling Bot' },
+        description: { type: 'string' },
+        personality: { type: 'string' },
+        botObjective: { type: 'string' },
+        botGoal: { type: 'string' },
+        botFlow: { type: 'string' },
+        knowledgeBaseText: { type: 'string' },
+        contextOutsideKnowledgeBase: { type: 'string', example: 'false' },
+        ragEnabled: { type: 'string', example: 'true' },
+        knowledgeBasePdf: { type: 'string', format: 'binary' },
+      },
+      required: ['name'],
+    },
+  })
+  create(
+    @Body() dto: CreateAiCallingBotMultipartDto,
+    @UploadedFile() knowledgeBasePdf?: Express.Multer.File,
+  ) {
+    return this.aiCallingBotsService.createWithKnowledgeBase(
+      dto as unknown as CreateAiCallingBotDto,
+      knowledgeBasePdf,
+    );
   }
 
   @Get(':id')
@@ -64,56 +103,6 @@ export class AiCallingBotsController {
   @ApiOperation({ summary: 'Delete an AI calling bot and its embeddings' })
   remove(@Param('id') id: string) {
     return this.aiCallingBotsService.remove(id);
-  }
-
-  @Post(':id/train-pdf')
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: { fileSize: MAX_TRAINING_PDF_BYTES },
-      fileFilter: (_req, file, cb) => {
-        const isPdf =
-          file.mimetype === 'application/pdf' ||
-          file.originalname?.toLowerCase().endsWith('.pdf');
-        if (!isPdf) {
-          cb(new BadRequestException('Training file must be a PDF'), false);
-          return;
-        }
-        cb(null, true);
-      },
-    }),
-  )
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Train an AI calling bot from a PDF file' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-        replace: { type: 'string', example: 'true' },
-        chunkSize: { type: 'string', example: '900' },
-        chunkOverlap: { type: 'string', example: '120' },
-        sourceName: { type: 'string', example: 'product-playbook.pdf' },
-      },
-      required: ['file'],
-    },
-  })
-  trainPdf(
-    @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
-    @Body() dto: TrainAiCallingBotPdfDto,
-  ) {
-    return this.aiCallingBotsService.trainFromPdf(id, file, dto);
-  }
-
-  @Post(':id/train')
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({ summary: 'Train an AI calling bot with RAG embeddings' })
-  train(@Param('id') id: string, @Body() dto: TrainAiCallingBotDto) {
-    return this.aiCallingBotsService.train(id, dto);
   }
 
   @Post(':id/search')

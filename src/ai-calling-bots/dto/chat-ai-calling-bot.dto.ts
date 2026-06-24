@@ -6,11 +6,11 @@ export class ChatAiCallingBotDto {
   @IsString()
   message: string;
 
-  @ApiProperty({ required: false, example: 4, minimum: 1, maximum: 8 })
+  @ApiProperty({ required: false, example: 5, minimum: 1, maximum: 10 })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(8)
+  @Max(10)
   topK?: number;
 
   @ApiProperty({
