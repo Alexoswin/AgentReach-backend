@@ -182,4 +182,20 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     expect(speechCampaign.voice).toBe('hi-IN-Chirp3-HD-Kore');
     expect(speechCampaign.voiceQuality).toBe('hd');
   });
+
+  it('infers language from a selected Google voice when call language is missing', () => {
+    const service = createService();
+
+    const speechCampaign = service.buildCallSpeechCampaign({
+      selectedVoice: 'google:hi-IN-Chirp3-HD-Kore',
+      campaign: {
+        language: 'en-US',
+        voice: 'google:en-US-Chirp3-HD-Puck',
+        voiceQuality: 'hd',
+      },
+    });
+
+    expect(speechCampaign.language).toBe('hi-IN');
+    expect(speechCampaign.voice).toBe('google:hi-IN-Chirp3-HD-Kore');
+  });
 });

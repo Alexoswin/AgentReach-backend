@@ -12,6 +12,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = {
+      log: jest.fn(),
       debug: jest.fn(),
       warn: jest.fn(),
       error: jest.fn(),
@@ -19,8 +20,14 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     service.configService = {
       get: jest.fn((key: string, fallback?: unknown) => {
         if (key === 'PUBLIC_API_URL') return 'https://backend.example.com/api';
+        if (key === 'AI_CALLING_MODE') return 'twilio_gather';
         return fallback;
       }),
+    };
+    service.geminiLiveService = {
+      assertReady: jest.fn().mockResolvedValue(undefined),
+      initializeForLaunch: jest.fn().mockResolvedValue(undefined),
+      openCallSession: jest.fn().mockResolvedValue({ close: jest.fn() }),
     };
     service.aiCallingBotsService = {
       buildCallingContext: jest.fn().mockResolvedValue(''),
@@ -189,7 +196,102 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     expect(service.buildTwilioSayHangup).toHaveBeenCalledTimes(2);
   });
 
-  it('switches the live call to Hindi when the contact speaks in Hindi', async () => {
+  it('marks a call failed when Gemini Live session initialization fails', async () => {
+    const service = createService();
+    service.getCallWithContext = jest.fn().mockResolvedValue({
+      id: 'call-1',
+      selectedLanguage: 'en-IN',
+      selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
+      sessionErrors: [],
+      campaign: {
+        objective: 'Book a demo',
+        prompt: 'Call about demo qualification.',
+        language: 'en-IN',
+        voice: 'google:en-IN-Chirp3-HD-Puck',
+        botName: 'Alex',
+        botRole: 'calling specialist',
+        botPersonality: 'warm and concise',
+        botKnowledge: 'Product details',
+        botRules: 'Keep responses short',
+        botObjectionHandling: 'Offer callback',
+      },
+      contact: {
+        firstName: 'Sam',
+        lastName: 'Lee',
+        company: 'Acme',
+      },
+    });
+    service.geminiLiveService.openCallSession.mockRejectedValue(
+      new Error('setup failed'),
+    );
+
+    await expect(
+      service.initializeGeminiLiveCallSession('call-1'),
+    ).rejects.toThrow('Gemini Live session could not be initialized.');
+
+    expect(service.db.callHistory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          outcome: 'FAILED',
+          sessionStatus: 'failed',
+          errorMessage: expect.stringContaining('setup failed'),
+          sessionErrors: expect.arrayContaining([
+            expect.objectContaining({
+              errorCode: 'GEMINI_LIVE_SESSION_INIT_FAILED',
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it('passes the user-selected voice and language into Gemini Live call sessions', async () => {
+    const service = createService();
+    service.getCallWithContext = jest.fn().mockResolvedValue({
+      id: 'call-1',
+      selectedLanguage: 'hi-IN',
+      selectedVoice: 'google:hi-IN-Chirp3-HD-Kore',
+      sessionErrors: [],
+      campaign: {
+        objective: 'Book a demo',
+        prompt: 'Call about demo qualification.',
+        language: 'en-US',
+        voice: 'google:en-US-Chirp3-HD-Puck',
+        botName: 'Alex',
+        botRole: 'calling specialist',
+        botPersonality: 'warm and concise',
+        botKnowledge: 'Product details',
+        botRules: 'Keep responses short',
+        botObjectionHandling: 'Offer callback',
+      },
+      contact: {
+        firstName: 'Sam',
+        lastName: 'Lee',
+        company: 'Acme',
+      },
+    });
+
+    await service.initializeGeminiLiveCallSession('call-1');
+
+    expect(service.geminiLiveService.openCallSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voiceName: 'Kore',
+        systemInstruction: expect.stringContaining('Selected language: hi-IN'),
+      }),
+    );
+    expect(
+      service.geminiLiveService.openCallSession.mock.calls[0][0]
+        .systemInstruction,
+    ).toContain('Selected voice: google:hi-IN-Chirp3-HD-Kore');
+    expect(
+      service.geminiLiveService.openCallSession.mock.calls[0][0]
+        .systemInstruction,
+    ).toContain('ONLY in Hindi');
+  });
+
+  it('keeps the user-selected language and voice when the contact speaks another language', async () => {
     const service = createService();
     service.db.callHistory.findUnique.mockResolvedValue({
       id: 'call-1',
@@ -237,13 +339,13 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       expect.objectContaining({
         where: { id: 'call-1' },
         data: expect.objectContaining({
-          selectedLanguage: 'hi-IN',
-          selectedVoice: 'google:hi-IN-Chirp3-HD-Puck',
+          selectedLanguage: 'en-IN',
+          selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
         }),
       }),
     );
-    expect(twiml).toContain('language="hi-IN"');
-    expect(twiml).toMatch(/सिएरा|फीचर्स|कॉलबैक/);
+    expect(twiml).toContain('language="en-IN"');
+    expect(twiml).not.toContain('language="hi-IN"');
   });
 
   it('keeps the selected voice family during live turns when language stays the same', async () => {
@@ -410,6 +512,114 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       ]),
     );
     expect(result.message).toContain('relaunched');
+  });
+
+  it('blocks launch before dialing when Gemini Live preflight fails', async () => {
+    const service = createService();
+    service.configService.get.mockImplementation(
+      (key: string, fallback?: unknown) => {
+        if (key === 'PUBLIC_API_URL') return 'https://backend.example.com/api';
+        if (key === 'AI_CALLING_MODE') return 'gemini_live';
+        if (key === 'AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK') return 'false';
+        return fallback;
+      },
+    );
+    service.geminiLiveService.initializeForLaunch.mockRejectedValue(
+      new Error('missing key'),
+    );
+    service.resetCallsForRelaunch = jest.fn();
+    service.db.systemSettings.findUnique.mockResolvedValue({
+      twilioStatus: 'CONNECTED',
+      twilioAccountSid: 'AC123',
+      twilioAuthToken: 'secret',
+      twilioPhoneNumber: '+15550000000',
+    });
+    service.db.callingCampaign.findUnique.mockResolvedValue({
+      id: 'campaign-1',
+      status: 'DRAFT',
+      language: 'en-IN',
+      voice: 'google:en-IN-Chirp3-HD-Puck',
+      voiceQuality: 'standard',
+      calls: [
+        {
+          id: 'call-1',
+          outcome: 'PENDING',
+          contact: { phoneNumber: '+15550000001' },
+        },
+      ],
+    });
+    global.fetch = jest.fn();
+
+    await expect(service.launchCampaign('campaign-1')).rejects.toThrow(
+      'Gemini Live is not ready: missing key. AI calling was not started.',
+    );
+
+    expect(service.geminiLiveService.initializeForLaunch).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(service.resetCallsForRelaunch).not.toHaveBeenCalled();
+    expect(service.db.callingCampaign.update).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('checks Gemini Live readiness before queueing Twilio calls', async () => {
+    const service = createService();
+    service.configService.get.mockImplementation(
+      (key: string, fallback?: unknown) => {
+        if (key === 'PUBLIC_API_URL') return 'https://backend.example.com/api';
+        if (key === 'AI_CALLING_MODE') return 'gemini_live';
+        return fallback;
+      },
+    );
+    service.runTwilioOutboundCalls = jest.fn().mockResolvedValue({
+      placed: 1,
+      failed: 0,
+      errors: [],
+    });
+    service.db.systemSettings.findUnique.mockResolvedValue({
+      twilioStatus: 'CONNECTED',
+      twilioAccountSid: 'AC123',
+      twilioAuthToken: 'secret',
+      twilioPhoneNumber: '+15550000000',
+    });
+    service.db.callingCampaign.findUnique.mockResolvedValue({
+      id: 'campaign-1',
+      status: 'DRAFT',
+      language: 'en-IN',
+      voice: 'google:en-IN-Chirp3-HD-Puck',
+      voiceQuality: 'standard',
+      calls: [
+        {
+          id: 'call-1',
+          outcome: 'PENDING',
+          contact: { phoneNumber: '+15550000001' },
+        },
+      ],
+    });
+
+    await service.launchCampaign('campaign-1');
+
+    expect(service.geminiLiveService.initializeForLaunch).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(
+      service.geminiLiveService.initializeForLaunch.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      service.db.callingCampaign.update.mock.invocationCallOrder[0],
+    );
+    expect(
+      service.geminiLiveService.initializeForLaunch.mock.invocationCallOrder[0],
+    ).toBeLessThan(service.runTwilioOutboundCalls.mock.invocationCallOrder[0]);
+    expect(service.db.callingCampaign.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 'campaign-1' },
+      data: { status: 'LAUNCHING' },
+    });
+    expect(service.runTwilioOutboundCalls).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({
+        twilioAccountSid: 'AC123',
+      }),
+    );
   });
 
   it('stops a running campaign and marks cancellable calls as cancelled', async () => {

@@ -11,6 +11,7 @@ import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 import { AiCallingBotsService } from '../ai-calling-bots/ai-calling-bots.service';
 import { decryptSystemSettings } from '../settings/credential-encryption';
+import { GeminiLiveService } from '../ai-calling/gemini-live.service';
 import {
   buildKeywordRegex,
   readBooleanConfig,
@@ -72,7 +73,10 @@ const DEFAULT_LIVE_RAC_QUERY_CHARS = 900;
 const TWILIO_HD_PLAY_ENABLED = true;
 const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const VERTEX_LOCATION = 'global';
+const AI_CALLING_MODE = 'gemini_live';
+const AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK = false;
 const DEFAULT_VERTEX_MODELS = [
+  'gemini-2.5-flash-native-audio-preview-12-2025',
   'gemini-2.5-flash',
   'gemini-2.0-flash-001',
   'gemini-1.5-flash-002',
@@ -159,6 +163,7 @@ export class CallingCampaignsService implements OnModuleInit {
     private db: MongoService,
     private configService: ConfigService,
     private aiCallingBotsService: AiCallingBotsService,
+    private geminiLiveService: GeminiLiveService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -561,16 +566,12 @@ Return ONLY valid JSON with exactly these fields:
 
     const shouldResetForRelaunch =
       forceRelaunch || pendingCallableCalls.length === 0;
-    if (shouldResetForRelaunch) {
-      this.logger.debug(
-        `Relaunch requested for campaign ${id}; resetting ${callableCalls.length} previous calls to PENDING`,
-      );
-      await this.resetCallsForRelaunch(callableCalls);
-    }
 
     if (hasTwilio) {
       this.assertPublicTwilioWebhookUrl();
     }
+
+    await this.assertGeminiLiveReadyBeforeCalling(id);
 
     // FIX 1: Write LAUNCHING first as a distributed entry-lock so any concurrent
     // launch request is rejected before we begin queuing Twilio calls.
@@ -582,6 +583,13 @@ Return ONLY valid JSON with exactly these fields:
     let twilioQueueResult: TwilioQueueResult | null = null;
 
     try {
+      if (shouldResetForRelaunch) {
+        this.logger.debug(
+          `Relaunch requested for campaign ${id}; resetting ${callableCalls.length} previous calls to PENDING`,
+        );
+        await this.resetCallsForRelaunch(callableCalls);
+      }
+
       if (hasTwilio) {
         // Promote to RUNNING now that we are actively placing calls with Twilio.
         await this.db.callingCampaign.update({
@@ -1246,6 +1254,68 @@ Return ONLY valid JSON with exactly these fields:
   // Twilio webhooks
   // ---------------------------------------------------------------------------
 
+  async initializeGeminiLiveCallSession(callId: string) {
+    const call = await this.getCallWithContext(callId);
+    if (!call) {
+      throw new BadRequestException('Call could not be found.');
+    }
+
+    const botProfile = await this.resolveBotProfile(call.campaign);
+    const { language: selectedLanguage, voice: selectedVoice } =
+      this.resolveCallSelectedVoiceConfig(call);
+    const contactName =
+      `${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() ||
+      'Unknown';
+    const languageInstruction =
+      this.buildLiveCallLanguageInstruction(selectedLanguage);
+    const systemInstruction = this.buildLiveCallingAgentPrompt({
+      botProfile,
+      call,
+      contactName,
+      campaignLanguage: selectedLanguage,
+      selectedVoice,
+      conversationLanguage: selectedLanguage,
+      languageInstruction,
+    });
+
+    try {
+      return await this.geminiLiveService.openCallSession({
+        systemInstruction,
+        voiceName: this.extractGeminiVoiceName(selectedVoice),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Gemini Live session failed for call ${callId}: ${reason}`,
+      );
+      await this.db.callHistory
+        .update({
+          where: { id: callId },
+          data: {
+            status: 'FAILED',
+            outcome: 'FAILED',
+            sessionStatus: 'failed',
+            endedAt: new Date(),
+            endCallReason: 'Gemini Live session could not be initialized.',
+            errorMessage: `Gemini Live session could not be initialized: ${reason}`,
+            sessionErrors: [
+              ...(Array.isArray(call.sessionErrors) ? call.sessionErrors : []),
+              {
+                errorCode: 'GEMINI_LIVE_SESSION_INIT_FAILED',
+                errorMessage: reason,
+                timestamp: new Date().toISOString(),
+              },
+            ],
+            timestamp: new Date(),
+          },
+        })
+        .catch(() => undefined);
+      throw new BadRequestException(
+        'Gemini Live session could not be initialized.',
+      );
+    }
+  }
+
   async handleTwilioAnswer(callId: string, body: any = {}) {
     try {
       this.logger.debug(
@@ -1277,13 +1347,8 @@ Return ONLY valid JSON with exactly these fields:
         ? scripts
         : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
       const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
-      const selectedLanguage = this.resolveGoogleVoiceLanguage(
-        call.selectedLanguage || call.campaign.language,
-        call.selectedVoice || call.campaign.voice,
-      );
-      const selectedVoice =
-        call.selectedVoice ||
-        this.resolveGoogleTtsVoice(call.campaign.voice, selectedLanguage);
+      const { language: selectedLanguage, voice: selectedVoice } =
+        this.resolveCallSelectedVoiceConfig(call);
       this.logger.debug(
         `Twilio answer voice config for call ${callId}: language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${call.campaign.voiceQuality || 'standard'}; storedLanguage=${call.selectedLanguage || 'not set'}; storedVoice=${call.selectedVoice || 'not set'}; campaignLanguage=${call.campaign.language || 'not set'}; campaignVoice=${call.campaign.voice || 'not set'}`,
       );
@@ -1320,6 +1385,9 @@ Return ONLY valid JSON with exactly these fields:
           timestamp: new Date(),
         },
       });
+
+      call.selectedLanguage = selectedLanguage;
+      call.selectedVoice = selectedVoice;
 
       const twiml = await this.buildTwilioGather(
         this.buildCallSpeechCampaign(call),
@@ -1428,16 +1496,15 @@ Return ONLY valid JSON with exactly these fields:
         speech,
         withUserTurn,
       );
-      const conversationVoice = this.resolveGoogleTtsVoice(
-        call.selectedVoice || call.campaign.voice,
-        conversationLanguage,
-      );
+      const conversationVoice =
+        call.selectedVoice ||
+        this.resolveGoogleTtsVoice(call.campaign.voice, conversationLanguage);
       if (
         call.selectedLanguage !== conversationLanguage ||
         call.selectedVoice !== conversationVoice
       ) {
         this.logger.debug(
-          `Twilio language switch for call ${callId}; detectedLanguage=${conversationLanguage}; selectedLanguage=${call.selectedLanguage || 'not set'}; selectedVoice=${call.selectedVoice || 'not set'}`,
+          `Twilio voice config resolved for call ${callId}; language=${conversationLanguage}; selectedLanguage=${call.selectedLanguage || 'not set'}; selectedVoice=${call.selectedVoice || 'not set'}`,
         );
       }
       call.selectedLanguage = conversationLanguage;
@@ -1957,13 +2024,13 @@ Return ONLY valid JSON with exactly these fields:
       typeof data.selectedVoice === 'string' ? data.selectedVoice.trim() : '';
 
     const next = { ...data } as Record<string, any>;
-    if (!rawLanguage && selectedLanguage) {
+    if (selectedLanguage) {
       next.language = selectedLanguage;
     } else if (rawLanguage) {
       next.language = rawLanguage;
     }
 
-    if (!rawVoice && selectedVoice) {
+    if (selectedVoice) {
       next.voice = selectedVoice;
     } else if (rawVoice) {
       next.voice = rawVoice;
@@ -2851,17 +2918,20 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       ]);
     const serviceAccount =
       this.parseGoogleServiceAccountCredentials(serviceAccountJson);
-    const fallback = this.buildFallbackCallingTurn(
-      call,
-      latestUserSpeech,
-      scripts,
-      conversationLanguage,
-      ragContext,
-      botProfile,
-    );
+    const operationalFallback = this.shouldUseOperationalCallingFallback();
+    const fallback = operationalFallback
+      ? this.buildOperationalCallingFallback(call, conversationLanguage)
+      : this.buildFallbackCallingTurn(
+          call,
+          latestUserSpeech,
+          scripts,
+          conversationLanguage,
+          ragContext,
+          botProfile,
+        );
     if (!serviceAccount) {
       this.logger.warn(
-        'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
+        `Google service account JSON is missing or invalid for Vertex AI live calling; using ${operationalFallback ? 'operational' : 'scripted'} fallback response.`,
       );
       return fallback;
     }
@@ -2874,10 +2944,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     const campaignLanguage = conversationLanguage;
     const languageInstruction =
       this.buildLiveCallLanguageInstruction(campaignLanguage);
-    const selectedVoice = this.resolveGoogleTtsVoice(
-      call.selectedVoice || call.campaign.voice,
-      campaignLanguage,
-    );
+    const selectedVoice =
+      call.selectedVoice ||
+      this.resolveGoogleTtsVoice(call.campaign.voice, campaignLanguage);
     const idealPath = this.buildLiveCallIdealPath(call.campaign, botProfile);
     const contactName =
       `${call.contact.firstName || ''} ${call.contact.lastName || ''}`.trim() ||
@@ -2907,7 +2976,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       const accessToken = await this.getGoogleTtsAccessToken();
       if (!accessToken) {
         this.logger.warn(
-          'Google service account auth is unavailable for Vertex AI live calling; using scripted fallback response.',
+          `Google service account auth is unavailable for Vertex AI live calling; using ${operationalFallback ? 'operational' : 'scripted'} fallback response.`,
         );
         return fallback;
       }
@@ -2916,6 +2985,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         this.configService.get<string>('VERTEX_AI_MODEL')?.trim() ||
         this.configService.get<string>('GOOGLE_VERTEX_MODEL')?.trim() ||
         '';
+      // Twilio webhook mode is still request/response (speech transcript in, spoken
+      // reply out). We prioritize Gemini Live native-audio models here for best
+      // conversational quality, with text models as safe fallback.
       const defaultModels = this.getDefaultVertexModels();
       const candidateModels = [
         ...(configuredModel ? [configuredModel] : []),
@@ -3017,7 +3089,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       }
 
       this.logger.warn(
-        `Vertex AI live calling turn generation failed; using scripted fallback response. Reason: ${lastFailureReason}`,
+        `Vertex AI live calling turn generation failed; using ${operationalFallback ? 'operational' : 'scripted'} fallback response. Reason: ${lastFailureReason}`,
       );
       return fallback;
     } catch (error) {
@@ -3139,6 +3211,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     conversationLanguage: string,
     botProfile: any,
   ) {
+    if (this.shouldUseOperationalCallingFallback()) {
+      return this.buildOperationalCallingFallback(call, conversationLanguage);
+    }
+
     return this.buildFallbackCallingTurn(
       call,
       latestUserSpeech,
@@ -3147,6 +3223,39 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       '',
       botProfile,
     );
+  }
+
+  private shouldUseOperationalCallingFallback() {
+    return (
+      this.isGeminiLiveCallingMode() && !this.allowsTwilioGatherFallback()
+    );
+  }
+
+  private buildOperationalCallingFallback(
+    call: any,
+    conversationLanguage?: string,
+  ): ConversationGeneration {
+    const language = this.normalizeLanguageCode(conversationLanguage);
+    const reply = this.isHindiLanguage(language)
+      ? 'माफ़ कीजिए, अभी हमारी लाइव वॉइस कनेक्शन में तकनीकी समस्या आ रही है. मैं कॉल यहीं समाप्त कर रहा हूँ, टीम आपसे बाद में संपर्क करेगी.'
+      : "Sorry, I'm having a live voice connection issue right now. I'll end the call here and have the team follow up with you.";
+
+    return {
+      reply,
+      shouldEnd: true,
+      endReason: 'Gemini Live was unavailable during the call.',
+      collectedData: {
+        goalStatus: 'not_possible',
+        requestedNextStep: 'handoff',
+        technicalIssue: 'gemini_live_unavailable',
+      },
+      sentimentScore: 5,
+      keyOutcomes: 'Call ended because Gemini Live was unavailable.',
+      topicsCovered: this.buildTopicsCovered(
+        call.campaign,
+        this.buildBotProfile(call.campaign),
+      ),
+    };
   }
 
   private buildFallbackCallingTurn(
@@ -3279,8 +3388,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     latestUserSpeech: string,
     scripts: Array<Record<string, any>>,
   ) {
+    if (call?.selectedLanguage || call?.selectedVoice) {
+      return this.resolveCallSelectedVoiceConfig(call).language;
+    }
+
     const currentLanguage = this.normalizeLanguageCode(
-      call?.selectedLanguage || call?.campaign?.language,
+      call?.campaign?.language,
     );
     if (currentLanguage === 'hi-IN') {
       return 'hi-IN';
@@ -3302,8 +3415,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return (
       currentLanguage ||
       this.resolveGoogleVoiceLanguage(
-        call?.selectedLanguage || call?.campaign?.language,
-        call?.selectedVoice || call?.campaign?.voice,
+        call?.campaign?.language,
+        call?.campaign?.voice,
       )
     );
   }
@@ -3452,6 +3565,55 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       'VERTEX_LOCATION',
       VERTEX_LOCATION,
     );
+  }
+
+  private getAiCallingMode() {
+    return readStringConfig(
+      this.configService,
+      'AI_CALLING_MODE',
+      AI_CALLING_MODE,
+    )
+      .trim()
+      .toLowerCase();
+  }
+
+  private isGeminiLiveCallingMode() {
+    const mode = this.getAiCallingMode();
+    return !['twilio_gather', 'gather', 'legacy'].includes(mode);
+  }
+
+  private allowsTwilioGatherFallback() {
+    return readBooleanConfig(
+      this.configService,
+      'AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK',
+      AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK,
+    );
+  }
+
+  private async assertGeminiLiveReadyBeforeCalling(campaignId: string) {
+    if (!this.isGeminiLiveCallingMode()) return;
+
+    try {
+      this.logger.log(
+        `Initializing Gemini Live before dialing campaign ${campaignId}`,
+      );
+      await this.geminiLiveService.initializeForLaunch();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (this.allowsTwilioGatherFallback()) {
+        this.logger.warn(
+          `Gemini Live preflight failed for campaign ${campaignId}; continuing because AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK is enabled. Reason: ${reason}`,
+        );
+        return;
+      }
+
+      this.logger.warn(
+        `Gemini Live preflight blocked campaign ${campaignId}: ${reason}`,
+      );
+      throw new BadRequestException(
+        `Gemini Live is not ready: ${reason}. AI calling was not started.`,
+      );
+    }
   }
 
   private getDefaultVertexModels() {
@@ -3645,15 +3807,46 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
   private buildCallSpeechCampaign(call: any) {
     const campaign = call?.campaign || {};
-    const language = this.resolveGoogleVoiceLanguage(
-      call?.selectedLanguage || campaign.language,
-      call?.selectedVoice || campaign.voice,
-    );
-    const voice =
-      call?.selectedVoice ||
-      this.resolveGoogleTtsVoice(campaign.voice, language);
-
+    const { language, voice } = this.resolveCallSelectedVoiceConfig(call);
     return { ...campaign, language, voice };
+  }
+
+  private resolveCallSelectedVoiceConfig(call: any) {
+    const campaign = call?.campaign || {};
+    const selectedLanguage = this.normalizeLanguageCode(call?.selectedLanguage);
+    const selectedVoice =
+      typeof call?.selectedVoice === 'string' ? call.selectedVoice.trim() : '';
+    if (selectedLanguage || selectedVoice) {
+      const selectedVoiceLanguage =
+        this.extractExplicitLanguageFromVoice(selectedVoice);
+      const language = this.resolveGoogleVoiceLanguage(
+        selectedLanguage || selectedVoiceLanguage || campaign.language,
+        selectedVoice || campaign.voice,
+      );
+      return {
+        language,
+        voice:
+          selectedVoice || this.resolveGoogleTtsVoice(campaign.voice, language),
+      };
+    }
+
+    const language = this.resolveGoogleVoiceLanguage(
+      campaign.language,
+      campaign.voice,
+    );
+    return {
+      language,
+      voice: this.resolveGoogleTtsVoice(campaign.voice, language),
+    };
+  }
+
+  private extractExplicitLanguageFromVoice(voice?: string) {
+    const normalized = voice?.trim();
+    if (!normalized) return undefined;
+    if (/hi-IN/i.test(normalized)) return 'hi-IN';
+    if (/en-US/i.test(normalized)) return 'en-US';
+    if (/en-IN/i.test(normalized)) return 'en-IN';
+    return undefined;
   }
 
   private buildSayAttributes(voice?: string, language?: string) {

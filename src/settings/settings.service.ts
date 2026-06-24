@@ -265,15 +265,22 @@ export class SettingsService {
   async testGemini(payload: { googleServiceAccountJson?: string } = {}) {
     const settings = await this.getRawSettings();
     const providedJson = payload.googleServiceAccountJson?.trim();
-    const serviceAccountJson = providedJson || settings?.googleServiceAccountJson || '';
-    if (!serviceAccountJson) {
+    const googleCredentials =
+      providedJson || settings?.googleServiceAccountJson || '';
+    if (!googleCredentials) {
       throw new BadRequestException('Google service account JSON is missing.');
     }
 
     try {
-      await this.getGoogleAccessTokenFromServiceAccount(
-        serviceAccountJson,
-      );
+      const apiKey =
+        this.extractGeminiApiKeyFromSettingsJson(googleCredentials);
+      if (apiKey) {
+        await this.testGeminiApiKey(apiKey);
+      } else {
+        await this.getGoogleAccessTokenFromServiceAccount(
+          googleCredentials,
+        );
+      }
 
       await this.db.systemSettings.update({
         where: { id: 'default' },
@@ -285,7 +292,9 @@ export class SettingsService {
 
       return {
         success: true,
-        message: 'Google service account verified successfully.',
+        message: apiKey
+          ? 'Gemini API key verified successfully.'
+          : 'Google service account verified successfully.',
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
@@ -368,6 +377,79 @@ export class SettingsService {
     return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
       ? normalized
       : undefined;
+  }
+
+  private extractGeminiApiKeyFromSettingsJson(value?: string) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    if (!raw.startsWith('{') && !raw.startsWith('[')) {
+      return this.looksLikeApiKey(raw) ? raw : '';
+    }
+
+    try {
+      return this.findGeminiApiKey(JSON.parse(raw));
+    } catch {
+      return '';
+    }
+  }
+
+  private findGeminiApiKey(value: unknown): string {
+    if (!value || typeof value !== 'object') return '';
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = this.findGeminiApiKey(item);
+        if (found) return found;
+      }
+      return '';
+    }
+
+    const apiKeyFields = new Set([
+      'apikey',
+      'api_key',
+      'geminiapikey',
+      'gemini_api_key',
+      'googlegeminiapikey',
+      'google_gemini_api_key',
+      'googleapikey',
+      'google_api_key',
+    ]);
+    for (const [key, entry] of Object.entries(value)) {
+      const normalizedKey = key.replace(/[^a-z0-9_]/gi, '').toLowerCase();
+      if (
+        apiKeyFields.has(normalizedKey) &&
+        typeof entry === 'string' &&
+        this.looksLikeApiKey(entry)
+      ) {
+        return entry.trim();
+      }
+    }
+
+    for (const entry of Object.values(value)) {
+      const found = this.findGeminiApiKey(entry);
+      if (found) return found;
+    }
+
+    return '';
+  }
+
+  private looksLikeApiKey(value: string) {
+    return /^[A-Za-z0-9_-]{24,}$/.test(value.trim());
+  }
+
+  private async testGeminiApiKey(apiKey: string) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+    );
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new BadRequestException(
+        data?.error?.message ||
+          response.statusText ||
+          'Gemini API key verification failed.',
+      );
+    }
   }
 
   private resolveGoogleVoiceName(voice: string, languageCode: string) {

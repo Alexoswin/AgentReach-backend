@@ -13,7 +13,10 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     service.googleSpeechCache = new Map();
     service.logger = { warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
     service.configService = {
-      get: jest.fn(),
+      get: jest.fn((key: string) => {
+        if (key === 'AI_CALLING_MODE') return 'twilio_gather';
+        return undefined;
+      }),
     };
     service.db = {
       systemSettings: {
@@ -162,6 +165,34 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(service.logger.warn).toHaveBeenCalledWith(
       'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
     );
+  });
+
+  it('uses an operational fallback in Gemini Live mode when generation is unavailable', async () => {
+    const service = createService('');
+    service.configService.get.mockImplementation((key: string) => {
+      if (key === 'AI_CALLING_MODE') return 'gemini_live';
+      if (key === 'AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK') return 'false';
+      return undefined;
+    });
+    global.fetch = jest.fn();
+    const call = createCall();
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Tell me about the product.',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Tell me about the product.',
+        },
+      ],
+    );
+
+    expect(result.shouldEnd).toBe(true);
+    expect(result.reply).toMatch(/live voice connection issue/i);
+    expect(result.reply).not.toContain(call.campaign.botKnowledge);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('uses trained knowledge in fallback when Vertex AI is unavailable', async () => {
@@ -518,6 +549,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
       expiresAt: Date.now() + 3600 * 1000,
     };
     service.configService.get.mockImplementation((key: string) => {
+      if (key === 'AI_CALLING_MODE') return 'twilio_gather';
       if (key === 'AI_CALLING_PROMPT_SCRIPT_TURNS') return 4;
       return undefined;
     });

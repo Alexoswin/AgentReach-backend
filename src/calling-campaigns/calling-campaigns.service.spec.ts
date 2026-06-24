@@ -69,7 +69,7 @@ describe('CallingCampaignsService.normalizeCampaignVoiceInput', () => {
     expect(normalized.selectedVoice).toBeUndefined();
   });
 
-  it('keeps explicit language/voice over selected aliases when both are provided', () => {
+  it('uses selected language/voice over raw campaign values when both are provided', () => {
     const service = Object.create(CallingCampaignsService.prototype);
 
     const normalized = service.normalizeCampaignVoiceInput({
@@ -79,8 +79,8 @@ describe('CallingCampaignsService.normalizeCampaignVoiceInput', () => {
       selectedVoice: 'google:hi-IN-Chirp3-HD-Kore',
     });
 
-    expect(normalized.language).toBe('en-US');
-    expect(normalized.voice).toBe('google:en-US-Chirp3-HD-Puck');
+    expect(normalized.language).toBe('hi-IN');
+    expect(normalized.voice).toBe('google:hi-IN-Chirp3-HD-Kore');
     expect(normalized.selectedLanguage).toBeUndefined();
     expect(normalized.selectedVoice).toBeUndefined();
   });

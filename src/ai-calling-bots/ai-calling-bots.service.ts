@@ -104,7 +104,11 @@ export class AiCallingBotsService {
     const bot = await this.db.aiCallingBot.create({ data: normalized });
 
     const knowledgeBaseText =
-      dto.knowledgeBaseText?.trim() || normalized.knowledgeBaseText || '';
+      dto.knowledgeBaseText?.trim() ||
+      (typeof normalized.knowledgeBaseText === 'string'
+        ? normalized.knowledgeBaseText
+        : '') ||
+      '';
     if (!knowledgeBaseText) return bot;
 
     await this.train(bot.id, {
