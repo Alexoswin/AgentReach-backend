@@ -665,8 +665,11 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     );
   });
 
-  it('does not read saved settings during repeated live turns', async () => {
+  it('uses the saved Gemini API key during repeated live turns', async () => {
     const service = createService();
+    service.db.systemSettings.findUnique.mockResolvedValue({
+      geminiApiKey: 'saved-gemini-key',
+    });
 
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -704,6 +707,14 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       [],
     );
 
-    expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(0);
+    expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(2);
+    expect(service.db.systemSettings.findUnique).toHaveBeenCalledWith({
+      where: { id: 'default' },
+      select: { geminiApiKey: true },
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('key=saved-gemini-key'),
+      expect.any(Object),
+    );
   });
 });

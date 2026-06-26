@@ -16,9 +16,11 @@ type GeminiLiveSessionInput = {
   timeoutMs?: number;
 };
 
-const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_LIVE_PREFLIGHT_TIMEOUT_MS = 5000;
 const GEMINI_LIVE_LAUNCH_TIMEOUT_MS = 20_000;
+const GEMINI_LIVE_PREFLIGHT_MIN_TIMEOUT_MS = 3000;
+const GEMINI_LIVE_LAUNCH_MIN_TIMEOUT_MS = 10_000;
 const GEMINI_LIVE_READY_CACHE_MS = 60_000;
 const GEMINI_LIVE_WS_ENDPOINT =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
@@ -136,7 +138,9 @@ export class GeminiLiveService {
       socket.onopen = () => {
         const setup: Record<string, any> = {
           model: `models/${model}`,
-          responseModalities: ['AUDIO'],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+          },
           systemInstruction: {
             parts: [{ text: input.systemInstruction || '' }],
           },
@@ -145,7 +149,7 @@ export class GeminiLiveService {
         };
 
         if (input.voiceName) {
-          setup.speechConfig = {
+          setup.generationConfig.speechConfig = {
             voiceConfig: {
               prebuiltVoiceConfig: {
                 voiceName: input.voiceName,
@@ -235,14 +239,11 @@ export class GeminiLiveService {
       .trim()
       .replace(/^models\//i, '');
     const aliases: Record<string, string> = {
-      'gemini-2.5-flash-live-preview':
-        'gemini-2.5-flash-native-audio-preview-12-2025',
-      'gemini-live-2.5-flash-preview':
-        'gemini-2.5-flash-native-audio-preview-12-2025',
-      'gemini-live-2.5-flash-preview-native-audio':
-        'gemini-2.5-flash-native-audio-preview-12-2025',
-      'gemini-2.5-flash-preview-native-audio':
-        'gemini-2.5-flash-native-audio-preview-12-2025',
+      'gemini-2.5-flash-live-preview': GEMINI_LIVE_MODEL,
+      'gemini-live-2.5-flash-preview': GEMINI_LIVE_MODEL,
+      'gemini-live-2.5-flash-preview-native-audio': GEMINI_LIVE_MODEL,
+      'gemini-2.5-flash-preview-native-audio': GEMINI_LIVE_MODEL,
+      'gemini-2.5-flash-native-audio-preview-12-2025': GEMINI_LIVE_MODEL,
     };
     return aliases[normalized] || normalized || GEMINI_LIVE_MODEL;
   }
@@ -253,7 +254,7 @@ export class GeminiLiveService {
         this.configService,
         'GEMINI_LIVE_PREFLIGHT_TIMEOUT_MS',
         GEMINI_LIVE_PREFLIGHT_TIMEOUT_MS,
-        1000,
+        GEMINI_LIVE_PREFLIGHT_MIN_TIMEOUT_MS,
         30_000,
       ),
     );
@@ -265,7 +266,7 @@ export class GeminiLiveService {
         this.configService,
         'GEMINI_LIVE_LAUNCH_TIMEOUT_MS',
         GEMINI_LIVE_LAUNCH_TIMEOUT_MS,
-        1000,
+        GEMINI_LIVE_LAUNCH_MIN_TIMEOUT_MS,
         60_000,
       ),
     );

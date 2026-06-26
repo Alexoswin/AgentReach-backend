@@ -85,10 +85,140 @@ describe('GeminiLiveService', () => {
     expect(instances).toHaveLength(1);
     expect(instances[0].url).toContain('key=gemini-key');
     const setup = JSON.parse(instances[0].sent[0]);
-    expect(setup.setup.model).toBe(
-      'models/gemini-2.5-flash-native-audio-preview-12-2025',
-    );
-    expect(setup.setup.responseModalities).toEqual(['AUDIO']);
+    expect(setup.setup.model).toBe('models/gemini-3.1-flash-live-preview');
+    expect(setup.setup.responseModalities).toBeUndefined();
+    expect(setup.setup.generationConfig.responseModalities).toEqual(['AUDIO']);
     expect(instances[0].close).toHaveBeenCalled();
+  });
+
+  it('places Gemini Live speech config inside generationConfig', async () => {
+    const instances: any[] = [];
+
+    class FakeWebSocket {
+      url: string;
+      sent: string[] = [];
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: (event: { reason?: string; code?: number }) => void;
+
+      constructor(url: string) {
+        this.url = url;
+        instances.push(this);
+        setTimeout(() => this.onopen?.(), 0);
+      }
+
+      send(payload: string) {
+        this.sent.push(payload);
+        setTimeout(
+          () =>
+            this.onmessage?.({
+              data: JSON.stringify({ setupComplete: {} }),
+            }),
+          0,
+        );
+      }
+
+      close = jest.fn();
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+    const service = new GeminiLiveService(
+      createConfig({
+        GEMINI_API_KEY: 'gemini-key',
+      }),
+    );
+
+    await service.openCallSession({ voiceName: 'Puck' });
+
+    const setup = JSON.parse(instances[0].sent[0]);
+    expect(setup.setup.speechConfig).toBeUndefined();
+    expect(
+      setup.setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig
+        .voiceName,
+    ).toBe('Puck');
+  });
+
+  it('normalizes stale Gemini Live model aliases to the current Live preview model', async () => {
+    const instances: any[] = [];
+
+    class FakeWebSocket {
+      url: string;
+      sent: string[] = [];
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+
+      constructor(url: string) {
+        this.url = url;
+        instances.push(this);
+        setTimeout(() => this.onopen?.(), 0);
+      }
+
+      send(payload: string) {
+        this.sent.push(payload);
+        setTimeout(
+          () =>
+            this.onmessage?.({
+              data: JSON.stringify({ setupComplete: {} }),
+            }),
+          0,
+        );
+      }
+
+      close = jest.fn();
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+    const service = new GeminiLiveService(
+      createConfig({
+        GEMINI_API_KEY: 'gemini-key',
+        GEMINI_LIVE_MODEL: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      }),
+    );
+
+    await service.assertReady();
+
+    const setup = JSON.parse(instances[0].sent[0]);
+    expect(setup.setup.model).toBe('models/gemini-3.1-flash-live-preview');
+  });
+
+  it('clamps launch preflight timeout so low config cannot block dialing immediately', async () => {
+    const instances: any[] = [];
+
+    class SilentWebSocket {
+      url: string;
+      onopen?: () => void;
+      onclose?: (event: { reason?: string; code?: number }) => void;
+
+      constructor(url: string) {
+        this.url = url;
+        instances.push(this);
+        setTimeout(() => this.onopen?.(), 0);
+      }
+
+      send = jest.fn();
+      close = jest.fn();
+    }
+
+    jest.useFakeTimers();
+    (globalThis as any).WebSocket = SilentWebSocket;
+    const service = new GeminiLiveService(
+      createConfig({
+        GEMINI_API_KEY: 'gemini-key',
+        GEMINI_LIVE_LAUNCH_TIMEOUT_MS: '1000',
+      }),
+    );
+
+    const launch = service.initializeForLaunch();
+    await jest.advanceTimersByTimeAsync(9999);
+    await expect(
+      Promise.race([launch, Promise.resolve('pending')]),
+    ).resolves.toBe('pending');
+
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(launch).rejects.toThrow(
+      'Gemini Live setup timed out after 10000ms',
+    );
+
+    jest.useRealTimers();
   });
 });
