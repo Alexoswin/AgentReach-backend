@@ -50,8 +50,8 @@ export class SettingsController {
   }
 
   @Post('test-gemini')
-  @ApiOperation({ summary: 'Test Google credentials connection' })
-  async testGemini(@Body() body?: { googleServiceAccountJson?: string }) {
+  @ApiOperation({ summary: 'Test Gemini API key connection' })
+  async testGemini(@Body() body?: { geminiApiKey?: string }) {
     return this.settingsService.testGemini(body || {});
   }
 

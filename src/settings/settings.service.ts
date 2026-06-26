@@ -1,5 +1,4 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { createSign } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
@@ -14,8 +13,6 @@ import {
 
 const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
 const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
-const GOOGLE_CLOUD_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
-
 @Injectable()
 export class SettingsService {
   constructor(private db: MongoService) {}
@@ -262,25 +259,14 @@ export class SettingsService {
     }
   }
 
-  async testGemini(payload: { googleServiceAccountJson?: string } = {}) {
-    const settings = await this.getRawSettings();
-    const providedJson = payload.googleServiceAccountJson?.trim();
-    const googleCredentials =
-      providedJson || settings?.googleServiceAccountJson || '';
-    if (!googleCredentials) {
-      throw new BadRequestException('Google service account JSON is missing.');
+  async testGemini(payload: { geminiApiKey?: string } = {}) {
+    const apiKey = await this.getGeminiApiKey(payload.geminiApiKey);
+    if (!apiKey) {
+      throw new BadRequestException('Gemini API key is missing.');
     }
 
     try {
-      const apiKey =
-        this.extractGeminiApiKeyFromSettingsJson(googleCredentials);
-      if (apiKey) {
-        await this.testGeminiApiKey(apiKey);
-      } else {
-        await this.getGoogleAccessTokenFromServiceAccount(
-          googleCredentials,
-        );
-      }
+      await this.testGeminiApiKey(apiKey);
 
       await this.db.systemSettings.update({
         where: { id: 'default' },
@@ -292,9 +278,7 @@ export class SettingsService {
 
       return {
         success: true,
-        message: apiKey
-          ? 'Gemini API key verified successfully.'
-          : 'Google service account verified successfully.',
+        message: 'Gemini API key verified successfully.',
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
@@ -303,7 +287,7 @@ export class SettingsService {
       });
       return {
         success: false,
-        error: error.message || 'Unknown Google credential error',
+        error: error.message || 'Unknown Gemini API key error',
       };
     }
   }
@@ -313,129 +297,10 @@ export class SettingsService {
     language?: string;
     text?: string;
   }) {
-    const settings = await this.getRawSettings();
-    if (!settings?.googleServiceAccountJson) {
-      throw new BadRequestException('Google service account JSON is missing.');
-    }
-
-    const voice = dto.voice?.trim();
-    if (!voice) {
-      throw new BadRequestException('Voice is required.');
-    }
-
-    const accessToken = await this.getGoogleAccessTokenFromServiceAccount(
-      settings.googleServiceAccountJson,
+    void dto;
+    throw new BadRequestException(
+      'Gemini voice preview is disabled. The saved Gemini API key is used for Gemini Live calling, bot chat, embeddings, and campaign generation.',
     );
-    const languageCode = this.normalizeLanguageCode(dto.language) || 'en-IN';
-    const voiceName = this.resolveGoogleVoiceName(voice, languageCode);
-    const text =
-      dto.text?.trim() ||
-      'Hello, this is a quick ReachConvert voice preview.';
-
-    const response = await fetch(
-      'https://texttospeech.googleapis.com/v1/text:synthesize',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          input: { text },
-          voice: {
-            languageCode,
-            name: voiceName,
-          },
-          audioConfig: {
-            audioEncoding: 'MP3',
-            speakingRate: languageCode === 'hi-IN' ? 0.96 : 1.02,
-            pitch: 0,
-          },
-        }),
-      },
-    );
-
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.audioContent) {
-      throw new BadRequestException(
-        data?.error?.message || 'Google voice preview failed.',
-      );
-    }
-
-    return {
-      success: true,
-      voice: voiceName,
-      mimeType: 'audio/mpeg',
-      audioDataUrl: `data:audio/mpeg;base64,${data.audioContent}`,
-    };
-  }
-
-  private normalizeLanguageCode(language?: string) {
-    const normalized = language?.trim();
-    if (normalized === 'hi') return 'hi-IN';
-    if (normalized === 'en') return 'en-US';
-    return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(normalized || '')
-      ? normalized
-      : undefined;
-  }
-
-  private extractGeminiApiKeyFromSettingsJson(value?: string) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-
-    if (!raw.startsWith('{') && !raw.startsWith('[')) {
-      return this.looksLikeApiKey(raw) ? raw : '';
-    }
-
-    try {
-      return this.findGeminiApiKey(JSON.parse(raw));
-    } catch {
-      return '';
-    }
-  }
-
-  private findGeminiApiKey(value: unknown): string {
-    if (!value || typeof value !== 'object') return '';
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const found = this.findGeminiApiKey(item);
-        if (found) return found;
-      }
-      return '';
-    }
-
-    const apiKeyFields = new Set([
-      'apikey',
-      'api_key',
-      'geminiapikey',
-      'gemini_api_key',
-      'googlegeminiapikey',
-      'google_gemini_api_key',
-      'googleapikey',
-      'google_api_key',
-    ]);
-    for (const [key, entry] of Object.entries(value)) {
-      const normalizedKey = key.replace(/[^a-z0-9_]/gi, '').toLowerCase();
-      if (
-        apiKeyFields.has(normalizedKey) &&
-        typeof entry === 'string' &&
-        this.looksLikeApiKey(entry)
-      ) {
-        return entry.trim();
-      }
-    }
-
-    for (const entry of Object.values(value)) {
-      const found = this.findGeminiApiKey(entry);
-      if (found) return found;
-    }
-
-    return '';
-  }
-
-  private looksLikeApiKey(value: string) {
-    return /^[A-Za-z0-9_-]{24,}$/.test(value.trim());
   }
 
   private async testGeminiApiKey(apiKey: string) {
@@ -452,83 +317,13 @@ export class SettingsService {
     }
   }
 
-  private resolveGoogleVoiceName(voice: string, languageCode: string) {
-    const normalizedVoice = voice.trim();
-    const withoutProvider = normalizedVoice.startsWith('google:')
-      ? normalizedVoice.slice('google:'.length)
-      : normalizedVoice;
+  private async getGeminiApiKey(candidate?: string) {
+    const provided = candidate?.trim() || '';
+    if (provided && provided !== MASKED_CREDENTIAL) return provided;
 
-    const rawName = withoutProvider.split('-').at(-1) || 'Puck';
-    const formattedName = `${rawName.charAt(0).toUpperCase()}${rawName
-      .slice(1)
-      .toLowerCase()}`;
-
-    return `${languageCode}-Chirp3-HD-${formattedName || 'Puck'}`;
-  }
-
-  private async getGoogleAccessTokenFromServiceAccount(
-    serviceAccountJson: string,
-  ) {
-    let credentials: any;
-
-    try {
-      credentials = JSON.parse(serviceAccountJson);
-    } catch {
-      throw new BadRequestException('Google service account JSON is invalid JSON.');
-    }
-
-    const clientEmail = String(credentials?.client_email || '').trim();
-    const privateKey = String(credentials?.private_key || '').trim();
-
-    if (!clientEmail || !privateKey) {
-      throw new BadRequestException(
-        'Google service account JSON must include client_email and private_key.',
-      );
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const header = this.base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-    const payload = this.base64UrlEncode(
-      JSON.stringify({
-        iss: clientEmail,
-        scope: GOOGLE_CLOUD_SCOPE,
-        aud: 'https://oauth2.googleapis.com/token',
-        iat: now,
-        exp: now + 3600,
-      }),
+    const settings = await this.getRawSettings();
+    return (
+      settings?.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || ''
     );
-    const unsignedJwt = `${header}.${payload}`;
-    const signature = createSign('RSA-SHA256').update(unsignedJwt).sign(privateKey);
-    const assertion = `${unsignedJwt}.${this.base64UrlEncode(signature)}`;
-
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion,
-      }),
-    });
-
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data?.access_token) {
-      throw new BadRequestException(
-        data?.error_description ||
-          data?.error ||
-          response.statusText ||
-          'Google OAuth token request failed.',
-      );
-    }
-
-    return String(data.access_token);
   }
-
-  private base64UrlEncode(value: string | Buffer) {
-    return Buffer.from(value)
-      .toString('base64')
-      .replace(/=/g, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_');
-  }
-
 }

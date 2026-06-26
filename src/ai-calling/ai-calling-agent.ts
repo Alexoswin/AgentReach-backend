@@ -109,7 +109,7 @@ export function looksLikeInstructionEcho(value: string) {
     .trim();
   const normalized = compact.toLowerCase();
   const directSignals =
-    /<identity>|<general_instructions>|<rules>|<knowledge_policy>|<behavior_rules>|<language_rule>|<security>|<bot_knowledge>|<creator_rules>|<output_contract>|<rac_context>|<response_requirements>|<campaign_setup>|<conversation_policy>|return only valid json|preferred reply language|system prompt|developer instructions|actor name:|greeting style:|role:|persona:/i;
+    /<identity>|<general_instructions>|<rules>|<knowledge_policy>|<behavior_rules>|<language_rule>|<security>|<bot_knowledge>|<creator_rules>|<output_contract>|<rac_context>|<response_requirements>|<campaign_setup>|<conversation_policy>|return only valid json|preferred reply language|system prompt|developer instructions|actor name:|greeting style:|objective:|role:|persona:/i;
   if (directSignals.test(compact)) return true;
 
   const tagLikeTokens = compact.match(/<[a-z_]+>/gi)?.length || 0;
@@ -590,8 +590,9 @@ export function buildFallbackChatReply(
       /i do not yet have enough verified detail|i may have missed the exact detail|i can share verified details/i.test(
         summary,
       );
-    if (summary && !isGenericKnowledgeMiss) {
-      return `${summary} ${buildRoleAlignedFollowup(bot, lowered)}`;
+    const safeSummary = sanitizeKnowledgeReplySnippet(summary, 210);
+    if (safeSummary && !isGenericKnowledgeMiss) {
+      return `${safeSummary} ${buildRoleAlignedFollowup(bot, lowered)}`;
     }
   }
 
@@ -975,9 +976,6 @@ function selectKnowledgeContinuation(
   const agentTurns = scripts.filter(
     (script) => script?.speaker === 'agent',
   ).length;
-  const start = Math.min(
-    agentTurns,
-    Math.max(usefulSentences.length - 1, 0),
-  );
+  const start = Math.min(agentTurns, Math.max(usefulSentences.length - 1, 0));
   return usefulSentences.slice(start, start + 2).join(' ');
 }

@@ -27,6 +27,9 @@ export class SystemSettings {
   openRouterModel: string;
 
   @Prop({ default: '' })
+  geminiApiKey: string;
+
+  @Prop({ default: '' })
   twilioAccountSid: string;
 
   @Prop({ default: '' })
@@ -34,10 +37,6 @@ export class SystemSettings {
 
   @Prop({ default: '' })
   twilioPhoneNumber: string;
-
-
-  @Prop({ default: '' })
-  googleServiceAccountJson: string;
 
   @Prop({ default: 'DISCONNECTED' })
   twilioStatus: string;

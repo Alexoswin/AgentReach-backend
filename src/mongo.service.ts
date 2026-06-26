@@ -118,12 +118,14 @@ export class MongoService implements OnModuleInit {
         awsSecretAccessKey:
           process.env.AWS_KEY || existingSettings?.awsSecretAccessKey || '',
         openRouterApiKey:
-          process.env.OPENROUTER_KEY || existingSettings?.openRouterApiKey || '',
+          process.env.OPENROUTER_KEY ||
+          existingSettings?.openRouterApiKey ||
+          '',
+        geminiApiKey:
+          process.env.GEMINI_API_KEY || existingSettings?.geminiApiKey || '',
         twilioAccountSid: existingSettings?.twilioAccountSid || '',
         twilioAuthToken: existingSettings?.twilioAuthToken || '',
         twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
-        googleServiceAccountJson:
-          existingSettings?.googleServiceAccountJson || '',
         openRouterModel: DEFAULT_OPENROUTER_MODEL,
       }),
       create: encryptSystemSettingsData({
@@ -134,6 +136,7 @@ export class MongoService implements OnModuleInit {
         awsSenderEmail: 'oswin.alex@oswinalex.site',
         openRouterApiKey: process.env.OPENROUTER_KEY || '',
         openRouterModel: DEFAULT_OPENROUTER_MODEL,
+        geminiApiKey: process.env.GEMINI_API_KEY || '',
       }),
     });
 

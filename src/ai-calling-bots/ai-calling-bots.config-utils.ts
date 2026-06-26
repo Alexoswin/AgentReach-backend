@@ -10,7 +10,6 @@ import {
   MAX_TOP_K,
   MAX_TRAINING_PDF_BYTES,
   MIN_TRAINING_TEXT_LENGTH,
-  VERTEX_LOCATION,
 } from './ai-calling-bots.constants';
 import {
   readBooleanConfig,
@@ -192,12 +191,9 @@ export function getEmbeddingBatchSize(configService?: ConfigService) {
   );
 }
 
-export function getVertexLocation(configService?: ConfigService) {
-  return readStringConfig(configService, 'VERTEX_LOCATION', VERTEX_LOCATION);
-}
-
 export function getChatModel(configService?: ConfigService) {
   return (
+    configService?.get<string>('GEMINI_CHAT_MODEL')?.trim() ||
     configService?.get<string>('AI_CALLING_CHAT_MODEL')?.trim() ||
     configService?.get<string>('VERTEX_CHAT_MODEL')?.trim() ||
     configService?.get<string>('VERTEX_AI_MODEL')?.trim() ||
@@ -208,6 +204,7 @@ export function getChatModel(configService?: ConfigService) {
 
 export function getEmbeddingModel(configService?: ConfigService) {
   return (
+    configService?.get<string>('GEMINI_EMBEDDING_MODEL')?.trim() ||
     configService?.get<string>('AI_CALLING_EMBEDDING_MODEL')?.trim() ||
     configService?.get<string>('VERTEX_EMBEDDING_MODEL')?.trim() ||
     DEFAULT_EMBEDDING_MODEL

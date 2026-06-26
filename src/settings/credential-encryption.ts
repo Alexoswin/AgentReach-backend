@@ -12,10 +12,10 @@ export const SYSTEM_CREDENTIAL_FIELDS = [
   'awsAccessKeyId',
   'awsSecretAccessKey',
   'openRouterApiKey',
+  'geminiApiKey',
   'twilioAccountSid',
   'twilioAuthToken',
   'twilioPhoneNumber',
-  'googleServiceAccountJson',
 ] as const;
 
 type SystemCredentialField = (typeof SYSTEM_CREDENTIAL_FIELDS)[number];

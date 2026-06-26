@@ -31,7 +31,7 @@ export class GeminiLiveService {
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly db: MongoService,
+    private readonly db?: MongoService,
   ) {}
 
   async assertReady(input: { timeoutMs?: number } = {}) {
@@ -78,9 +78,7 @@ export class GeminiLiveService {
   ): Promise<GeminiLiveSession> {
     const apiKey = await this.getApiKey();
     if (!apiKey) {
-      throw new Error(
-        'GEMINI_API_KEY is missing and no apiKey/geminiApiKey/googleApiKey field was found in saved Google settings.',
-      );
+      throw new Error('Gemini API key is missing.');
     }
 
     const WebSocketCtor = (globalThis as Record<string, any>).WebSocket;
@@ -196,93 +194,31 @@ export class GeminiLiveService {
   }
 
   private async getApiKey() {
-    const configuredKey =
+    const settingsKey = await this.getSavedGeminiApiKey();
+    return (
+      settingsKey ||
       this.configService.get<string>('GEMINI_API_KEY')?.trim() ||
-      this.configService.get<string>('GOOGLE_GEMINI_API_KEY')?.trim() ||
-      this.configService.get<string>('GOOGLE_API_KEY')?.trim() ||
-      '';
-    if (configuredKey) return configuredKey;
-
-    return this.getApiKeyFromSavedGoogleSettings();
+      process.env.GEMINI_API_KEY?.trim() ||
+      ''
+    );
   }
 
-  private async getApiKeyFromSavedGoogleSettings() {
+  private async getSavedGeminiApiKey() {
+    if (!this.db?.systemSettings) return '';
     try {
       const settings = decryptSystemSettings(
         await this.db.systemSettings.findUnique({
           where: { id: 'default' },
-          select: { googleServiceAccountJson: true },
+          select: { geminiApiKey: true },
         }),
       );
-      return this.extractGeminiApiKeyFromSettingsJson(
-        settings?.googleServiceAccountJson,
-      );
+      return settings?.geminiApiKey?.trim() || '';
     } catch (error) {
       this.logger.warn(
-        `Could not read Gemini API key from saved Google settings: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not read saved Gemini API key: ${error instanceof Error ? error.message : String(error)}`,
       );
       return '';
     }
-  }
-
-  private extractGeminiApiKeyFromSettingsJson(value?: string) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-
-    if (!raw.startsWith('{') && !raw.startsWith('[')) {
-      return this.looksLikeApiKey(raw) ? raw : '';
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      return this.findGeminiApiKey(parsed);
-    } catch {
-      return '';
-    }
-  }
-
-  private findGeminiApiKey(value: unknown): string {
-    if (!value || typeof value !== 'object') return '';
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const found = this.findGeminiApiKey(item);
-        if (found) return found;
-      }
-      return '';
-    }
-
-    const apiKeyFields = new Set([
-      'apikey',
-      'api_key',
-      'geminiapikey',
-      'gemini_api_key',
-      'googlegeminiapikey',
-      'google_gemini_api_key',
-      'googleapikey',
-      'google_api_key',
-    ]);
-    for (const [key, entry] of Object.entries(value)) {
-      const normalizedKey = key.replace(/[^a-z0-9_]/gi, '').toLowerCase();
-      if (
-        apiKeyFields.has(normalizedKey) &&
-        typeof entry === 'string' &&
-        this.looksLikeApiKey(entry)
-      ) {
-        return entry.trim();
-      }
-    }
-
-    for (const entry of Object.values(value)) {
-      const found = this.findGeminiApiKey(entry);
-      if (found) return found;
-    }
-
-    return '';
-  }
-
-  private looksLikeApiKey(value: string) {
-    return /^[A-Za-z0-9_-]{24,}$/.test(value.trim());
   }
 
   private getModel() {

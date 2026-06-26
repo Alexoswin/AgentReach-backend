@@ -5,7 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createSign, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
@@ -58,25 +58,17 @@ type CachedGoogleSpeech = {
   createdAt: number;
 };
 
-type GoogleTtsAccessToken = {
-  accessToken: string;
-  expiresAt: number;
-};
-
 const GOOGLE_TTS_TIMEOUT_MS = 3500;
-const VERTEX_TWILIO_TIMEOUT_MS = 2500;
+const GEMINI_TWILIO_TIMEOUT_MS = 2500;
 const TWILIO_RESPONSE_BUDGET_MS = 5000;
 const TWILIO_SPEECH_TIMEOUT_SECONDS = 1;
-const MAX_VERTEX_LIVE_CALL_MODELS = 2;
+const MAX_GEMINI_LIVE_CALL_MODELS = 2;
 const DEFAULT_LIVE_PROMPT_SCRIPT_TURNS = 14;
 const DEFAULT_LIVE_RAC_QUERY_CHARS = 900;
 const TWILIO_HD_PLAY_ENABLED = true;
-const GOOGLE_TTS_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
-const VERTEX_LOCATION = 'global';
 const AI_CALLING_MODE = 'gemini_live';
 const AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK = false;
-const DEFAULT_VERTEX_MODELS = [
-  'gemini-2.5-flash-native-audio-preview-12-2025',
+const DEFAULT_GEMINI_TEXT_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.0-flash-001',
   'gemini-1.5-flash-002',
@@ -155,7 +147,6 @@ export class CallingCampaignsService implements OnModuleInit {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
   private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
-  private googleTtsAccessToken: GoogleTtsAccessToken | null = null;
   private immediateEndPatternCache: RegExp | null = null;
   private promptExposureTermsCache: string[] | null = null;
 
@@ -330,19 +321,10 @@ export class CallingCampaignsService implements OnModuleInit {
     }
 
     const tone = dto.tone?.trim() || 'warm, natural, concise, and helpful';
-    const serviceAccountJson = await this.getServiceAccountJson();
-    const serviceAccount =
-      this.parseGoogleServiceAccountCredentials(serviceAccountJson);
-    if (!serviceAccount) {
+    const apiKey = await this.getGeminiApiKey();
+    if (!apiKey) {
       this.logger.warn(
-        'Google service account JSON is missing or invalid for campaign generation; using mock campaign.',
-      );
-      return this.buildMockGeneratedCampaign(userPrompt, tone);
-    }
-    const accessToken = await this.getGoogleTtsAccessToken();
-    if (!accessToken) {
-      this.logger.warn(
-        'Google service account auth is unavailable for campaign generation; using mock campaign.',
+        'Gemini API key is missing; using mock campaign generation.',
       );
       return this.buildMockGeneratedCampaign(userPrompt, tone);
     }
@@ -379,17 +361,16 @@ Return ONLY valid JSON with exactly these fields:
 }`;
 
     const model =
-      this.configService.get<string>('VERTEX_CAMPAIGN_MODEL')?.trim() ||
+      this.configService.get<string>('GEMINI_CAMPAIGN_MODEL')?.trim() ||
+      this.configService.get<string>('GEMINI_CHAT_MODEL')?.trim() ||
       this.configService.get<string>('VERTEX_AI_MODEL')?.trim() ||
       this.configService.get<string>('GOOGLE_VERTEX_MODEL')?.trim() ||
-      this.getDefaultVertexModels()[0];
-    const vertexLocation = this.getVertexLocation();
+      this.getDefaultGeminiTextModels()[0];
     const response = await fetch(
-      `https://${vertexLocation}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(vertexLocation)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+      this.buildGeminiActionUrl(model, 'generateContent', apiKey),
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1523,7 +1504,7 @@ Return ONLY valid JSON with exactly these fields:
           this.generateNextCallingTurn(call, speech, withUserTurn).catch(
             (error) => {
               this.logger.warn(
-                `Vertex AI live calling turn failed for call ${callId}; using fallback response. Reason: ${error instanceof Error ? error.message : String(error)}`,
+                `Gemini API live calling turn failed for call ${callId}; using fallback response. Reason: ${error instanceof Error ? error.message : String(error)}`,
               );
               return buildFallback();
             },
@@ -2084,7 +2065,7 @@ Return ONLY valid JSON with exactly these fields:
     const accessToken = await this.getGoogleTtsAccessToken();
     if (!accessToken) {
       this.logger.warn(
-        'Google service account JSON is not configured for HD AI calling audio; falling back to Twilio Say.',
+        'Google TTS auth is disabled for HD AI calling audio; falling back to Twilio Say.',
       );
       return null;
     }
@@ -2909,15 +2890,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
     const racQuery = this.buildRacQueryForCall(latestUserSpeech, scripts, call);
     const llmScopedScripts = this.getPromptScopedScripts(scripts);
-    const [botProfile, conversationLanguage, ragContext, serviceAccountJson] =
-      await Promise.all([
-        this.resolveBotProfile(call.campaign),
-        Promise.resolve(quickLanguage),
-        this.buildCallingRagContext(call, racQuery),
-        this.getServiceAccountJson(),
-      ]);
-    const serviceAccount =
-      this.parseGoogleServiceAccountCredentials(serviceAccountJson);
+    const [botProfile, conversationLanguage, ragContext] = await Promise.all([
+      this.resolveBotProfile(call.campaign),
+      Promise.resolve(quickLanguage),
+      this.buildCallingRagContext(call, racQuery),
+    ]);
+    const apiKey = await this.getGeminiApiKey();
     const operationalFallback = this.shouldUseOperationalCallingFallback();
     const fallback = operationalFallback
       ? this.buildOperationalCallingFallback(call, conversationLanguage)
@@ -2929,15 +2907,15 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           ragContext,
           botProfile,
         );
-    if (!serviceAccount) {
+    if (!apiKey) {
       this.logger.warn(
-        `Google service account JSON is missing or invalid for Vertex AI live calling; using ${operationalFallback ? 'operational' : 'scripted'} fallback response.`,
+        `Gemini API key is missing for live calling turn generation; using ${operationalFallback ? 'operational' : 'scripted'} fallback response.`,
       );
       return fallback;
     }
 
     this.logger.debug(
-      `Vertex AI bot context for call ${call.id}; botName=${botProfile.name}; botRole=${botProfile.role}; knowledgeLength=${String((botProfile.knowledge || '').length)}; ragLength=${String((ragContext || '').length)}; transcriptTurns=${String(scripts.length)}`,
+      `Gemini API bot context for call ${call.id}; botName=${botProfile.name}; botRole=${botProfile.role}; knowledgeLength=${String((botProfile.knowledge || '').length)}; ragLength=${String((ragContext || '').length)}; transcriptTurns=${String(scripts.length)}`,
     );
 
     const transcript = this.scriptsToTranscript(llmScopedScripts);
@@ -2973,33 +2951,23 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     // FIX 5: Each model attempt gets its own AbortController and timeout so that
     // a slow or aborted first attempt does not cancel subsequent model retries.
     try {
-      const accessToken = await this.getGoogleTtsAccessToken();
-      if (!accessToken) {
-        this.logger.warn(
-          `Google service account auth is unavailable for Vertex AI live calling; using ${operationalFallback ? 'operational' : 'scripted'} fallback response.`,
-        );
-        return fallback;
-      }
-
       const configuredModel =
+        this.configService.get<string>('GEMINI_LIVE_TURN_MODEL')?.trim() ||
+        this.configService.get<string>('GEMINI_CHAT_MODEL')?.trim() ||
         this.configService.get<string>('VERTEX_AI_MODEL')?.trim() ||
         this.configService.get<string>('GOOGLE_VERTEX_MODEL')?.trim() ||
         '';
-      // Twilio webhook mode is still request/response (speech transcript in, spoken
-      // reply out). We prioritize Gemini Live native-audio models here for best
-      // conversational quality, with text models as safe fallback.
-      const defaultModels = this.getDefaultVertexModels();
+      const defaultModels = this.getDefaultGeminiTextModels();
       const candidateModels = [
         ...(configuredModel ? [configuredModel] : []),
         ...defaultModels,
       ].filter(Boolean);
       const uniqueModels = Array.from(new Set(candidateModels)).slice(
         0,
-        this.getMaxVertexLiveCallModels(),
+        this.getMaxGeminiLiveCallModels(),
       );
       let lastFailureReason = 'unknown error';
-      const vertexLocation = this.getVertexLocation();
-      const vertexTwilioTimeoutMs = this.getVertexTwilioTimeoutMs();
+      const geminiTwilioTimeoutMs = this.getGeminiTwilioTimeoutMs();
 
       for (const model of uniqueModels) {
         // FIX 5: Fresh controller per model so a previous timeout/abort does not
@@ -3007,16 +2975,15 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         const controller = new AbortController();
         const timeout = setTimeout(
           () => controller.abort(),
-          vertexTwilioTimeoutMs,
+          geminiTwilioTimeoutMs,
         );
 
         try {
           const response = await fetch(
-            `https://${vertexLocation}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(vertexLocation)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+            this.buildGeminiActionUrl(model, 'generateContent', apiKey),
             {
               method: 'POST',
               headers: {
-                Authorization: `Bearer ${accessToken}`,
                 'Content-Type': 'application/json',
               },
               signal: controller.signal,
@@ -3043,7 +3010,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
             lastFailureReason =
               data?.error?.message || response.statusText || 'request failed';
             this.logger.warn(
-              `Vertex AI model ${model} returned ${response.status || 'error'} for live calling turn: ${lastFailureReason}`,
+              `Gemini API model ${model} returned ${response.status || 'error'} for live calling turn: ${lastFailureReason}`,
             );
             continue;
           }
@@ -3075,13 +3042,13 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           // Catch per-model errors (including AbortError) so the loop continues.
           const reason =
             modelErr instanceof Error && modelErr.name === 'AbortError'
-              ? `timed out after ${vertexTwilioTimeoutMs}ms`
+              ? `timed out after ${geminiTwilioTimeoutMs}ms`
               : modelErr instanceof Error
                 ? modelErr.message
                 : String(modelErr);
           lastFailureReason = reason;
           this.logger.warn(
-            `Vertex AI model ${model} failed for live calling turn: ${reason}`,
+            `Gemini API model ${model} failed for live calling turn: ${reason}`,
           );
         } finally {
           clearTimeout(timeout);
@@ -3089,12 +3056,12 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       }
 
       this.logger.warn(
-        `Vertex AI live calling turn generation failed; using ${operationalFallback ? 'operational' : 'scripted'} fallback response. Reason: ${lastFailureReason}`,
+        `Gemini API live calling turn generation failed; using ${operationalFallback ? 'operational' : 'scripted'} fallback response. Reason: ${lastFailureReason}`,
       );
       return fallback;
     } catch (error) {
       this.logger.warn(
-        `Vertex AI live calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Gemini API live calling turn generation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       return fallback;
     }
@@ -3226,9 +3193,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
   }
 
   private shouldUseOperationalCallingFallback() {
-    return (
-      this.isGeminiLiveCallingMode() && !this.allowsTwilioGatherFallback()
-    );
+    return this.isGeminiLiveCallingMode() && !this.allowsTwilioGatherFallback();
   }
 
   private buildOperationalCallingFallback(
@@ -3559,14 +3524,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return value.replace(/\{\{(\w+)\}\}/g, (_, key) => variables[key] || '');
   }
 
-  private getVertexLocation() {
-    return readStringConfig(
-      this.configService,
-      'VERTEX_LOCATION',
-      VERTEX_LOCATION,
-    );
-  }
-
   private getAiCallingMode() {
     return readStringConfig(
       this.configService,
@@ -3616,20 +3573,31 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
   }
 
-  private getDefaultVertexModels() {
-    return readStringListConfig(
+  private getDefaultGeminiTextModels() {
+    const legacyVertexModels = readStringListConfig(
       this.configService,
       'VERTEX_FALLBACK_MODELS',
-      DEFAULT_VERTEX_MODELS,
+      DEFAULT_GEMINI_TEXT_MODELS,
+    );
+    return readStringListConfig(
+      this.configService,
+      'GEMINI_FALLBACK_MODELS',
+      legacyVertexModels,
     );
   }
 
-  private getMaxVertexLiveCallModels() {
+  private getMaxGeminiLiveCallModels() {
     return Math.floor(
       readNumberConfig(
         this.configService,
-        'MAX_VERTEX_LIVE_CALL_MODELS',
-        MAX_VERTEX_LIVE_CALL_MODELS,
+        'MAX_GEMINI_LIVE_CALL_MODELS',
+        readNumberConfig(
+          this.configService,
+          'MAX_VERTEX_LIVE_CALL_MODELS',
+          MAX_GEMINI_LIVE_CALL_MODELS,
+          1,
+          5,
+        ),
         1,
         5,
       ),
@@ -3680,23 +3648,21 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
   }
 
-  private getVertexTwilioTimeoutMs() {
+  private getGeminiTwilioTimeoutMs() {
     return Math.floor(
       readNumberConfig(
         this.configService,
-        'VERTEX_TWILIO_TIMEOUT_MS',
-        VERTEX_TWILIO_TIMEOUT_MS,
+        'GEMINI_TWILIO_TIMEOUT_MS',
+        readNumberConfig(
+          this.configService,
+          'VERTEX_TWILIO_TIMEOUT_MS',
+          GEMINI_TWILIO_TIMEOUT_MS,
+          500,
+          30000,
+        ),
         500,
         30000,
       ),
-    );
-  }
-
-  private getGoogleCloudScope() {
-    return readStringConfig(
-      this.configService,
-      'GOOGLE_CLOUD_SCOPE',
-      GOOGLE_TTS_SCOPE,
     );
   }
 
@@ -3897,13 +3863,9 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
   private inferLanguageFromVoice(voice?: string) {
     const normalized = voice?.trim();
-    if (
-      normalized?.includes('hi-IN') ||
-      normalized?.toLowerCase().includes('hi')
-    ) {
-      return 'hi-IN';
-    }
+    if (normalized?.includes('hi-IN')) return 'hi-IN';
     if (normalized?.includes('en-US')) return 'en-US';
+    if (normalized?.includes('en-IN')) return 'en-IN';
     return 'en-IN';
   }
 
@@ -3980,138 +3942,46 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       : 'Google.en-IN-Wavenet-D';
   }
 
-  // ---------------------------------------------------------------------------
-  // Google service account auth
-  // ---------------------------------------------------------------------------
-
   private async getGoogleTtsAccessToken() {
-    if (
-      this.googleTtsAccessToken &&
-      this.googleTtsAccessToken.expiresAt > Date.now() + 60 * 1000
-    ) {
-      return this.googleTtsAccessToken.accessToken;
-    }
+    return '';
+  }
 
-    const settings = decryptSystemSettings(
-      await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-        select: { googleServiceAccountJson: true },
-      }),
+  private async getGeminiApiKey() {
+    const savedKey = await this.getSavedGeminiApiKey();
+    return (
+      savedKey ||
+      this.configService?.get<string>('GEMINI_API_KEY')?.trim() ||
+      process.env.GEMINI_API_KEY?.trim() ||
+      ''
     );
-    const serviceAccountJson = settings?.googleServiceAccountJson?.trim();
-    if (!serviceAccountJson) return '';
+  }
 
+  private async getSavedGeminiApiKey() {
     try {
-      const credentials = JSON.parse(serviceAccountJson);
-      const clientEmail = String(credentials.client_email || '').trim();
-      const privateKey = String(credentials.private_key || '').trim();
-      if (!clientEmail || !privateKey) {
-        throw new Error(
-          'service account JSON must include client_email and private_key',
-        );
-      }
-
-      const assertion = this.signGoogleServiceAccountJwt(
-        clientEmail,
-        privateKey,
-      );
-      const response = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-          assertion,
+      const settings = decryptSystemSettings(
+        await this.db.systemSettings.findUnique({
+          where: { id: 'default' },
+          select: { geminiApiKey: true },
         }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.access_token) {
-        throw new Error(
-          data?.error_description || data?.error || response.statusText,
-        );
-      }
-
-      this.googleTtsAccessToken = {
-        accessToken: data.access_token,
-        expiresAt:
-          Date.now() +
-          Math.max(Number(data.expires_in || 3600) - 60, 60) * 1000,
-      };
-      return this.googleTtsAccessToken.accessToken;
+      );
+      return settings?.geminiApiKey?.trim() || '';
     } catch (error) {
-      this.googleTtsAccessToken = null;
       this.logger.warn(
-        `Google service account auth failed for HD AI calling audio; falling back to Twilio Say. Reason: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not read saved Gemini API key: ${error instanceof Error ? error.message : String(error)}`,
       );
       return '';
     }
   }
 
-  private cachedServiceAccountJson: string | null = null;
-  private cachedServiceAccountJsonAt = 0;
-  private readonly SERVICE_ACCOUNT_CACHE_TTL_MS = 5 * 60 * 1000;
-
-  private async getServiceAccountJson(): Promise<string> {
-    if (
-      this.cachedServiceAccountJson !== null &&
-      Date.now() - this.cachedServiceAccountJsonAt <
-        this.SERVICE_ACCOUNT_CACHE_TTL_MS
-    ) {
-      return this.cachedServiceAccountJson ?? '';
-    }
-
-    const settings = decryptSystemSettings(
-      await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-        select: { googleServiceAccountJson: true },
-      }),
-    );
-    this.cachedServiceAccountJson =
-      settings?.googleServiceAccountJson?.trim() ?? '';
-    this.cachedServiceAccountJsonAt = Date.now();
-    return this.cachedServiceAccountJson ?? '';
-  }
-
-  private signGoogleServiceAccountJwt(clientEmail: string, privateKey: string) {
-    const now = Math.floor(Date.now() / 1000);
-    const header = this.base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-    const payload = this.base64Url(
-      JSON.stringify({
-        iss: clientEmail,
-        scope: this.getGoogleCloudScope(),
-        aud: 'https://oauth2.googleapis.com/token',
-        iat: now,
-        exp: now + 3600,
-      }),
-    );
-    const unsignedJwt = `${header}.${payload}`;
-    const signature = createSign('RSA-SHA256')
-      .update(unsignedJwt)
-      .sign(privateKey);
-    return `${unsignedJwt}.${this.base64Url(signature)}`;
-  }
-
-  private base64Url(value: string | Buffer) {
-    return Buffer.from(value)
-      .toString('base64')
-      .replace(/=/g, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_');
-  }
-
-  private parseGoogleServiceAccountCredentials(serviceAccountJson?: string) {
-    if (!serviceAccountJson) return null;
-    try {
-      const credentials = JSON.parse(serviceAccountJson);
-      const clientEmail = String(credentials?.client_email || '').trim();
-      const privateKey = String(credentials?.private_key || '').trim();
-      const projectId = String(credentials?.project_id || '').trim();
-      if (!clientEmail || !privateKey || !projectId) {
-        return null;
-      }
-      return { clientEmail, privateKey, projectId };
-    } catch {
-      return null;
-    }
+  private buildGeminiActionUrl(
+    model: string,
+    action: 'generateContent',
+    apiKey: string,
+  ) {
+    const normalizedModel = String(model || '')
+      .trim()
+      .replace(/^models\//, '');
+    return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(normalizedModel)}:${action}?key=${encodeURIComponent(apiKey)}`;
   }
 
   // ---------------------------------------------------------------------------

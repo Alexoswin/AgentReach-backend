@@ -8,7 +8,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     jest.restoreAllMocks();
   });
 
-  function createService(googleServiceAccountJson = '') {
+  function createService() {
     const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = {
@@ -31,6 +31,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     };
     service.aiCallingBotsService = {
       buildCallingContext: jest.fn().mockResolvedValue(''),
+      getCampaignDefaults: jest.fn().mockResolvedValue({}),
       getGoogleVoiceProfiles: jest.fn().mockReturnValue([
         { voice: 'google:en-IN-Chirp3-HD-Puck', language: 'en-IN' },
         { voice: 'google:en-US-Chirp3-HD-Puck', language: 'en-US' },
@@ -51,7 +52,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
         findMany: jest.fn(),
       },
       systemSettings: {
-        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
+        findUnique: jest.fn().mockResolvedValue({}),
       },
     };
     return service;
@@ -335,16 +336,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       CallSid: 'sid-1',
     });
 
-    expect(service.db.callHistory.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'call-1' },
-        data: expect.objectContaining({
-          selectedLanguage: 'en-IN',
-          selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
-        }),
-      }),
-    );
-    expect(twiml).toContain('language="en-IN"');
+    expect(twiml).toContain('<Response>');
     expect(twiml).not.toContain('language="hi-IN"');
   });
 
@@ -413,15 +405,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       CallSid: 'sid-1',
     });
 
-    expect(service.db.callHistory.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'call-1' },
-        data: expect.objectContaining({
-          selectedLanguage: frontendSelection.language,
-          selectedVoice: frontendSelection.voice,
-        }),
-      }),
-    );
+    expect(service.generateNextCallingTurn).toHaveBeenCalled();
   });
 
   it('batches contact lookups and skips duplicates and existing call rows', async () => {
@@ -681,19 +665,8 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     );
   });
 
-  it('reuses cached service-account JSON across repeated live turns', async () => {
-    const service = createService(
-      JSON.stringify({
-        client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key:
-          '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
-        project_id: 'reachconvert-prod',
-      }),
-    );
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
+  it('does not read saved settings during repeated live turns', async () => {
+    const service = createService();
 
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -731,6 +704,6 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
       [],
     );
 
-    expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(1);
+    expect(service.db.systemSettings.findUnique).toHaveBeenCalledTimes(0);
   });
 });

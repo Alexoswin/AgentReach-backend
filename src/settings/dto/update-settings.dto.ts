@@ -35,6 +35,11 @@ export class UpdateSettingsDto {
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()
+  geminiApiKey?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
   twilioAccountSid?: string;
 
   @ApiProperty({ required: false })
@@ -46,12 +51,6 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   twilioPhoneNumber?: string;
-
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  googleServiceAccountJson?: string;
 
   @ApiProperty({ required: false })
   @IsString()

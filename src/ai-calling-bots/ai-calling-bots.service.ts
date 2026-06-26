@@ -16,8 +16,6 @@ import {
   DEFAULT_PROMPT_EXPOSURE_TERMS,
   DEFAULT_TOP_K,
   EMBEDDING_DIMENSIONS,
-  GOOGLE_SCOPE,
-  GoogleServiceAccountCredentials,
   GoogleVoiceProfile,
   RetrievedKnowledge,
   TrainingPdfFile,
@@ -47,13 +45,8 @@ import {
   getMaxTrainingPdfBytes,
   getMinTrainingTextLength,
   getRacHistoryLineLimit,
-  getVertexLocation,
   shouldUseFastPathReply,
 } from './ai-calling-bots.config-utils';
-import {
-  parseGoogleServiceAccountCredentials,
-  requestGoogleAccessToken,
-} from './ai-calling-bots.auth-utils';
 import { extractPdfTrainingText as parsePdfTrainingText } from './ai-calling-bots.pdf-utils';
 import {
   chunkText,
@@ -69,8 +62,6 @@ import {
 @Injectable()
 export class AiCallingBotsService {
   private readonly logger = new Logger(AiCallingBotsService.name);
-  private googleAccessToken: { accessToken: string; expiresAt: number } | null =
-    null;
   private promptExposurePatternCache: RegExp | null = null;
 
   constructor(
@@ -247,11 +238,7 @@ export class AiCallingBotsService {
     this.logger.log(
       `Training bot ${id}; replace=${shouldReplace}; source=${dto.sourceName || 'manual-training'}; contentLength=${content.length}; chunkSize=${resolvedChunkSize}; chunkOverlap=${resolvedChunkOverlap}`,
     );
-    const chunks = chunkText(
-      content,
-      resolvedChunkSize,
-      resolvedChunkOverlap,
-    );
+    const chunks = chunkText(content, resolvedChunkSize, resolvedChunkOverlap);
     this.logger.log(
       `Bot ${id} training split into ${chunks.length} chunks; batchId=${trainingBatchId || 'append-mode'}`,
     );
@@ -336,14 +323,18 @@ export class AiCallingBotsService {
     const history = dto.history?.trim() || '';
     const bot = await this.findOne(id);
     const effectiveGoal = String(
-      bot.botGoal || bot.goal || 'Understand user needs and capture a clear next step.',
+      bot.botGoal ||
+        bot.goal ||
+        'Understand user needs and capture a clear next step.',
     ).trim();
     const effectiveRules = String(bot.botFlow || bot.rules || '').trim();
     const effectiveKnowledge = String(
       bot.knowledgeBaseText || bot.knowledge || '',
     ).trim();
     const strictKnowledgeBound = bot.contextOutsideKnowledgeBase !== true;
-    const topK = this.resolveTopK(dto.topK ?? getDefaultTopK(this.configService));
+    const topK = this.resolveTopK(
+      dto.topK ?? getDefaultTopK(this.configService),
+    );
     const retrievalQuery = buildRacQuery(
       message,
       history,
@@ -512,15 +503,13 @@ export class AiCallingBotsService {
     strictKnowledgeBound: boolean,
   ) {
     try {
-      const serviceAccount = await this.getGoogleServiceAccountCredentials();
-      if (!serviceAccount) return '';
-      const accessToken = await this.getGoogleAccessToken(serviceAccount);
-      if (!accessToken) return '';
+      const apiKey = await this.getGeminiApiKey();
+      if (!apiKey) return '';
 
-      const AI_EXAMINER_SYSTEM_PROMPT =
-        getCoreSystemPromptForCallingBot(bot);
+      const AI_EXAMINER_SYSTEM_PROMPT = getCoreSystemPromptForCallingBot(bot);
       const effectiveRacContext =
-        racContext || buildRacContextFromResults(results, getDefaultTopK(this.configService));
+        racContext ||
+        buildRacContextFromResults(results, getDefaultTopK(this.configService));
       const PRE_USER_PROMPT = buildChatPreUserPrompt(effectiveRacContext);
       const strictModePrompt = strictKnowledgeBound
         ? '\n\n<strict_grounding>\nUse only RAC context and bot knowledge for factual claims. If details are missing, say you do not have enough knowledge-base context.\n</strict_grounding>'
@@ -528,13 +517,11 @@ export class AiCallingBotsService {
       const USER_PROMPT = buildChatUserPrompt(message, history);
 
       const model = getChatModel(this.configService);
-      const vertexLocation = getVertexLocation(this.configService);
       const response = await fetch(
-        `https://${vertexLocation}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(vertexLocation)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+        this.buildGeminiActionUrl(model, 'generateContent', apiKey),
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -582,7 +569,6 @@ export class AiCallingBotsService {
     }
   }
 
-
   async getCampaignDefaults(id?: string) {
     if (!id) return {};
     const bot = await this.findOne(id);
@@ -627,16 +613,8 @@ export class AiCallingBotsService {
     if (texts.length === 0) {
       return { vectors: [], model: 'local-hash-embedding-v1' };
     }
-    const serviceAccount = await this.getGoogleServiceAccountCredentials();
-    if (!serviceAccount) {
-      return {
-        vectors: texts.map((text) => embedLocally(text, EMBEDDING_DIMENSIONS)),
-        model: 'local-hash-embedding-v1',
-      };
-    }
-
-    const accessToken = await this.getGoogleAccessToken(serviceAccount);
-    if (!accessToken) {
+    const apiKey = await this.getGeminiApiKey();
+    if (!apiKey) {
       return {
         vectors: texts.map((text) => embedLocally(text, EMBEDDING_DIMENSIONS)),
         model: 'local-hash-embedding-v1',
@@ -647,7 +625,6 @@ export class AiCallingBotsService {
       const vectors: number[][] = [];
       const batchSize = getEmbeddingBatchSize(this.configService);
       const embeddingModel = getEmbeddingModel(this.configService);
-      const vertexLocation = getVertexLocation(this.configService);
       const totalBatches = Math.ceil(texts.length / batchSize);
       this.logger.log(
         `[EMBED-MANY] Processing ${texts.length} chunks in ${totalBatches} batch(es)`,
@@ -661,22 +638,24 @@ export class AiCallingBotsService {
         );
 
         const response = await fetch(
-          `https://${vertexLocation}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(serviceAccount.projectId)}/locations/${encodeURIComponent(vertexLocation)}/publishers/google/models/${encodeURIComponent(embeddingModel)}:predict`,
+          this.buildGeminiActionUrl(
+            embeddingModel,
+            'batchEmbedContents',
+            apiKey,
+          ),
           {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${accessToken}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              instances: batch.map((text) => ({
-                content: text,
-                task_type:
+              requests: batch.map((text) => ({
+                model: this.buildGeminiModelName(embeddingModel),
+                content: { parts: [{ text }] },
+                taskType:
                   task === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT',
-              })),
-              parameters: {
                 outputDimensionality: EMBEDDING_DIMENSIONS,
-              },
+              })),
             }),
           },
         );
@@ -688,17 +667,17 @@ export class AiCallingBotsService {
             ),
           );
         }
-        const predictions = Array.isArray(data?.predictions)
-          ? data.predictions
+        const embeddings = Array.isArray(data?.embeddings)
+          ? data.embeddings
           : [];
-        if (predictions.length !== batch.length) {
+        if (embeddings.length !== batch.length) {
           throw new Error(
-            `embedding prediction length mismatch: expected ${batch.length}, got ${predictions.length}`,
+            `embedding response length mismatch: expected ${batch.length}, got ${embeddings.length}`,
           );
         }
 
-        for (const prediction of predictions) {
-          const values = prediction?.embeddings?.values;
+        for (const embedding of embeddings) {
+          const values = embedding?.values;
           if (!Array.isArray(values) || values.length === 0) {
             throw new Error('empty embedding response');
           }
@@ -736,43 +715,45 @@ export class AiCallingBotsService {
     );
   }
 
-  private async getGoogleServiceAccountCredentials(): Promise<GoogleServiceAccountCredentials | null> {
-    try {
-      const rawSettings = await this.db.systemSettings?.findUnique?.({
-        where: { id: 'default' },
-        select: { googleServiceAccountJson: true },
-      });
-      const settings = decryptSystemSettings(rawSettings || null);
-      return parseGoogleServiceAccountCredentials(
-        settings?.googleServiceAccountJson?.trim(),
-      );
-    } catch {
-      return null;
-    }
+  private async getGeminiApiKey() {
+    const savedKey = await this.getSavedGeminiApiKey();
+    return (
+      savedKey ||
+      this.configService?.get<string>('GEMINI_API_KEY')?.trim() ||
+      process.env.GEMINI_API_KEY?.trim() ||
+      ''
+    );
   }
 
-  private async getGoogleAccessToken(
-    serviceAccount: GoogleServiceAccountCredentials,
-  ) {
-    if (
-      this.googleAccessToken &&
-      this.googleAccessToken.expiresAt > Date.now() + 60 * 1000
-    ) {
-      return this.googleAccessToken.accessToken;
-    }
-
+  private async getSavedGeminiApiKey() {
     try {
-      this.googleAccessToken = await requestGoogleAccessToken(
-        serviceAccount,
-        GOOGLE_SCOPE,
+      const settings = decryptSystemSettings(
+        await this.db.systemSettings?.findUnique?.({
+          where: { id: 'default' },
+          select: { geminiApiKey: true },
+        }),
       );
-      return this.googleAccessToken.accessToken;
+      return settings?.geminiApiKey?.trim() || '';
     } catch (error) {
-      this.googleAccessToken = null;
       this.logger.warn(
-        `Google service account auth failed for Gemini features. Reason: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not read saved Gemini API key: ${error instanceof Error ? error.message : String(error)}`,
       );
       return '';
     }
+  }
+
+  private buildGeminiActionUrl(
+    model: string,
+    action: 'generateContent' | 'batchEmbedContents',
+    apiKey: string,
+  ) {
+    return `https://generativelanguage.googleapis.com/v1beta/${this.buildGeminiModelName(model)}:${action}?key=${encodeURIComponent(apiKey)}`;
+  }
+
+  private buildGeminiModelName(model: string) {
+    const normalized = String(model || '')
+      .trim()
+      .replace(/^models\//, '');
+    return `models/${encodeURIComponent(normalized)}`;
   }
 }

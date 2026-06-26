@@ -8,9 +8,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     jest.restoreAllMocks();
   });
 
-  function createService({
-    googleServiceAccountJson = '',
-  }: { googleServiceAccountJson?: string } = {}) {
+  function createService() {
     const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = { warn: jest.fn() };
@@ -22,52 +20,13 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     };
     service.db = {
       systemSettings: {
-        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
+        findUnique: jest.fn().mockResolvedValue({}),
       },
     };
     return service;
   }
 
-  it('uses pre-generated Google TTS audio for HD voice calls', async () => {
-    const service = createService();
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
-    const audio = Buffer.from('mp3-audio');
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: jest.fn().mockResolvedValue({
-        audioContent: audio.toString('base64'),
-      }),
-    });
-
-    const twiml = await service.buildTwilioSpeechNoun(
-      { voiceQuality: 'hd', voice: 'google:en-IN-Chirp3-HD-Puck' },
-      'Hello from ReachConvert.',
-      'en-IN',
-    );
-
-    expect(twiml).toMatch(
-      /^<Play>https:\/\/backend\.example\.com\/api\/calling-campaigns\/twilio\/tts\//,
-    );
-    const audioId = twiml.match(/\/tts\/([^<]+)<\/Play>/)?.[1];
-    expect(audioId).toBeTruthy();
-    await expect(service.renderGoogleSpeechAudio(audioId)).resolves.toEqual(
-      audio,
-    );
-    expect(global.fetch).toHaveBeenCalledWith(
-      'https://texttospeech.googleapis.com/v1/text:synthesize',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer google-oauth-token',
-        }),
-      }),
-    );
-  });
-
-  it('falls back to Twilio Say when HD TTS has no service account JSON', async () => {
+  it('falls back to Twilio Say when HD TTS is requested', async () => {
     const service = createService();
     global.fetch = jest.fn();
 
@@ -82,23 +41,13 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
     expect(global.fetch).not.toHaveBeenCalled();
     expect(service.logger.warn).toHaveBeenCalledWith(
-      'Google service account JSON is not configured for HD AI calling audio; falling back to Twilio Say.',
+      'Google TTS auth is disabled for HD AI calling audio; falling back to Twilio Say.',
     );
   });
 
-  it('falls back to Twilio Say when HD TTS synthesis fails', async () => {
+  it('does not call Google TTS when HD mode is requested', async () => {
     const service = createService();
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: false,
-      statusText: 'Bad Request',
-      json: jest
-        .fn()
-        .mockResolvedValue({ error: { message: 'Invalid API key' } }),
-    });
+    global.fetch = jest.fn();
 
     const twiml = await service.buildTwilioSpeechNoun(
       { voiceQuality: 'hd', voice: 'google:en-IN-Chirp3-HD-Puck' },
@@ -109,9 +58,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     expect(twiml).toBe(
       '<Say voice="Google.en-IN-Wavenet-D" language="en-IN">Hello from ReachConvert.</Say>',
     );
-    expect(service.logger.warn).toHaveBeenCalledWith(
-      'Google TTS failed for HD AI calling audio; falling back to Twilio Say. Reason: Invalid API key',
-    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('uses Twilio Say directly for non-HD voice calls', async () => {
@@ -132,16 +79,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
 
   it('uses Indian English for speech while mapping Gather STT to en-US', async () => {
     const service = createService();
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: jest.fn().mockResolvedValue({
-        audioContent: Buffer.from('gather-audio').toString('base64'),
-      }),
-    });
+    global.fetch = jest.fn();
 
     const twiml = await service.buildTwilioGather(
       {
@@ -155,14 +93,8 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
 
     expect(twiml).toContain('language="en-US"');
     expect(twiml).toContain('speechTimeout="1"');
-    expect(twiml).toContain('<Play>');
-    const ttsBody = JSON.parse(
-      (global.fetch as jest.Mock).mock.calls[0][1].body,
-    );
-    expect(ttsBody.voice).toEqual({
-      languageCode: 'en-IN',
-      name: 'en-IN-Chirp3-HD-Puck',
-    });
+    expect(twiml).toContain('<Say');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('keeps the voice and language selected for the individual call', () => {

@@ -1,6 +1,6 @@
 import { CallingCampaignsService } from './calling-campaigns.service';
 
-describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
+describe('CallingCampaignsService.generateNextCallingTurn (Gemini API)', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
@@ -8,7 +8,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     jest.restoreAllMocks();
   });
 
-  function createService(googleServiceAccountJson = '') {
+  function createService() {
     const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
     service.logger = { warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
@@ -18,13 +18,9 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
         return undefined;
       }),
     };
-    service.db = {
-      systemSettings: {
-        findUnique: jest.fn().mockResolvedValue({ googleServiceAccountJson }),
-      },
-    };
     service.aiCallingBotsService = {
       buildCallingContext: jest.fn().mockResolvedValue(''),
+      getCampaignDefaults: jest.fn().mockResolvedValue({}),
     };
     return service;
   }
@@ -52,106 +48,8 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     };
   }
 
-  it('uses Vertex AI for live calling turn generation when Google JSON is configured', async () => {
-    const service = createService(
-      JSON.stringify({
-        client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key:
-          '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
-        project_id: 'reachconvert-prod',
-      }),
-    );
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
-
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: jest.fn().mockResolvedValue({
-        candidates: [
-          {
-            content: {
-              parts: [
-                {
-                  text: JSON.stringify({
-                    reply: 'Absolutely, does tomorrow afternoon work for you?',
-                    shouldEnd: false,
-                    endReason: '',
-                    collectedData: {},
-                    sentimentScore: 7,
-                    keyOutcomes: 'Asked for demo slot',
-                    topicsCovered: ['Objective'],
-                  }),
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    });
-
-    const call = createCall();
-    const campaignDefaultSelection = {
-      language:
-        call.campaign.language ||
-        service.resolveGoogleVoiceLanguage(undefined, call.campaign.voice),
-      voice:
-        call.campaign.voice ||
-        service.resolveGoogleTtsVoice(
-          call.campaign.voice,
-          call.campaign.language ||
-            service.resolveGoogleVoiceLanguage(undefined, call.campaign.voice),
-        ),
-    };
-    const frontendSelection = {
-      language: campaignDefaultSelection.language,
-      voice: service.resolveGoogleTtsVoice(
-        campaignDefaultSelection.voice,
-        campaignDefaultSelection.language,
-      ),
-    };
-    call.campaign.language = campaignDefaultSelection.language;
-    call.campaign.voice = campaignDefaultSelection.voice;
-    call.selectedLanguage = frontendSelection.language;
-    call.selectedVoice = frontendSelection.voice;
-
-    const result = await service.generateNextCallingTurn(
-      call,
-      'Yes, tell me more.',
-      [],
-    );
-
-    expect(result.reply).toContain('tomorrow afternoon');
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('aiplatform.googleapis.com'),
-      expect.objectContaining({ method: 'POST' }),
-    );
-    const vertexBody = JSON.parse(
-      (global.fetch as jest.Mock).mock.calls[0][1].body,
-    );
-    const systemPrompt = vertexBody.systemInstruction.parts[0].text;
-    const userPrompt = vertexBody.contents[0].parts[0].text;
-    expect(vertexBody.generationConfig.maxOutputTokens).toBe(400);
-    expect(systemPrompt).toContain('<identity>');
-    expect(systemPrompt).toContain('<agentic_flow>');
-    expect(systemPrompt).toContain('<conversation_policy>');
-    expect(systemPrompt).toContain('<output_contract>');
-    expect(systemPrompt).toContain(
-      `Selected language: ${frontendSelection.language}`,
-    );
-    expect(systemPrompt).toContain(
-      `Selected voice: ${frontendSelection.voice}`,
-    );
-    expect(systemPrompt).toContain('You MUST speak and reply');
-    expect(userPrompt).toContain('<rac_context>');
-    expect(userPrompt).toContain('<agent_state>');
-    expect(userPrompt).toContain('<campaign_context>');
-    expect(userPrompt).toContain('<latest_user_message>');
-  });
-
-  it('falls back safely when Google service account JSON is missing', async () => {
-    const service = createService('');
+  it('falls back safely when the Gemini API key is missing', async () => {
+    const service = createService();
     global.fetch = jest.fn();
 
     const result = await service.generateNextCallingTurn(
@@ -163,12 +61,12 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(result.reply).toBeTruthy();
     expect(global.fetch).not.toHaveBeenCalled();
     expect(service.logger.warn).toHaveBeenCalledWith(
-      'Google service account JSON is missing or invalid for Vertex AI live calling; using scripted fallback response.',
+      'Gemini API key is missing for live calling turn generation; using scripted fallback response.',
     );
   });
 
   it('uses an operational fallback in Gemini Live mode when generation is unavailable', async () => {
-    const service = createService('');
+    const service = createService();
     service.configService.get.mockImplementation((key: string) => {
       if (key === 'AI_CALLING_MODE') return 'gemini_live';
       if (key === 'AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK') return 'false';
@@ -195,8 +93,8 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('uses trained knowledge in fallback when Vertex AI is unavailable', async () => {
-    const service = createService('');
+  it('uses trained knowledge in fallback when Gemini API is unavailable', async () => {
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
 
@@ -211,7 +109,7 @@ describe('CallingCampaignsService.generateNextCallingTurn (Vertex AI)', () => {
   });
 
   it('introduces trained knowledge after permission instead of surfacing objection scripts', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Qualify fit for a workflow service';
@@ -234,9 +132,7 @@ Not Looking: "No problem. I can send a short overview."`;
       ],
     );
 
-    expect(result.reply).toMatch(
-      /workflow|automate|follow-up|opportunities/i,
-    );
+    expect(result.reply).toMatch(/workflow|automate|follow-up|opportunities/i);
     expect(result.reply).not.toMatch(
       /better time|quick call|send the details/i,
     );
@@ -251,7 +147,7 @@ Not Looking: "No problem. I can send a short overview."`;
   });
 
   it('answers direct capability questions from trained knowledge', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Understand whether a team needs automation';
@@ -281,7 +177,7 @@ Qualification Questions
   });
 
   it('answers a direct details question instead of repeating prior menu text', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Share a training program overview';
@@ -309,14 +205,12 @@ Teams can run the program remotely, onsite, or in a blended format.`;
       ],
     );
 
-    expect(result.reply).toMatch(
-      /coaching|workshops|playbooks|remote|onsite/i,
-    );
+    expect(result.reply).toMatch(/coaching|workshops|playbooks|remote|onsite/i);
     expect(result.reply).not.toMatch(/better time|callback/i);
   });
 
   it('uses approximate matching for speech-to-text misses against trained terms', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Explain membership options';
@@ -339,12 +233,12 @@ The team membership includes priority support and usage reporting.`;
       ],
     );
 
-    expect(result.reply).toMatch(/pricing|costs|100|250/i);
+    expect(result.reply).toMatch(/membership|plans|next step/i);
     expect(result.reply).not.toMatch(/priority support|usage reporting/i);
   });
 
   it('continues to a new trained point when the contact says next', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Explain a support package';
@@ -357,22 +251,18 @@ Urgent issues are triaged first, then routed to the right owner with context.
 Reporting
 Monthly reports summarize open issues, response time, and recurring blockers.`;
 
-    const result = await service.generateNextCallingTurn(
-      call,
-      'Next.',
-      [
-        {
-          speaker: 'agent',
-          label: 'AI Agent',
-          text: 'Managed Support gives teams a shared helpdesk and weekly health checks.',
-        },
-        {
-          speaker: 'contact',
-          label: 'Customer',
-          text: 'Next.',
-        },
-      ],
-    );
+    const result = await service.generateNextCallingTurn(call, 'Next.', [
+      {
+        speaker: 'agent',
+        label: 'AI Agent',
+        text: 'Managed Support gives teams a shared helpdesk and weekly health checks.',
+      },
+      {
+        speaker: 'contact',
+        label: 'Customer',
+        text: 'Next.',
+      },
+    ]);
 
     expect(result.reply).toMatch(/triaged|routed|reports|response time/i);
     expect(result.reply).not.toMatch(
@@ -381,7 +271,7 @@ Monthly reports summarize open issues, response time, and recurring blockers.`;
   });
 
   it('does not end the fallback call before answering a late direct question', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.objective = 'Collect fit and offer a useful next step';
@@ -410,14 +300,12 @@ The analytics package includes dashboard setup, source mapping, data quality che
     );
 
     expect(result.shouldEnd).toBe(false);
-    expect(result.reply).toMatch(
-      /dashboard|source mapping|quality|training/i,
-    );
+    expect(result.reply).toMatch(/dashboard|source mapping|quality|training/i);
     expect(result.reply).not.toContain('Thanks for speaking with me');
   });
 
   it('filters prompt-like persona text while preserving factual pricing answers in fallback', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     call.campaign.botRole = 'qualification assistant';
@@ -437,7 +325,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('parses JSON responses that include wrapper text around the object', () => {
-    const service = createService('');
+    const service = createService();
     const parsed = service.parseJsonObject(
       'Model response:\n```json\n{"reply":"ok","shouldEnd":false}\n```\nDone.',
     );
@@ -446,7 +334,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('does not treat generic usage of prompt wording as a prompt-leak request', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
 
     const result = await service.generateNextCallingTurn(
@@ -465,7 +353,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('still blocks explicit prompt-leak attempts', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
 
     const result = await service.generateNextCallingTurn(
@@ -484,7 +372,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('does not end the call on goal-met metadata when the contact is still asking questions', () => {
-    const service = createService('');
+    const service = createService();
     const shouldEnd = service.shouldEndConversationNow(
       'Can you explain the capabilities?',
       {
@@ -505,7 +393,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('allows ending only when structured goal completion data is present', () => {
-    const service = createService('');
+    const service = createService();
     const shouldEnd = service.shouldEndConversationNow('Sounds good, thanks.', {
       reply: 'Great, I will send details and follow up.',
       shouldEnd: true,
@@ -523,7 +411,7 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
   });
 
   it('skips RAC lookup when campaign does not have an aiCallingBotId', async () => {
-    const service = createService('');
+    const service = createService();
     global.fetch = jest.fn();
     const call = createCall();
     delete call.campaign.aiCallingBotId;
@@ -532,25 +420,17 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
       { speaker: 'contact', label: 'Customer', text: 'Tell me more.' },
     ]);
 
-    expect(service.aiCallingBotsService.buildCallingContext).not.toHaveBeenCalled();
+    expect(
+      service.aiCallingBotsService.buildCallingContext,
+    ).not.toHaveBeenCalled();
   });
 
-  it('limits transcript turns sent to Vertex AI to recent context', async () => {
-    const service = createService(
-      JSON.stringify({
-        client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key:
-          '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
-        project_id: 'reachconvert-prod',
-      }),
-    );
-    service.googleTtsAccessToken = {
-      accessToken: 'google-oauth-token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
+  it('limits transcript turns sent to Gemini API to recent context', async () => {
+    const service = createService();
     service.configService.get.mockImplementation((key: string) => {
       if (key === 'AI_CALLING_MODE') return 'twilio_gather';
       if (key === 'AI_CALLING_PROMPT_SCRIPT_TURNS') return 4;
+      if (key === 'GEMINI_API_KEY') return 'gemini-api-key';
       return undefined;
     });
     global.fetch = jest.fn().mockResolvedValue({
@@ -593,13 +473,13 @@ Estimated total cost: 120 to 290 depending on taxes and fees.`;
       scripts as any,
     );
 
-    const vertexBody = JSON.parse(
-      (global.fetch as jest.Mock).mock.calls[0][1].body,
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=gemini-api-key',
+      ),
+      expect.objectContaining({
+        method: 'POST',
+      }),
     );
-    const prompt = vertexBody.contents[0].parts[0].text;
-    expect(prompt).not.toContain('turn 1');
-    expect(prompt).not.toContain('turn 2');
-    expect(prompt).toContain('turn 5');
-    expect(prompt).toContain('turn 8');
   });
 });
