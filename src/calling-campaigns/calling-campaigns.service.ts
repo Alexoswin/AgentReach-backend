@@ -53,19 +53,12 @@ type GeneratedCallingCampaign = {
   language?: string;
 };
 
-type CachedGoogleSpeech = {
-  audio: Buffer;
-  createdAt: number;
-};
-
-const GOOGLE_TTS_TIMEOUT_MS = 3500;
-const GEMINI_TWILIO_TIMEOUT_MS = 2500;
+const GEMINI_TWILIO_TIMEOUT_MS = 5000;
 const TWILIO_RESPONSE_BUDGET_MS = 5000;
 const TWILIO_SPEECH_TIMEOUT_SECONDS = 1;
 const MAX_GEMINI_LIVE_CALL_MODELS = 2;
 const DEFAULT_LIVE_PROMPT_SCRIPT_TURNS = 14;
 const DEFAULT_LIVE_RAC_QUERY_CHARS = 900;
-const TWILIO_HD_PLAY_ENABLED = true;
 const AI_CALLING_MODE = 'gemini_live';
 const AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK = false;
 const DEFAULT_GEMINI_TEXT_MODELS = [
@@ -146,7 +139,6 @@ type ConversationGeneration = {
 export class CallingCampaignsService implements OnModuleInit {
   private readonly logger = new Logger(CallingCampaignsService.name);
   private generationJobs = new Map<string, CallingCampaignGenerationJob>();
-  private googleSpeechCache = new Map<string, CachedGoogleSpeech>();
   private immediateEndPatternCache: RegExp | null = null;
   private promptExposureTermsCache: string[] | null = null;
 
@@ -162,24 +154,7 @@ export class CallingCampaignsService implements OnModuleInit {
   // ---------------------------------------------------------------------------
 
   onModuleInit() {
-    // FIX 6: Prune Google TTS audio cache every 5 minutes to prevent memory leaks.
-    // Entries older than 10 minutes are evicted (Twilio will have already played them).
-    setInterval(
-      () => {
-        const cutoff = Date.now() - 10 * 60 * 1000;
-        for (const [id, cached] of this.googleSpeechCache.entries()) {
-          if (cached.createdAt < cutoff) {
-            this.googleSpeechCache.delete(id);
-          }
-        }
-        this.logger.debug(
-          `Google TTS cache pruned; remaining entries: ${this.googleSpeechCache.size}`,
-        );
-      },
-      5 * 60 * 1000,
-    ).unref();
-
-    // FIX 7: Prune completed/failed generation jobs older than 1 hour to prevent memory leaks.
+    // Prune completed/failed generation jobs older than 1 hour to prevent memory leaks.
     setInterval(
       () => {
         const cutoff = Date.now() - 60 * 60 * 1000;
@@ -851,6 +826,7 @@ Return ONLY valid JSON with exactly these fields:
               campaign,
               contact,
               botProfile,
+              selectedLanguage,
             );
             const openingTranscript = `AI Agent: ${openingScript}`;
 
@@ -1263,6 +1239,7 @@ Return ONLY valid JSON with exactly these fields:
       return await this.geminiLiveService.openCallSession({
         systemInstruction,
         voiceName: this.extractGeminiVoiceName(selectedVoice),
+        languageCode: selectedLanguage || undefined,
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1315,10 +1292,13 @@ Return ONLY valid JSON with exactly these fields:
       }
 
       const botProfile = await this.resolveBotProfile(call.campaign);
+      const { language: selectedLanguage, voice: selectedVoice } =
+        this.resolveCallSelectedVoiceConfig(call);
       const opening = this.buildLiveOpeningScript(
         call.campaign,
         call.contact,
         botProfile,
+        selectedLanguage,
       );
       this.logger.debug(
         `Twilio answer opening for call ${callId}; botTranscription=${JSON.stringify(opening)}`,
@@ -1328,8 +1308,6 @@ Return ONLY valid JSON with exactly these fields:
         ? scripts
         : this.appendScriptTurn(scripts, 'agent', 'AI Agent', opening);
       const startedAt = call.startedAt ? new Date(call.startedAt) : new Date();
-      const { language: selectedLanguage, voice: selectedVoice } =
-        this.resolveCallSelectedVoiceConfig(call);
       this.logger.debug(
         `Twilio answer voice config for call ${callId}: language=${selectedLanguage}; voice=${selectedVoice}; voiceQuality=${call.campaign.voiceQuality || 'standard'}; storedLanguage=${call.selectedLanguage || 'not set'}; storedVoice=${call.selectedVoice || 'not set'}; campaignLanguage=${call.campaign.language || 'not set'}; campaignVoice=${call.campaign.voice || 'not set'}`,
       );
@@ -2027,116 +2005,6 @@ Return ONLY valid JSON with exactly these fields:
   // Google TTS / HD audio
   // ---------------------------------------------------------------------------
 
-  async renderGoogleSpeechAudio(audioId: string) {
-    const cached = this.googleSpeechCache.get(audioId);
-    if (!cached) {
-      this.logger.warn(
-        'Twilio TTS audio cache miss for audioId=' +
-          audioId +
-          '; cacheSize=' +
-          String(this.googleSpeechCache.size),
-      );
-      throw new BadRequestException('Google speech audio was not found.');
-    }
-
-    this.logger.debug(
-      'Twilio TTS audio cache hit for audioId=' +
-        audioId +
-        '; bytes=' +
-        String(cached.audio.length),
-    );
-    return cached.audio;
-  }
-
-  private async registerGoogleSpeech(
-    text: string,
-    voice: string,
-    language?: string,
-  ) {
-    const now = Date.now();
-    // Opportunistic eviction of stale entries (periodic pruner in onModuleInit
-    // handles background cleanup; this cleans entries created within same request).
-    for (const [id, cached] of this.googleSpeechCache.entries()) {
-      if (now - cached.createdAt > 10 * 60 * 1000) {
-        this.googleSpeechCache.delete(id);
-      }
-    }
-
-    const accessToken = await this.getGoogleTtsAccessToken();
-    if (!accessToken) {
-      this.logger.warn(
-        'Google TTS auth is disabled for HD AI calling audio; falling back to Twilio Say.',
-      );
-      return null;
-    }
-
-    const normalizedLanguage = this.normalizeLanguageCode(language) || 'en-IN';
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      this.getGoogleTtsTimeoutMs(),
-    );
-
-    try {
-      const response = await fetch(
-        'https://texttospeech.googleapis.com/v1/text:synthesize',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            input: { text: this.compactForSpeech(text, 460) },
-            voice: {
-              languageCode: normalizedLanguage,
-              name: voice,
-            },
-            audioConfig: {
-              audioEncoding: 'MP3',
-              speakingRate: normalizedLanguage === 'hi-IN' ? 0.96 : 1.02,
-              pitch: 0,
-            },
-          }),
-        },
-      );
-
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.audioContent) {
-        this.logger.warn(
-          `Google TTS failed for HD AI calling audio; falling back to Twilio Say. Reason: ${data?.error?.message || response.statusText || 'empty audio response'}`,
-        );
-        return null;
-      }
-
-      const audio = Buffer.from(data.audioContent, 'base64');
-      if (!audio.length) {
-        this.logger.warn(
-          'Google TTS returned empty HD AI calling audio; falling back to Twilio Say.',
-        );
-        return null;
-      }
-
-      const audioId = randomUUID();
-      this.googleSpeechCache.set(audioId, { audio, createdAt: now });
-      return audioId;
-    } catch (error) {
-      const reason =
-        error instanceof Error && error.name === 'AbortError'
-          ? `timed out after ${this.getGoogleTtsTimeoutMs()}ms`
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      this.logger.warn(
-        `Google TTS could not prepare HD AI calling audio; falling back to Twilio Say. Reason: ${reason}`,
-      );
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Relaunch helpers
   // ---------------------------------------------------------------------------
@@ -2394,39 +2262,10 @@ Return ONLY valid JSON with exactly these fields:
     message: string,
     language?: string,
   ) {
-    if (campaign?.voiceQuality === 'hd' && this.isTwilioHdPlayEnabled()) {
-      const googleTtsVoice = this.resolveGoogleTtsVoice(
-        campaign?.voice,
-        language,
-      );
-      const audioId = await this.registerGoogleSpeech(
-        message,
-        googleTtsVoice,
-        language,
-      );
-      if (audioId) {
-        const audioUrl = this.getTwilioTtsUrl(audioId);
-        this.logger.debug(
-          'Prepared HD Twilio TTS audio: audioId=' +
-            audioId +
-            ', url=' +
-            audioUrl +
-            ', textLength=' +
-            String(message.length),
-        );
-        return `<Play>${this.escapeXml(audioUrl)}</Play>`;
-      }
-    }
-
-    return this.buildTwilioSayNoun(campaign, message, language);
-  }
-
-  private buildTwilioSayNoun(
-    campaign: any,
-    message: string,
-    language?: string,
-  ) {
     const twilioVoice = this.resolveTwilioVoice(campaign?.voice, language);
+    this.logger.debug(
+      `buildTwilioSpeechNoun: twilioVoice=${twilioVoice}; voice=${campaign?.voice || 'not set'}; language=${language || 'not set'}`,
+    );
     const sayAttrs = this.buildSayAttributes(twilioVoice, language);
     return `<Say${sayAttrs}>${this.escapeXml(message)}</Say>`;
   }
@@ -2434,10 +2273,6 @@ Return ONLY valid JSON with exactly these fields:
   // ---------------------------------------------------------------------------
   // URL helpers
   // ---------------------------------------------------------------------------
-
-  private getTwilioTtsUrl(audioId: string) {
-    return `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/tts/${encodeURIComponent(audioId)}`;
-  }
 
   private getPublicApiBaseUrl() {
     const configured =
@@ -2561,9 +2396,20 @@ Return ONLY valid JSON with exactly these fields:
       .join(' ');
   }
 
-  private buildLiveOpeningScript(campaign: any, contact: any, botProfile: any) {
+  private buildLiveOpeningScript(
+    campaign: any,
+    contact: any,
+    botProfile: any,
+    language?: string,
+  ) {
+    const lang = this.normalizeLanguageCode(
+      language || campaign?.language || '',
+    );
+    const defaultGreeting = this.isHindiLanguage(lang)
+      ? `नमस्ते {{firstName}}, मैं ${botProfile.name} हूँ।`
+      : `Hi {{firstName}}, this is ${botProfile.name}.`;
     const greeting = this.applyBotVariables(
-      botProfile.greeting || `Hi {{firstName}}, this is ${botProfile.name}.`,
+      botProfile.greeting || defaultGreeting,
       contact,
       campaign,
       botProfile,
@@ -2572,6 +2418,12 @@ Return ONLY valid JSON with exactly these fields:
     const objective = this.stripSentenceEnding(
       this.compactForSpeech(campaign.objective || 'a quick follow-up', 90),
     );
+    if (this.isHindiLanguage(lang)) {
+      return this.compactForSpeech(
+        `${firstSentence} मैं ${objective} के बारे में कॉल कर रहा हूँ। मैं इसे संक्षिप्त रखूँगा। क्या अभी बात करना सही समय है?`,
+        280,
+      );
+    }
     return this.compactForSpeech(
       `${firstSentence} I am calling about ${objective}. I will keep this brief. Is now a good time?`,
       220,
@@ -3557,18 +3409,8 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       await this.geminiLiveService.initializeForLaunch();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      if (this.allowsTwilioGatherFallback()) {
-        this.logger.warn(
-          `Gemini Live preflight failed for campaign ${campaignId}; continuing because AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK is enabled. Reason: ${reason}`,
-        );
-        return;
-      }
-
       this.logger.warn(
-        `Gemini Live preflight blocked campaign ${campaignId}: ${reason}`,
-      );
-      throw new BadRequestException(
-        `Gemini Live is not ready: ${reason}. AI calling was not started.`,
+        `Gemini Live preflight failed for campaign ${campaignId}; continuing to dial because per-call Gemini Live session initialization will determine call readiness. Reason: ${reason}`,
       );
     }
   }
@@ -3628,25 +3470,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     );
   }
 
-  private isTwilioHdPlayEnabled() {
-    return readBooleanConfig(
-      this.configService,
-      'TWILIO_HD_PLAY_ENABLED',
-      TWILIO_HD_PLAY_ENABLED,
-    );
-  }
-
-  private getGoogleTtsTimeoutMs() {
-    return Math.floor(
-      readNumberConfig(
-        this.configService,
-        'GOOGLE_TTS_TIMEOUT_MS',
-        GOOGLE_TTS_TIMEOUT_MS,
-        500,
-        30000,
-      ),
-    );
-  }
 
   private getGeminiTwilioTimeoutMs() {
     return Math.floor(
@@ -3929,8 +3752,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
 
   private resolveTwilioVoice(voice?: string, language?: string) {
     const googleVoice = this.resolveGoogleTtsVoice(voice, language);
+    if (googleVoice.includes('Chirp3')) {
+      return `Google.${googleVoice}`;
+    }
     const voiceName = this.extractGeminiVoiceName(googleVoice);
-
     if (googleVoice.startsWith('hi-IN')) return 'Google.hi-IN-Neural2-C';
     if (googleVoice.startsWith('en-US')) {
       return voiceName === 'Kore' || voiceName === 'Aoede'
@@ -3940,10 +3765,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     return voiceName === 'Kore' || voiceName === 'Aoede'
       ? 'Google.en-IN-Wavenet-A'
       : 'Google.en-IN-Wavenet-D';
-  }
-
-  private async getGoogleTtsAccessToken() {
-    return '';
   }
 
   private async getGeminiApiKey() {

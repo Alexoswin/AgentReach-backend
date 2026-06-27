@@ -13,6 +13,7 @@ type GeminiLiveSession = {
 type GeminiLiveSessionInput = {
   systemInstruction?: string;
   voiceName?: string;
+  languageCode?: string;
   timeoutMs?: number;
 };
 
@@ -58,6 +59,7 @@ export class GeminiLiveService {
         input.systemInstruction ||
         'You are a live phone-call agent. Speak naturally, briefly, and helpfully.',
       voiceName: input.voiceName,
+      languageCode: input.languageCode,
       timeoutMs: input.timeoutMs,
     });
   }
@@ -148,14 +150,17 @@ export class GeminiLiveService {
           outputAudioTranscription: {},
         };
 
-        if (input.voiceName) {
-          setup.generationConfig.speechConfig = {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: input.voiceName,
-              },
-            },
-          };
+        if (input.voiceName || input.languageCode) {
+          const speechConfig: Record<string, unknown> = {};
+          if (input.voiceName) {
+            speechConfig.voiceConfig = {
+              prebuiltVoiceConfig: { voiceName: input.voiceName },
+            };
+          }
+          if (input.languageCode) {
+            speechConfig.languageCode = input.languageCode;
+          }
+          setup.generationConfig.speechConfig = speechConfig;
         }
 
         socket.send(JSON.stringify({ setup }));

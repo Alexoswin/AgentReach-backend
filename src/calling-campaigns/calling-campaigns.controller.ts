@@ -9,7 +9,6 @@ import {
   Header,
   Query,
   HttpCode,
-  StreamableFile,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -122,20 +121,6 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Twilio AI calling recording webhook (GET fallback)' })
   async twilioRecordingGet(@Param('callId') callId: string, @Query() query: any) {
     return this.callingCampaignsService.handleTwilioRecording(callId, query);
-  }
-
-  @Get('twilio/tts/:audioId')
-  @Public()
-  @Header('Content-Type', 'audio/mpeg')
-  @ApiOperation({ summary: 'Google TTS audio for Twilio AI calling' })
-  async twilioTts(@Param('audioId') audioId: string) {
-    const audio =
-      await this.callingCampaignsService.renderGoogleSpeechAudio(audioId);
-    return new StreamableFile(audio, {
-      type: 'audio/mpeg',
-      disposition: 'inline',
-      length: audio.length,
-    });
   }
 
   @Get(':id')

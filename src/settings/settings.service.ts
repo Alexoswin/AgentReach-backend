@@ -297,10 +297,89 @@ export class SettingsService {
     language?: string;
     text?: string;
   }) {
-    void dto;
-    throw new BadRequestException(
-      'Gemini voice preview is disabled. The saved Gemini API key is used for Gemini Live calling, bot chat, embeddings, and campaign generation.',
-    );
+    const apiKey = await this.getGeminiApiKey();
+    if (!apiKey) {
+      throw new BadRequestException(
+        'Gemini API key is not configured. Set it in Settings to enable voice preview.',
+      );
+    }
+
+    const rawVoice = String(dto.voice || '').trim();
+    const withoutProvider = rawVoice.replace(/^google:/i, '');
+    const parts = withoutProvider.split('-');
+    const lastName = parts.at(-1) || '';
+    const voiceName =
+      lastName.charAt(0).toUpperCase() + lastName.slice(1).toLowerCase() ||
+      'Puck';
+
+    const text =
+      String(dto.text || '').trim() ||
+      'Hello! This is a preview of the selected voice.';
+
+    const model = 'gemini-2.5-flash-preview-tts';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: { prebuiltVoiceConfig: { voiceName } },
+            },
+          },
+        }),
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch (err) {
+      throw new BadRequestException(
+        `Voice preview request failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const data = await response.json().catch(() => null);
+    const pcmBase64: string | undefined =
+      data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+    if (!response.ok || !pcmBase64) {
+      throw new BadRequestException(
+        `Voice preview failed: ${data?.error?.message || response.statusText || 'empty audio response'}`,
+      );
+    }
+
+    const pcm = Buffer.from(pcmBase64, 'base64');
+    const wav = this.pcmToWav(pcm, 24000, 1, 16);
+    const audioDataUrl = `data:audio/wav;base64,${wav.toString('base64')}`;
+    return { audioDataUrl };
+  }
+
+  private pcmToWav(
+    pcm: Buffer,
+    sampleRate: number,
+    numChannels: number,
+    bitsPerSample: number,
+  ): Buffer {
+    const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([header, pcm]);
   }
 
   private async testGeminiApiKey(apiKey: string) {

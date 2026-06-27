@@ -11,7 +11,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
   function createService() {
     const service = Object.create(CallingCampaignsService.prototype);
     service.googleSpeechCache = new Map();
-    service.logger = { warn: jest.fn() };
+    service.logger = { warn: jest.fn(), debug: jest.fn() };
     service.configService = {
       get: jest.fn((key: string, fallback?: unknown) => {
         if (key === 'PUBLIC_API_URL') return 'https://backend.example.com/api';
@@ -26,7 +26,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     return service;
   }
 
-  it('falls back to Twilio Say when HD TTS is requested', async () => {
+  it('falls back to Twilio Say when Gemini API key is missing', async () => {
     const service = createService();
     global.fetch = jest.fn();
 
@@ -37,15 +37,12 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
 
     expect(twiml).toBe(
-      '<Say voice="Google.en-IN-Wavenet-D" language="en-IN">Hello from ReachConvert.</Say>',
+      '<Say voice="Google.en-IN-Chirp3-HD-Puck" language="en-IN">Hello from ReachConvert.</Say>',
     );
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(service.logger.warn).toHaveBeenCalledWith(
-      'Google TTS auth is disabled for HD AI calling audio; falling back to Twilio Say.',
-    );
   });
 
-  it('does not call Google TTS when HD mode is requested', async () => {
+  it('does not call Gemini TTS when API key is absent', async () => {
     const service = createService();
     global.fetch = jest.fn();
 
@@ -56,12 +53,12 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
 
     expect(twiml).toBe(
-      '<Say voice="Google.en-IN-Wavenet-D" language="en-IN">Hello from ReachConvert.</Say>',
+      '<Say voice="Google.en-IN-Chirp3-HD-Puck" language="en-IN">Hello from ReachConvert.</Say>',
     );
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('uses Twilio Say directly for non-HD voice calls', async () => {
+  it('uses Chirp3 HD voice in Twilio Say for all campaigns', async () => {
     const service = createService();
     global.fetch = jest.fn();
 
@@ -72,7 +69,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
     );
 
     expect(twiml).toBe(
-      '<Say voice="Google.en-US-Neural2-F" language="en-US">Hello &amp; welcome.</Say>',
+      '<Say voice="Google.en-US-Chirp3-HD-Kore" language="en-US">Hello &amp; welcome.</Say>',
     );
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -93,7 +90,7 @@ describe('CallingCampaignsService.buildTwilioSpeechNoun', () => {
 
     expect(twiml).toContain('language="en-US"');
     expect(twiml).toContain('speechTimeout="1"');
-    expect(twiml).toContain('<Say');
+    expect(twiml).toContain('Google.en-IN-Chirp3-HD-Puck');
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

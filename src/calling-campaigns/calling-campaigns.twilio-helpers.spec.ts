@@ -498,7 +498,7 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     expect(result.message).toContain('relaunched');
   });
 
-  it('blocks launch before dialing when Gemini Live preflight fails', async () => {
+  it('continues launch when Gemini Live preflight fails before dialing', async () => {
     const service = createService();
     service.configService.get.mockImplementation(
       (key: string, fallback?: unknown) => {
@@ -511,6 +511,11 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     service.geminiLiveService.initializeForLaunch.mockRejectedValue(
       new Error('missing key'),
     );
+    service.runTwilioOutboundCalls = jest.fn().mockResolvedValue({
+      placed: 1,
+      failed: 0,
+      errors: [],
+    });
     service.resetCallsForRelaunch = jest.fn();
     service.db.systemSettings.findUnique.mockResolvedValue({
       twilioStatus: 'CONNECTED',
@@ -534,16 +539,29 @@ describe('CallingCampaignsService Twilio and contact helpers', () => {
     });
     global.fetch = jest.fn();
 
-    await expect(service.launchCampaign('campaign-1')).rejects.toThrow(
-      'Gemini Live is not ready: missing key. AI calling was not started.',
+    await expect(service.launchCampaign('campaign-1')).resolves.toEqual(
+      expect.objectContaining({
+        success: true,
+        message: 'Calling campaign started in twilio mode',
+      }),
     );
 
     expect(service.geminiLiveService.initializeForLaunch).toHaveBeenCalledTimes(
       1,
     );
-    expect(service.resetCallsForRelaunch).not.toHaveBeenCalled();
-    expect(service.db.callingCampaign.update).not.toHaveBeenCalled();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(service.db.callingCampaign.update).toHaveBeenCalledWith({
+      where: { id: 'campaign-1' },
+      data: { status: 'LAUNCHING' },
+    });
+    expect(service.runTwilioOutboundCalls).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({
+        twilioAccountSid: 'AC123',
+      }),
+    );
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      'Gemini Live preflight failed for campaign campaign-1; continuing to dial because per-call Gemini Live session initialization will determine call readiness. Reason: missing key',
+    );
   });
 
   it('checks Gemini Live readiness before queueing Twilio calls', async () => {
