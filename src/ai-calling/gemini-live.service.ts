@@ -140,6 +140,7 @@ export class GeminiLiveService {
       socket.onopen = () => {
         const setup: Record<string, any> = {
           model: `models/${model}`,
+          responseModalities: ['AUDIO'],
           generationConfig: {
             responseModalities: ['AUDIO'],
           },

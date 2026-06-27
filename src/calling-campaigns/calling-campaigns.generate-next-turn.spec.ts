@@ -65,6 +65,30 @@ describe('CallingCampaignsService.generateNextCallingTurn (Gemini API)', () => {
     );
   });
 
+  it('uses scripted fallback by default instead of the live voice issue hangup', async () => {
+    const service = createService();
+    service.configService.get.mockReturnValue(undefined);
+    global.fetch = jest.fn();
+    const call = createCall();
+
+    const result = await service.generateNextCallingTurn(
+      call,
+      'Tell me about the product.',
+      [
+        {
+          speaker: 'contact',
+          label: 'Customer',
+          text: 'Tell me about the product.',
+        },
+      ],
+    );
+
+    expect(result.shouldEnd).toBe(false);
+    expect(result.reply).not.toMatch(/live voice connection issue/i);
+    expect(result.reply).toBeTruthy();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('uses an operational fallback in Gemini Live mode when generation is unavailable', async () => {
     const service = createService();
     service.configService.get.mockImplementation((key: string) => {
@@ -91,6 +115,16 @@ describe('CallingCampaignsService.generateNextCallingTurn (Gemini API)', () => {
     expect(result.reply).toMatch(/live voice connection issue/i);
     expect(result.reply).not.toContain(call.campaign.botKnowledge);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('clamps Gemini Twilio timeout overrides below 2000ms', () => {
+    const service = createService();
+    service.configService.get.mockImplementation((key: string) => {
+      if (key === 'GEMINI_TWILIO_TIMEOUT_MS') return '500';
+      return undefined;
+    });
+
+    expect(service.getGeminiTwilioTimeoutMs()).toBe(2000);
   });
 
   it('uses trained knowledge in fallback when Gemini API is unavailable', async () => {

@@ -53,14 +53,14 @@ type GeneratedCallingCampaign = {
   language?: string;
 };
 
-const GEMINI_TWILIO_TIMEOUT_MS = 5000;
-const TWILIO_RESPONSE_BUDGET_MS = 5000;
+const GEMINI_TWILIO_TIMEOUT_MS = 8000;
+const TWILIO_RESPONSE_BUDGET_MS = 10000;
 const TWILIO_SPEECH_TIMEOUT_SECONDS = 1;
-const MAX_GEMINI_LIVE_CALL_MODELS = 2;
+const MAX_GEMINI_LIVE_CALL_MODELS = 1;
 const DEFAULT_LIVE_PROMPT_SCRIPT_TURNS = 14;
 const DEFAULT_LIVE_RAC_QUERY_CHARS = 900;
-const AI_CALLING_MODE = 'gemini_live';
-const AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK = false;
+const AI_CALLING_MODE = 'twilio_gather';
+const AI_CALLING_ALLOW_TWILIO_GATHER_FALLBACK = true;
 const DEFAULT_GEMINI_TEXT_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.0-flash-001',
@@ -2814,12 +2814,16 @@ AI Agent: Done. I will share the context with the team and make sure the next me
         ...(configuredModel ? [configuredModel] : []),
         ...defaultModels,
       ].filter(Boolean);
-      const uniqueModels = Array.from(new Set(candidateModels)).slice(
-        0,
-        this.getMaxGeminiLiveCallModels(),
-      );
       let lastFailureReason = 'unknown error';
       const geminiTwilioTimeoutMs = this.getGeminiTwilioTimeoutMs();
+      const responseBudgetModelLimit = Math.max(
+        1,
+        Math.floor(this.getTwilioResponseBudgetMs() / geminiTwilioTimeoutMs),
+      );
+      const uniqueModels = Array.from(new Set(candidateModels)).slice(
+        0,
+        Math.min(this.getMaxGeminiLiveCallModels(), responseBudgetModelLimit),
+      );
 
       for (const model of uniqueModels) {
         // FIX 5: Fresh controller per model so a previous timeout/abort does not
@@ -3480,10 +3484,10 @@ AI Agent: Done. I will share the context with the team and make sure the next me
           this.configService,
           'VERTEX_TWILIO_TIMEOUT_MS',
           GEMINI_TWILIO_TIMEOUT_MS,
-          500,
+          2000,
           30000,
         ),
-        500,
+        2000,
         30000,
       ),
     );

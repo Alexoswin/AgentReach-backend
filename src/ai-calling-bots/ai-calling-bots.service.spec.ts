@@ -300,3 +300,55 @@ describe('AiCallingBotsService.chat knowledge boundary', () => {
     expect(String((result as any).reply || '').length).toBeGreaterThan(0);
   });
 });
+
+describe('AiCallingBotsService embeddings', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('uses the current Gemini embedding model by default', async () => {
+    const service = new AiCallingBotsService(
+      {
+        systemSettings: {
+          findUnique: jest.fn().mockResolvedValue({}),
+        },
+      } as any,
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'GEMINI_API_KEY') return 'gemini-key';
+          return undefined;
+        }),
+      } as any,
+    );
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        embeddings: [{ values: [0.1, 0.2, 0.3] }],
+      }),
+    });
+
+    const result = await (service as any).embedManyChunks(
+      ['ReachConvert knowledge'],
+      'document',
+    );
+
+    expect(result.model).toBe('gemini-embedding-001');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '/models/gemini-embedding-001:batchEmbedContents?key=gemini-key',
+      ),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.requests[0]).toEqual(
+      expect.objectContaining({
+        model: 'models/gemini-embedding-001',
+        taskType: 'RETRIEVAL_DOCUMENT',
+        outputDimensionality: 384,
+      }),
+    );
+  });
+});

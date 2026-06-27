@@ -86,7 +86,7 @@ describe('GeminiLiveService', () => {
     expect(instances[0].url).toContain('key=gemini-key');
     const setup = JSON.parse(instances[0].sent[0]);
     expect(setup.setup.model).toBe('models/gemini-3.1-flash-live-preview');
-    expect(setup.setup.responseModalities).toBeUndefined();
+    expect(setup.setup.responseModalities).toEqual(['AUDIO']);
     expect(setup.setup.generationConfig.responseModalities).toEqual(['AUDIO']);
     expect(instances[0].close).toHaveBeenCalled();
   });

@@ -5,19 +5,19 @@ describe('CallingCampaignsService.resolveTwilioVoice', () => {
     const service = Object.create(CallingCampaignsService.prototype);
 
     expect(service.resolveTwilioVoice('Puck', 'en-IN')).toBe(
-      'Google.en-IN-Wavenet-D',
+      'Google.en-IN-Chirp3-HD-Puck',
     );
     expect(service.resolveTwilioVoice('Fenrir', 'en-IN')).toBe(
-      'Google.en-IN-Wavenet-D',
+      'Google.en-IN-Chirp3-HD-Fenrir',
     );
     expect(service.resolveTwilioVoice('google:en-IN-Chirp3-HD-Kore')).toBe(
-      'Google.en-IN-Wavenet-A',
+      'Google.en-IN-Chirp3-HD-Kore',
     );
     expect(service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck')).toBe(
-      'Google.en-US-Neural2-D',
+      'Google.en-US-Chirp3-HD-Puck',
     );
     expect(service.resolveTwilioVoice('google:hi-IN-Chirp3-HD-Puck')).toBe(
-      'Google.hi-IN-Neural2-C',
+      'Google.hi-IN-Chirp3-HD-Puck',
     );
   });
 
@@ -26,20 +26,20 @@ describe('CallingCampaignsService.resolveTwilioVoice', () => {
 
     expect(
       service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'hi-IN'),
-    ).toBe('Google.hi-IN-Neural2-C');
+    ).toBe('Google.hi-IN-Chirp3-HD-Puck');
     expect(
       service.resolveTwilioVoice('google:en-US-Chirp3-HD-Puck', 'en-IN'),
-    ).toBe('Google.en-IN-Wavenet-D');
+    ).toBe('Google.en-IN-Chirp3-HD-Puck');
     expect(
       service.resolveTwilioVoice('google:en-IN-Chirp3-HD-Puck', 'en-US'),
-    ).toBe('Google.en-US-Neural2-D');
+    ).toBe('Google.en-US-Chirp3-HD-Puck');
   });
 
   it('uses a Google fallback voice when the campaign voice is unknown', () => {
     const service = Object.create(CallingCampaignsService.prototype);
 
     expect(service.resolveTwilioVoice('UnknownVoice', 'en-IN')).toBe(
-      'Google.en-IN-Wavenet-D',
+      'Google.en-IN-Chirp3-HD-Puck',
     );
   });
 });
