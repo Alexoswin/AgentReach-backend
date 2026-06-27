@@ -1,8 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
 import { randomUUID } from 'crypto';
-
-export type ContactDirectoryDocument = ContactDirectory & Document;
 
 @Schema({ collection: 'ContactDirectory', timestamps: true })
 export class ContactDirectory {

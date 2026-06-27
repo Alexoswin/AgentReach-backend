@@ -1,7 +1,4 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
-
-export type SystemSettingsDocument = SystemSettings & Document;
 
 @Schema({ collection: 'SystemSettings', timestamps: true })
 export class SystemSettings {

@@ -53,20 +53,6 @@ export function buildRacContextFromResults(
   return buildAgentRacContextFromResults(results, topK);
 }
 
-export function synthesizeBestAnswer(
-  question: string,
-  results: Array<{ content: string }>,
-  botKnowledge: string,
-) {
-  const mergedKnowledge = [...results.map((item) => item.content), botKnowledge]
-    .filter(Boolean)
-    .join('\n');
-  return compactSentenceBase(
-    extractRelevantKnowledgeSummary(question, mergedKnowledge, 240, []),
-    240,
-  );
-}
-
 export function buildFallbackChatReply(
   message: string,
   bot: ChatBotPersona,

@@ -1,8 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Schema as MongooseSchema } from 'mongoose';
+import { Schema as MongooseSchema } from 'mongoose';
 import { randomUUID } from 'crypto';
-
-export type AiCallingBotEmbeddingDocument = AiCallingBotEmbedding & Document;
 
 @Schema({ collection: 'AiCallingBotEmbedding', timestamps: true })
 export class AiCallingBotEmbedding {

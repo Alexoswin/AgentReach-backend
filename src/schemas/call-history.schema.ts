@@ -1,8 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Schema as MongooseSchema } from 'mongoose';
+import { Schema as MongooseSchema } from 'mongoose';
 import { randomUUID } from 'crypto';
-
-export type CallHistoryDocument = CallHistory & Document;
 
 @Schema({ collection: 'CallHistory', timestamps: true })
 export class CallHistory {
