@@ -45,7 +45,6 @@ import {
   getMaxTrainingPdfBytes,
   getMinTrainingTextLength,
   getRacHistoryLineLimit,
-  shouldUseFastPathReply,
 } from './ai-calling-bots.config-utils';
 import { extractPdfTrainingText as parsePdfTrainingText } from './ai-calling-bots.pdf-utils';
 import {
@@ -379,13 +378,8 @@ export class AiCallingBotsService {
       results,
       racContext,
     );
-    if (shouldUseFastPathReply(this.configService, message, history)) {
-      return {
-        reply: fallback,
-        sources: results,
-      };
-    }
 
+    // Always go through the LLM — the fallback is only used if the API call completely fails.
     const llmReply = await this.generateChatReplyWithGemini(
       {
         name: bot.name || 'Agent',
