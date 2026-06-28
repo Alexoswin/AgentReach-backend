@@ -1,7 +1,9 @@
 export type ResponseSpeed = 'fast' | 'balanced' | 'conservative';
+export type ActivityDetectionMode = 'manual' | 'automatic';
 
 export type ResponseSpeedPreset = {
   responseSpeed: ResponseSpeed;
+  activityDetection: ActivityDetectionMode;
   startOfSpeechSensitivity:
     | 'START_SENSITIVITY_HIGH'
     | 'START_SENSITIVITY_LOW';
@@ -17,6 +19,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
   {
     fast: {
       responseSpeed: 'fast',
+      activityDetection: 'manual',
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
       prefixPaddingMs: 60,
@@ -25,6 +28,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
     },
     balanced: {
       responseSpeed: 'balanced',
+      activityDetection: 'automatic',
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
       prefixPaddingMs: 100,
@@ -33,6 +37,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
     },
     conservative: {
       responseSpeed: 'conservative',
+      activityDetection: 'automatic',
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
       prefixPaddingMs: 150,
@@ -59,6 +64,9 @@ export function getResponseSpeedPreset(value: unknown): ResponseSpeedPreset {
 
 export function buildAutomaticActivityDetectionConfig(value: unknown) {
   const preset = getResponseSpeedPreset(value);
+  if (preset.activityDetection === 'manual') {
+    return { disabled: true };
+  }
   return {
     disabled: false,
     startOfSpeechSensitivity: preset.startOfSpeechSensitivity,
