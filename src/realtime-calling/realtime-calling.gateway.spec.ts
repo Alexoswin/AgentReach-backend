@@ -11,7 +11,7 @@ describe('RealtimeCallingGateway', () => {
     const db = {
       callHistory: {
         update: jest.fn(async () => ({})),
-        findUnique: jest.fn(async () => ({
+        findUnique: jest.fn<Promise<any>, any[]>(async () => ({
           id: 'call-1',
           scripts: [],
           sessionErrors: [],
@@ -222,6 +222,51 @@ describe('RealtimeCallingGateway', () => {
     state.assistantAudioActive = true;
     (gateway as any).forwardAudio(state, speechPayload);
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds explicit spoken language and accent instructions', () => {
+    const { gateway } = createGateway();
+    const instruction = (gateway as any).buildSystemInstruction({
+      campaign: {
+        selectedLanguage: 'en-IN',
+        selectedVoice: 'google:en-IN-Chirp3-HD-Fenrir',
+        aiSpeaksFirst: true,
+      },
+      contact: { firstName: 'Ada' },
+    });
+
+    expect(instruction).toContain('Selected Gemini Live voice: Fenrir.');
+    expect(instruction).toContain('Spoken language: English.');
+    expect(instruction).toContain('Accent and locale: Indian English.');
+    expect(instruction).toContain('You must speak only in English.');
+    expect(instruction).toContain('Do not switch to American or British English');
+  });
+
+  it('extracts Gemini Live voice names from stored Google voice ids', () => {
+    const { gateway } = createGateway();
+
+    expect((gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-Puck')).toBe(
+      'Puck',
+    );
+    expect((gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-fenrir')).toBe(
+      'Fenrir',
+    );
+  });
+
+  it('resolves selected voice using the active selected language', () => {
+    const { gateway } = createGateway();
+    const state = {
+      campaign: {
+        selectedLanguage: 'hi-IN',
+        selectedVoice: 'google:en-IN-Chirp3-HD-Fenrir',
+      },
+      call: {},
+    };
+
+    expect((gateway as any).resolveSelectedLanguage(state)).toBe('hi-IN');
+    expect((gateway as any).resolveSelectedVoice(state)).toBe(
+      'google:hi-IN-Chirp3-HD-Fenrir',
+    );
   });
 
   function findPayloadInDbfsRange(min: number, max: number) {

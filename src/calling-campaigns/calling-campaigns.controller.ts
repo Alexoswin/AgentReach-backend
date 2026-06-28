@@ -9,10 +9,13 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { Public } from '../auth/public.decorator';
 import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
@@ -117,6 +120,22 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Twilio recording callback fallback' })
   twilioRecordingGet(@Param('callId') callId: string, @Query() query: any) {
     return this.service.handleTwilioRecording(callId, query);
+  }
+
+  @Get('recordings/:callId/audio')
+  @ApiOperation({ summary: 'Get proxied AI call recording audio' })
+  async recordingAudio(
+    @Param('callId') callId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const recording = await this.service.getCallRecordingAudio(callId);
+    res.setHeader('Content-Type', recording.contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${recording.filename}"`,
+    );
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    return new StreamableFile(recording.buffer);
   }
 
   @Get(':id')

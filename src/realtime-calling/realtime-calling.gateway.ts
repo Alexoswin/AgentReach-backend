@@ -190,13 +190,12 @@ export class RealtimeCallingGateway {
       state.campaign.realtimeModel ||
       process.env.GEMINI_LIVE_MODEL ||
       'gemini-2.5-flash-native-audio-preview-12-2025';
-    const voiceName = this.extractVoiceName(
-      state.campaign.selectedVoice || state.campaign.voice,
-    );
-    const languageCode =
-      state.campaign.selectedLanguage || state.campaign.language || 'en-IN';
+    const languageCode = this.resolveSelectedLanguage(state);
+    const selectedVoice = this.resolveSelectedVoice(state);
+    const voiceName = this.extractVoiceName(selectedVoice);
+    const languageProfile = this.getLanguageProfile(languageCode);
     this.logger.log(
-      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} requestedLanguage=${languageCode} responseSpeed=${responseSpeedPreset.responseSpeed} vadSilenceMs=${responseSpeedPreset.silenceDurationMs} noiseGateDbfs=${responseSpeedPreset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
+      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} selectedVoice=${selectedVoice} requestedLanguage=${languageCode} spokenLanguage=${languageProfile.spokenLanguage} responseSpeed=${responseSpeedPreset.responseSpeed} vadSilenceMs=${responseSpeedPreset.silenceDurationMs} noiseGateDbfs=${responseSpeedPreset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
     );
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
       model,
@@ -464,11 +463,17 @@ export class RealtimeCallingGateway {
     const campaign = state.campaign || {};
     const contact = state.contact || {};
     const botId = campaign.aiCallingBotId || '';
+    const languageProfile = this.getLanguageProfile(
+      this.resolveSelectedLanguage(state),
+    );
+    const liveVoiceName = this.extractVoiceName(this.resolveSelectedVoice(state));
     const pieces = [
       'You are the live voice agent for an outbound AgentReach call.',
+      `Critical voice locale rule: every spoken response must be in ${languageProfile.spokenLanguage} (${languageProfile.code}) using ${languageProfile.accent}.`,
       `Agent name: ${campaign.botName || 'Agent'}.`,
       `Role: ${campaign.botRole || 'AI calling specialist'}.`,
       `Goal: ${campaign.botGoal || campaign.objective || 'Understand the contact need and capture a clear next step.'}.`,
+      `Selected Gemini Live voice: ${liveVoiceName}.`,
       campaign.prompt ? `Campaign prompt: ${campaign.prompt}` : '',
       campaign.botPersonality
         ? `Personality: ${campaign.botPersonality}`
@@ -488,7 +493,10 @@ export class RealtimeCallingGateway {
         .filter(Boolean)
         .join(' ') || 'Unknown contact'}.`,
       contact.notes ? `Contact notes: ${contact.notes}` : '',
-      `Language code: ${campaign.selectedLanguage || campaign.language || 'en-IN'}.`,
+      `Language code: ${languageProfile.code}.`,
+      `Spoken language: ${languageProfile.spokenLanguage}.`,
+      `Accent and locale: ${languageProfile.accent}.`,
+      `You must speak only in ${languageProfile.spokenLanguage}. ${languageProfile.instruction}`,
       'Keep each spoken turn brief and natural. Ask one clear question at a time.',
       'If the contact is busy, ask for a better callback time.',
       'Never claim the call is human. Never invent pricing, policies, or facts.',
@@ -625,7 +633,150 @@ export class RealtimeCallingGateway {
       /^google:/i,
       '',
     );
-    return raw.split('-').at(-1) || 'Puck';
+    const name = raw.split('-').at(-1) || 'Puck';
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  private resolveSelectedLanguage(state: ActiveCallSession) {
+    const campaign = state.campaign || {};
+    const call = state.call || {};
+    return (
+      campaign.selectedLanguage ||
+      campaign.language ||
+      call.selectedLanguage ||
+      'en-IN'
+    );
+  }
+
+  private resolveSelectedVoice(state: ActiveCallSession) {
+    const campaign = state.campaign || {};
+    const call = state.call || {};
+    const language = this.resolveSelectedLanguage(state);
+    const raw =
+      campaign.selectedVoice ||
+      campaign.voice ||
+      call.selectedVoice ||
+      `google:${language}-Chirp3-HD-Puck`;
+    return this.normalizeGoogleVoiceForLanguage(raw, language);
+  }
+
+  private normalizeGoogleVoiceForLanguage(voice: string, language: string) {
+    const raw = String(voice || '').trim();
+    const withoutProvider = raw.replace(/^google:/i, '');
+    const match = withoutProvider.match(
+      /^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-([A-Za-z]+)$/,
+    );
+    const voiceName = match?.[1] || withoutProvider.split('-').at(-1) || 'Puck';
+    return `google:${language}-Chirp3-HD-${voiceName}`;
+  }
+
+  private getLanguageProfile(languageCode?: string) {
+    const code = String(languageCode || 'en-IN').trim() || 'en-IN';
+    const profiles: Record<
+      string,
+      { spokenLanguage: string; accent: string; instruction: string }
+    > = {
+      'en-IN': {
+        spokenLanguage: 'English',
+        accent: 'Indian English',
+        instruction:
+          'Use natural Indian English phrasing and pronunciation. Do not switch to American or British English unless the contact asks.',
+      },
+      'en-US': {
+        spokenLanguage: 'English',
+        accent: 'American English',
+        instruction: 'Use natural American English phrasing and pronunciation.',
+      },
+      'en-GB': {
+        spokenLanguage: 'English',
+        accent: 'British English',
+        instruction: 'Use natural British English phrasing and pronunciation.',
+      },
+      'hi-IN': {
+        spokenLanguage: 'Hindi',
+        accent: 'Indian Hindi',
+        instruction: 'Speak Hindi naturally. Use English words only if common in Indian conversation.',
+      },
+      'bn-IN': {
+        spokenLanguage: 'Bengali',
+        accent: 'Indian Bengali',
+        instruction: 'Speak Bengali naturally.',
+      },
+      'gu-IN': {
+        spokenLanguage: 'Gujarati',
+        accent: 'Indian Gujarati',
+        instruction: 'Speak Gujarati naturally.',
+      },
+      'kn-IN': {
+        spokenLanguage: 'Kannada',
+        accent: 'Indian Kannada',
+        instruction: 'Speak Kannada naturally.',
+      },
+      'ml-IN': {
+        spokenLanguage: 'Malayalam',
+        accent: 'Indian Malayalam',
+        instruction: 'Speak Malayalam naturally.',
+      },
+      'mr-IN': {
+        spokenLanguage: 'Marathi',
+        accent: 'Indian Marathi',
+        instruction: 'Speak Marathi naturally.',
+      },
+      'ta-IN': {
+        spokenLanguage: 'Tamil',
+        accent: 'Indian Tamil',
+        instruction: 'Speak Tamil naturally.',
+      },
+      'te-IN': {
+        spokenLanguage: 'Telugu',
+        accent: 'Indian Telugu',
+        instruction: 'Speak Telugu naturally.',
+      },
+      'es-ES': {
+        spokenLanguage: 'Spanish',
+        accent: 'Spain Spanish',
+        instruction: 'Speak Spanish naturally for Spain.',
+      },
+      'es-MX': {
+        spokenLanguage: 'Spanish',
+        accent: 'Mexican Spanish',
+        instruction: 'Speak Spanish naturally for Mexico.',
+      },
+      'fr-FR': {
+        spokenLanguage: 'French',
+        accent: 'France French',
+        instruction: 'Speak French naturally for France.',
+      },
+      'fr-CA': {
+        spokenLanguage: 'French',
+        accent: 'Canadian French',
+        instruction: 'Speak French naturally for Canada.',
+      },
+      'de-DE': {
+        spokenLanguage: 'German',
+        accent: 'German',
+        instruction: 'Speak German naturally.',
+      },
+      'it-IT': {
+        spokenLanguage: 'Italian',
+        accent: 'Italian',
+        instruction: 'Speak Italian naturally.',
+      },
+      'pt-BR': {
+        spokenLanguage: 'Portuguese',
+        accent: 'Brazilian Portuguese',
+        instruction: 'Speak Portuguese naturally for Brazil.',
+      },
+    };
+    return {
+      code,
+      ...(profiles[code] || {
+        spokenLanguage: code,
+        accent: code,
+        instruction:
+          'Follow the selected locale consistently for every spoken turn.',
+      }),
+    };
   }
 
   private parseNumber(value: unknown, fallback: number) {

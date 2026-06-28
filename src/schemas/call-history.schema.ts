@@ -58,6 +58,15 @@ export class CallHistory {
   @Prop()
   recordingUrl?: string;
 
+  @Prop()
+  recordingSid?: string;
+
+  @Prop()
+  recordingStatus?: string;
+
+  @Prop()
+  recordingDuration?: number;
+
   @Prop({ default: Date.now })
   timestamp: Date;
 

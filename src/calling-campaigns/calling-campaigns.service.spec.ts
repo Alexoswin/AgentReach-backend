@@ -89,6 +89,22 @@ describe('CallingCampaignsService', () => {
     ).toBe('fast');
   });
 
+  it('keeps Google HD voice ids aligned to the selected language', () => {
+    const { service } = createService();
+
+    const payload = (service as any).normalizeCampaignPayload({
+      language: 'hi-IN',
+      selectedLanguage: 'hi-IN',
+      voice: 'google:en-IN-Chirp3-HD-Fenrir',
+      selectedVoice: 'google:en-IN-Chirp3-HD-Fenrir',
+    });
+
+    expect(payload.language).toBe('hi-IN');
+    expect(payload.selectedLanguage).toBe('hi-IN');
+    expect(payload.voice).toBe('google:hi-IN-Chirp3-HD-Fenrir');
+    expect(payload.selectedVoice).toBe('google:hi-IN-Chirp3-HD-Fenrir');
+  });
+
   it('returns streaming TwiML for Twilio answer webhooks', async () => {
     const { service, db } = createService({
       calls: [
@@ -121,6 +137,67 @@ describe('CallingCampaignsService', () => {
     await expect(service.handleTwilioResponse('call-1', {})).resolves.toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
     );
+  });
+
+  it('stores Twilio recording callback metadata', async () => {
+    const { service, db } = createService({
+      calls: [{ id: 'call-1', campaignId: 'campaign-1' }],
+    });
+
+    await service.handleTwilioRecording('call-1', {
+      RecordingUrl: 'https://api.twilio.com/recordings/RE123',
+      RecordingSid: 'RE123',
+      RecordingStatus: 'completed',
+      RecordingDuration: '42',
+    });
+
+    expect(db.callHistory.update).toHaveBeenCalledWith({
+      where: { id: 'call-1' },
+      data: {
+        recordingUrl: 'https://api.twilio.com/recordings/RE123.mp3',
+        recordingSid: 'RE123',
+        recordingStatus: 'completed',
+        recordingDuration: 42,
+      },
+    });
+  });
+
+  it('requests call recording when creating Twilio calls', async () => {
+    const { service } = createService({
+      settings: {
+        twilioAccountSid: 'AC123',
+        twilioAuthToken: 'secret',
+        twilioPhoneNumber: '+15550000000',
+      },
+    });
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ sid: 'CA123', status: 'queued' }),
+    })) as any;
+
+    try {
+      await (service as any).createTwilioCall(
+        {
+          twilioAccountSid: 'AC123',
+          twilioAuthToken: 'secret',
+          twilioPhoneNumber: '+15550000000',
+        },
+        'call-1',
+        '+15551234567',
+      );
+
+      const body = (global.fetch as jest.Mock).mock.calls[0][1]
+        .body as URLSearchParams;
+      expect(body.get('Record')).toBe('true');
+      expect(body.get('RecordingChannels')).toBe('dual');
+      expect(body.get('RecordingStatusCallback')).toContain(
+        '/calling-campaigns/twilio/recording/call-1',
+      );
+      expect(body.get('RecordingStatusCallbackEvent')).toBe('completed');
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   it('launches and relaunches mock Twilio campaigns without external calls', async () => {

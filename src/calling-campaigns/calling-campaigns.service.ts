@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
@@ -278,13 +283,55 @@ export class CallingCampaignsService {
     const recordingUrl = body?.RecordingUrl
       ? `${body.RecordingUrl}${String(body.RecordingUrl).endsWith('.mp3') ? '' : '.mp3'}`
       : undefined;
-    if (recordingUrl) {
-      await this.db.callHistory.update({
-        where: { id: callId },
-        data: { recordingUrl },
-      }).catch(() => undefined);
-    }
+    const recordingDuration = Number(
+      body?.RecordingDuration || body?.Duration || 0,
+    );
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data: {
+        ...(recordingUrl ? { recordingUrl } : {}),
+        recordingSid: body?.RecordingSid,
+        recordingStatus: body?.RecordingStatus || 'completed',
+        recordingDuration: Number.isFinite(recordingDuration)
+          ? recordingDuration
+          : undefined,
+      },
+    }).catch(() => undefined);
     return { ok: true };
+  }
+
+  async getCallRecordingAudio(callId: string) {
+    const call = await this.db.callHistory.findUnique({ where: { id: callId } });
+    if (!call) throw new NotFoundException('Call recording not found.');
+    if (!call.recordingUrl) {
+      throw new NotFoundException('Recording is not available yet.');
+    }
+
+    const settings = await this.settingsService.getRawSettings();
+    if (!settings?.twilioAccountSid || !settings?.twilioAuthToken) {
+      throw new BadRequestException('Twilio credentials are not configured.');
+    }
+
+    const response = await fetch(call.recordingUrl, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(
+          `${settings.twilioAccountSid}:${settings.twilioAuthToken}`,
+        ).toString('base64')}`,
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      throw new BadRequestException(
+        `Could not fetch call recording from Twilio (${response.status}).`,
+      );
+    }
+
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get('content-type') || 'audio/mpeg',
+      filename: `agentreach-call-${callId}.mp3`,
+    };
   }
 
   private async launch(id: string, relaunch: boolean) {
@@ -313,6 +360,10 @@ export class CallingCampaignsService {
             endedAt: undefined,
             errorMessage: undefined,
             transcript: undefined,
+            recordingUrl: undefined,
+            recordingSid: undefined,
+            recordingStatus: undefined,
+            recordingDuration: undefined,
             scripts: [],
           },
         });
@@ -532,10 +583,17 @@ export class CallingCampaignsService {
   }
 
   private normalizeVoice(rawVoice: string, language: string) {
-    const trimmed = rawVoice || 'google:en-IN-Chirp3-HD-Puck';
-    if (trimmed.startsWith('google:')) return trimmed;
+    const trimmed = rawVoice || `google:${language}-Chirp3-HD-Puck`;
+    if (trimmed.startsWith('google:')) {
+      const voice = trimmed.replace(/^google:/i, '');
+      const match = voice.match(
+        /^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-([A-Za-z]+)$/,
+      );
+      return match ? `google:${language}-Chirp3-HD-${match[1]}` : trimmed;
+    }
     if (/^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(trimmed)) {
-      return `google:${trimmed}`;
+      const voiceName = trimmed.split('-').at(-1) || 'Puck';
+      return `google:${language}-Chirp3-HD-${voiceName}`;
     }
     return `google:${language}-Chirp3-HD-${trimmed || 'Puck'}`;
   }
@@ -599,10 +657,13 @@ export class CallingCampaignsService {
       )}`,
       StatusCallbackMethod: 'POST',
       StatusCallbackEvent: 'initiated ringing answered completed',
+      Record: 'true',
+      RecordingChannels: 'dual',
       RecordingStatusCallback: `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/recording/${encodeURIComponent(
         callId,
       )}`,
       RecordingStatusCallbackMethod: 'POST',
+      RecordingStatusCallbackEvent: 'completed',
     });
     const response = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(
