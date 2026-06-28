@@ -311,6 +311,11 @@ export class SettingsService {
     const voiceName =
       lastName.charAt(0).toUpperCase() + lastName.slice(1).toLowerCase() ||
       'Puck';
+    const languageCode =
+      String(dto.language || withoutProvider.match(/^([a-z]{2,3}-[A-Z]{2})-/)?.[1] || 'en-IN').trim() ||
+      'en-IN';
+    const speechLanguageCode =
+      languageCode.split('-')[0]?.toLowerCase() || 'en';
 
     const text =
       String(dto.text || '').trim() ||
@@ -329,6 +334,7 @@ export class SettingsService {
           generationConfig: {
             responseModalities: ['AUDIO'],
             speechConfig: {
+              languageCode: speechLanguageCode,
               voiceConfig: { prebuiltVoiceConfig: { voiceName } },
             },
           },

@@ -105,6 +105,17 @@ describe('CallingCampaignsService', () => {
     expect(payload.selectedVoice).toBe('google:hi-IN-Chirp3-HD-Fenrir');
   });
 
+  it('builds masked dialed network ranges from phone numbers', () => {
+    const { service } = createService();
+
+    expect((service as any).getDialedNetworkRange('+919876543210')).toBe(
+      '+91 98765****',
+    );
+    expect((service as any).getDialedNetworkRange('+15551234567')).toBe(
+      '+1 555-123***',
+    );
+  });
+
   it('returns streaming TwiML for Twilio answer webhooks', async () => {
     const { service, db } = createService({
       calls: [
@@ -232,6 +243,49 @@ describe('CallingCampaignsService', () => {
         data: expect.objectContaining({ outcome: 'ANSWERED' }),
       }),
     );
+  });
+
+  it('initializes Gemini Live before placing real Twilio calls', async () => {
+    const campaign = {
+      id: 'campaign-1',
+      name: 'Follow up',
+      status: 'DRAFT',
+      selectedLanguage: 'en-IN',
+      selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
+      calls: [
+        {
+          id: 'call-1',
+          campaignId: 'campaign-1',
+          outcome: 'PENDING',
+          contact: { id: 'contact-1', phoneNumber: '+15551234567' },
+        },
+      ],
+    };
+    const { service } = createService({
+      campaigns: [campaign],
+      calls: campaign.calls,
+      settings: {
+        twilioAccountSid: 'AC123',
+        twilioAuthToken: 'secret',
+        twilioPhoneNumber: '+15550000000',
+      },
+    });
+    const order: string[] = [];
+    jest
+      .spyOn(service as any, 'preflightGeminiLiveCall')
+      .mockImplementation(async () => {
+        order.push('gemini');
+      });
+    jest.spyOn(service as any, 'createTwilioCall').mockImplementation(async () => {
+      order.push('twilio');
+      return { sid: 'CA123', status: 'queued' };
+    });
+
+    const launched = await service.launchCampaign('campaign-1');
+
+    expect(order).toEqual(['gemini', 'twilio']);
+    expect(launched.twilio.placed).toBe(1);
+    expect((campaign.calls[0] as any).dialedNetworkRange).toBe('+1 555-123***');
   });
 
   it('stops active campaign calls', async () => {

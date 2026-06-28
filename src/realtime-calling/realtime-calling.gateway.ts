@@ -44,10 +44,14 @@ type ActiveCallSession = {
   responseSpeed: ResponseSpeed;
   noiseGateDbfs: number;
   noiseSuppressedFrames: number;
+  manualActivityActive: boolean;
+  manualAudioMs: number;
+  manualLastSpeechAudioMs?: number;
   setupStartedAt?: number;
   setupCompletedAt?: number;
   lastUserTranscriptAt?: number;
   awaitingModelAudioAfterUser: boolean;
+  pendingScriptWrites: Promise<void>[];
 };
 
 @Injectable()
@@ -78,7 +82,10 @@ export class RealtimeCallingGateway {
       responseSpeed: 'fast',
       noiseGateDbfs: -60,
       noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
       awaitingModelAudioAfterUser: false,
+      pendingScriptWrites: [],
     };
 
     ws.on('message', (raw) => {
@@ -195,7 +202,7 @@ export class RealtimeCallingGateway {
     const voiceName = this.extractVoiceName(selectedVoice);
     const languageProfile = this.getLanguageProfile(languageCode);
     this.logger.log(
-      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} selectedVoice=${selectedVoice} requestedLanguage=${languageCode} spokenLanguage=${languageProfile.spokenLanguage} responseSpeed=${responseSpeedPreset.responseSpeed} vadSilenceMs=${responseSpeedPreset.silenceDurationMs} noiseGateDbfs=${responseSpeedPreset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
+      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} selectedVoice=${selectedVoice} requestedLanguage=${languageCode} campaignLanguage=${state.campaign.selectedLanguage || state.campaign.language || 'none'} callLanguage=${call.selectedLanguage || 'none'} campaignVoice=${state.campaign.selectedVoice || state.campaign.voice || 'none'} callVoice=${call.selectedVoice || 'none'} spokenLanguage=${languageProfile.spokenLanguage} responseSpeed=${responseSpeedPreset.responseSpeed} activityDetection=${responseSpeedPreset.activityDetection} vadSilenceMs=${responseSpeedPreset.silenceDurationMs} noiseGateDbfs=${responseSpeedPreset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
     );
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
       model,
@@ -235,9 +242,22 @@ export class RealtimeCallingGateway {
     if (state.preventInterruption && state.assistantAudioActive) {
       return;
     }
+    const preset = getResponseSpeedPreset(state.responseSpeed);
     const noiseGateDbfs = Number.isFinite(state.noiseGateDbfs)
       ? state.noiseGateDbfs
-      : getResponseSpeedPreset(state.responseSpeed).noiseGateDbfs;
+      : preset.noiseGateDbfs;
+    const isSpeech = dbfs >= noiseGateDbfs;
+    if (preset.activityDetection === 'manual') {
+      const frameMs = Math.max(1, Math.round((pcm.length / 2 / 8000) * 1000));
+      this.updateManualActivityDetection(
+        state,
+        dbfs,
+        isSpeech,
+        noiseGateDbfs,
+        frameMs,
+        preset,
+      );
+    }
     if (dbfs < noiseGateDbfs) {
       state.noiseSuppressedFrames++;
       if (
@@ -251,6 +271,40 @@ export class RealtimeCallingGateway {
       pcm.fill(0);
     }
     state.gemini.sendAudio(resamplePcm16(pcm, 8000, 16000));
+  }
+
+  private updateManualActivityDetection(
+    state: ActiveCallSession,
+    dbfs: number,
+    isSpeech: boolean,
+    noiseGateDbfs: number,
+    frameMs: number,
+    preset: ReturnType<typeof getResponseSpeedPreset>,
+  ) {
+    if (!state.gemini || state.gemini.isClosed()) return;
+    state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
+
+    if (isSpeech) {
+      state.manualLastSpeechAudioMs = state.manualAudioMs;
+      if (!state.manualActivityActive) {
+        state.manualActivityActive = true;
+        state.gemini.sendActivityStart();
+        this.logger.debug(
+          `Gemini Live local activity start callId=${state.callId} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
+        );
+      }
+      return;
+    }
+
+    if (!state.manualActivityActive || !state.manualLastSpeechAudioMs) return;
+    const localSilenceMs = state.manualAudioMs - state.manualLastSpeechAudioMs;
+    if (localSilenceMs < preset.silenceDurationMs) return;
+
+    state.manualActivityActive = false;
+    state.gemini.sendActivityEnd();
+    this.logger.log(
+      `Gemini Live local activity end callId=${state.callId} localSilenceMs=${localSilenceMs} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
+    );
   }
 
   private attachGeminiEvents(
@@ -308,7 +362,7 @@ export class RealtimeCallingGateway {
       this.logger.debug(
         `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length} noiseSuppressedFrames=${state.noiseSuppressedFrames}`,
       );
-      void this.appendScript(state.callId, 'user', text);
+      this.queueScriptAppend(state, 'user', text);
     });
 
     gemini.on('model_text_final', (text: string) => {
@@ -319,7 +373,7 @@ export class RealtimeCallingGateway {
       this.logger.debug(
         `Gemini Live model transcript callId=${state.callId} turn=${state.assistantTurns} length=${text.length} textAfterUserMs=${sinceUserFinalMs ?? 'n/a'}`,
       );
-      void this.appendScript(state.callId, 'assistant', text);
+      this.queueScriptAppend(state, 'assistant', text);
     });
 
     gemini.on('audio_done', () => {
@@ -531,6 +585,29 @@ export class RealtimeCallingGateway {
     });
   }
 
+  private queueScriptAppend(
+    state: ActiveCallSession,
+    role: 'user' | 'assistant',
+    content: string,
+  ) {
+    state.pendingScriptWrites ||= [];
+    const write = this.appendScript(state.callId, role, content).catch(
+      (error) => {
+        this.logger.warn(
+          `Could not append transcript callId=${state.callId} role=${role}: ${error?.message || error}`,
+        );
+      },
+    );
+    state.pendingScriptWrites.push(write);
+  }
+
+  private async waitForScriptWrites(state: ActiveCallSession) {
+    const writes = state.pendingScriptWrites || [];
+    if (writes.length === 0) return;
+    state.pendingScriptWrites = [];
+    await Promise.allSettled(writes);
+  }
+
   private async appendError(callId: string, error: unknown) {
     if (!callId) return;
     const call = await this.db.callHistory.findUnique({ where: { id: callId } });
@@ -555,6 +632,8 @@ export class RealtimeCallingGateway {
     if (!state.callId || state.completed) return;
     this.logger.log(`Completing Gemini Live call callId=${state.callId} reason=${reason}`);
     state.completed = true;
+    state.gemini?.flushTranscriptionBuffers('completeCall');
+    await this.waitForScriptWrites(state);
     const endedAt = new Date();
     const call = await this.db.callHistory.findUnique({
       where: { id: state.callId },
@@ -586,6 +665,8 @@ export class RealtimeCallingGateway {
     if (state.callId) {
       this.logger.log(`Cleaning Gemini Live call session callId=${state.callId} reason=${reason}`);
     }
+    state.gemini?.flushTranscriptionBuffers('cleanupSession');
+    await this.waitForScriptWrites(state);
     state.gemini?.close();
     if (state.callId && !state.completed) {
       const call = await this.db.callHistory.findUnique({
@@ -641,9 +722,9 @@ export class RealtimeCallingGateway {
     const campaign = state.campaign || {};
     const call = state.call || {};
     return (
+      call.selectedLanguage ||
       campaign.selectedLanguage ||
       campaign.language ||
-      call.selectedLanguage ||
       'en-IN'
     );
   }
@@ -653,9 +734,9 @@ export class RealtimeCallingGateway {
     const call = state.call || {};
     const language = this.resolveSelectedLanguage(state);
     const raw =
+      call.selectedVoice ||
       campaign.selectedVoice ||
       campaign.voice ||
-      call.selectedVoice ||
       `google:${language}-Chirp3-HD-Puck`;
     return this.normalizeGoogleVoiceForLanguage(raw, language);
   }

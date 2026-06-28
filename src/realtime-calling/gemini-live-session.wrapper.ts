@@ -59,7 +59,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     const liveConfig = this.buildLiveConfig(Modality.AUDIO);
     const preset = getResponseSpeedPreset(this.config.responseSpeed);
     this.logger.log(
-      `Connecting Gemini Live session model=${model} voice=${this.config.voiceName} requestedLanguage=${this.config.languageCode} responseSpeed=${preset.responseSpeed} vadSilenceMs=${preset.silenceDurationMs} tools=${this.config.tools.length} nativeAudioLanguageAuto=true`,
+      `Connecting Gemini Live session model=${model} voice=${this.config.voiceName} requestedLanguage=${this.config.languageCode} responseSpeed=${preset.responseSpeed} activityDetection=${preset.activityDetection} vadSilenceMs=${preset.silenceDurationMs} tools=${this.config.tools.length} nativeAudioLanguageAuto=true`,
     );
     this.session = await ai.live.connect({
       model,
@@ -107,8 +107,12 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         automaticActivityDetection:
           buildAutomaticActivityDetectionConfig(responseSpeed),
       },
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
+      inputAudioTranscription: {
+        languageHints: { languageCodes: [this.config.languageCode] },
+      },
+      outputAudioTranscription: {
+        languageHints: { languageCodes: [this.config.languageCode] },
+      },
     };
   }
 
@@ -121,6 +125,18 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         mimeType: `audio/pcm;rate=${rate}`,
       },
     });
+  }
+
+  sendActivityStart() {
+    if (!this.session || this.closed) return;
+    this.logger.debug('Sending Gemini Live activityStart');
+    this.session.sendRealtimeInput({ activityStart: {} });
+  }
+
+  sendActivityEnd() {
+    if (!this.session || this.closed) return;
+    this.logger.debug('Sending Gemini Live activityEnd');
+    this.session.sendRealtimeInput({ activityEnd: {} });
   }
 
   sendText(text: string) {
@@ -139,6 +155,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
   }
 
   close() {
+    this.flushTranscriptionBuffers('close');
     this.closed = true;
     this.session?.close?.();
     this.session = null;
@@ -150,6 +167,26 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
 
   getUsage() {
     return this.usage;
+  }
+
+  flushTranscriptionBuffers(reason = 'flush') {
+    const userText = this.userTranscriptBuffer.trim();
+    this.userTranscriptBuffer = '';
+    if (userText) {
+      this.logger.debug(
+        `Gemini Live user transcript flushed reason=${reason} length=${userText.length}`,
+      );
+      this.emit('user_transcript_final', userText);
+    }
+
+    const modelText = this.cleanModelTranscript(this.modelTranscriptBuffer);
+    this.modelTranscriptBuffer = '';
+    if (modelText) {
+      this.logger.debug(
+        `Gemini Live model transcript flushed reason=${reason} length=${modelText.length}`,
+      );
+      this.emit('model_text_final', modelText);
+    }
   }
 
   waitForSetupComplete(timeoutMs = 10000) {
@@ -243,25 +280,13 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
       this.emit('speech_started');
     }
     if (input?.finished) {
-      const text = this.userTranscriptBuffer.trim();
-      this.userTranscriptBuffer = '';
-      if (text) {
-        this.logger.debug(`Gemini Live user transcript final length=${text.length}`);
-        this.emit('user_transcript_final', text);
-      }
+      this.flushUserTranscript('finished');
     }
 
     const output = serverContent?.outputTranscription;
     if (output?.text) this.modelTranscriptBuffer += output.text;
     if (output?.finished) {
-      const text = this.modelTranscriptBuffer
-        .replace(/\[SIGNAL_START\]\s*/g, '')
-        .trim();
-      this.modelTranscriptBuffer = '';
-      if (text) {
-        this.logger.debug(`Gemini Live model transcript final length=${text.length}`);
-        this.emit('model_text_final', text);
-      }
+      this.flushModelTranscript('finished');
     }
 
     if (serverContent?.interrupted) {
@@ -271,6 +296,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     }
 
     if (serverContent?.turnComplete) {
+      this.flushTranscriptionBuffers('turnComplete');
       const waitMs = Math.max(0, this.playbackEndAt - Date.now());
       this.logger.debug(`Gemini Live turnComplete waitMs=${waitMs}`);
       setTimeout(() => {
@@ -278,6 +304,32 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         this.emit('audio_done');
       }, waitMs).unref();
     }
+  }
+
+  private flushUserTranscript(reason: string) {
+    const text = this.userTranscriptBuffer.trim();
+    this.userTranscriptBuffer = '';
+    if (text) {
+      this.logger.debug(
+        `Gemini Live user transcript final reason=${reason} length=${text.length}`,
+      );
+      this.emit('user_transcript_final', text);
+    }
+  }
+
+  private flushModelTranscript(reason: string) {
+    const text = this.cleanModelTranscript(this.modelTranscriptBuffer);
+    this.modelTranscriptBuffer = '';
+    if (text) {
+      this.logger.debug(
+        `Gemini Live model transcript final reason=${reason} length=${text.length}`,
+      );
+      this.emit('model_text_final', text);
+    }
+  }
+
+  private cleanModelTranscript(text: string) {
+    return text.replace(/\[SIGNAL_START\]\s*/g, '').trim();
   }
 
   private async handleToolCall(toolCall: any) {

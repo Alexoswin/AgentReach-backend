@@ -9,6 +9,8 @@ import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
 import { BotService } from '../bot/bot.service';
+import { GeminiLiveAuthService } from '../realtime-calling/gemini-live-auth.service';
+import { GeminiLiveSessionWrapper } from '../realtime-calling/gemini-live-session.wrapper';
 import { normalizeResponseSpeed } from '../realtime-calling/response-speed';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
@@ -42,6 +44,7 @@ export class CallingCampaignsService {
     private readonly settingsService: SettingsService,
     private readonly botService: BotService,
     private readonly configService: ConfigService,
+    private readonly geminiAuthService?: GeminiLiveAuthService,
   ) {}
 
   async findAll() {
@@ -395,6 +398,7 @@ export class CallingCampaignsService {
     const twilio = { placed: 0, failed: 0, errors: [] as string[] };
     for (const call of callable) {
       try {
+        await this.preflightGeminiLiveCall(campaign, call);
         const response = await this.createTwilioCall(settings, call.id, call.contact.phoneNumber);
         await this.db.callHistory.update({
           where: { id: call.id },
@@ -407,12 +411,15 @@ export class CallingCampaignsService {
             sessionStatus: 'queued',
             selectedLanguage: campaign.selectedLanguage || campaign.language,
             selectedVoice: campaign.selectedVoice || campaign.voice,
+            dialedNetworkRange: this.getDialedNetworkRange(
+              call.contact.phoneNumber,
+            ),
             startedAt: new Date(),
           },
         });
         twilio.placed++;
       } catch (error: any) {
-        const message = error?.message || 'Twilio call creation failed.';
+        const message = error?.message || 'Call launch failed.';
         twilio.failed++;
         twilio.errors.push(message);
         await this.db.callHistory.update({
@@ -505,6 +512,7 @@ export class CallingCampaignsService {
             campaign.selectedVoice ||
             campaign.voice ||
             'google:en-IN-Chirp3-HD-Puck',
+          dialedNetworkRange: this.getDialedNetworkRange(contact.phoneNumber),
           outcome: 'PENDING',
           status: 'PENDING',
           timestamp: new Date(),
@@ -686,6 +694,86 @@ export class CallingCampaignsService {
       throw new Error(data?.message || response.statusText || 'Twilio error');
     }
     return data;
+  }
+
+  private async preflightGeminiLiveCall(campaign: any, call: any) {
+    if (!this.geminiAuthService) {
+      throw new Error('Gemini Live service is not configured.');
+    }
+    const languageCode =
+      call.selectedLanguage ||
+      campaign.selectedLanguage ||
+      campaign.language ||
+      'en-IN';
+    const selectedVoice =
+      call.selectedVoice ||
+      campaign.selectedVoice ||
+      campaign.voice ||
+      `google:${languageCode}-Chirp3-HD-Puck`;
+    const voiceName = this.extractVoiceName(
+      this.normalizeVoice(selectedVoice, languageCode),
+    );
+    const model =
+      campaign.realtimeModel ||
+      process.env.GEMINI_LIVE_MODEL ||
+      'gemini-2.5-flash-native-audio-preview-12-2025';
+    const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
+      model,
+      voiceName,
+      languageCode,
+      responseSpeed: normalizeResponseSpeed(campaign.responseSpeed),
+      systemInstruction:
+        'Preflight this Gemini Live voice session before the outbound phone call starts.',
+      tools: [],
+      toolHandlers: new Map(),
+      maxOutputTokens: 256,
+      inputSampleRate: 16000,
+    });
+
+    this.logger.log(
+      `Preflighting Gemini Live before Twilio call callId=${call.id} campaignId=${campaign.id} model=${model} voice=${voiceName} language=${languageCode}`,
+    );
+    try {
+      await gemini.connect();
+      await gemini.waitForSetupComplete();
+      this.logger.log(
+        `Gemini Live preflight ready; placing Twilio call callId=${call.id}`,
+      );
+    } catch (error: any) {
+      throw new Error(
+        `Gemini Live failed to initialize before dialing: ${error?.message || error}`,
+      );
+    } finally {
+      gemini.close();
+    }
+  }
+
+  private extractVoiceName(voice?: string) {
+    const raw = String(voice || 'google:en-IN-Chirp3-HD-Puck').replace(
+      /^google:/i,
+      '',
+    );
+    const name = raw.split('-').at(-1) || 'Puck';
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  private getDialedNetworkRange(phoneNumber?: string | null) {
+    const raw = String(phoneNumber || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return 'Unknown';
+
+    if (digits.startsWith('91') && digits.length >= 12) {
+      return `+91 ${digits.slice(2, 7)}****`;
+    }
+
+    if (digits.startsWith('1') && digits.length >= 11) {
+      return `+1 ${digits.slice(1, 4)}-${digits.slice(4, 7)}***`;
+    }
+
+    const prefixLength = Math.min(Math.max(digits.length - 4, 4), 7);
+    return `+${digits.slice(0, prefixLength)}${'*'.repeat(
+      Math.max(0, digits.length - prefixLength),
+    )}`;
   }
 
   private async cancelTwilioCall(settings: any, sid: string) {

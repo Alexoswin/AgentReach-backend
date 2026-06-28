@@ -29,6 +29,9 @@ export class CallHistory {
   selectedVoice?: string;
 
   @Prop()
+  dialedNetworkRange?: string;
+
+  @Prop()
   startedAt?: Date;
 
   @Prop()

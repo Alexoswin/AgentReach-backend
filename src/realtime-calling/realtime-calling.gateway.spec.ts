@@ -73,7 +73,7 @@ describe('RealtimeCallingGateway', () => {
 
   it('schedules end_call only after a real user turn', async () => {
     const { gateway, db } = createGateway();
-    const state = {
+    const state: any = {
       callId: 'call-1',
       campaign: { tools: ['end_call'] },
       userTurns: 0,
@@ -174,6 +174,8 @@ describe('RealtimeCallingGateway', () => {
     const gemini = {
       isClosed: jest.fn(() => false),
       sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
     };
     const state = {
       callId: 'call-1',
@@ -185,6 +187,8 @@ describe('RealtimeCallingGateway', () => {
       responseSpeed: 'fast',
       noiseGateDbfs: -60,
       noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
     };
 
     (gateway as any).forwardAudio(state, Buffer.alloc(160, 0xff).toString('base64'));
@@ -202,6 +206,8 @@ describe('RealtimeCallingGateway', () => {
     const gemini = {
       isClosed: jest.fn(() => false),
       sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
     };
     const state = {
       callId: 'call-1',
@@ -213,6 +219,8 @@ describe('RealtimeCallingGateway', () => {
       responseSpeed: 'fast',
       noiseGateDbfs: -60,
       noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
     };
     const speechPayload = findPayloadInDbfsRange(-60, -55);
 
@@ -222,6 +230,94 @@ describe('RealtimeCallingGateway', () => {
     state.assistantAudioActive = true;
     (gateway as any).forwardAudio(state, speechPayload);
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends manual activity start and end for fast response speed', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
+    };
+    const state = {
+      callId: 'call-1',
+      gemini,
+      preventInterruption: false,
+      assistantAudioActive: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -62,
+      noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
+    };
+    const speechPayload = findPayloadInDbfsRange(-62, -55);
+    const silencePayload = Buffer.alloc(160, 0xff).toString('base64');
+
+    (gateway as any).forwardAudio(state, speechPayload);
+    expect(gemini.sendActivityStart).toHaveBeenCalledTimes(1);
+    expect(gemini.sendActivityEnd).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 9; i++) {
+      (gateway as any).forwardAudio(state, silencePayload);
+    }
+
+    expect(gemini.sendActivityEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not repeatedly start activity for low-level noise', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
+    };
+    const state = {
+      callId: 'call-1',
+      gemini,
+      preventInterruption: false,
+      assistantAudioActive: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -55,
+      noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
+    };
+    const noisePayload = findPayloadInDbfsRange(-65, -60);
+
+    (gateway as any).forwardAudio(state, noisePayload);
+    (gateway as any).forwardAudio(state, noisePayload);
+
+    expect(gemini.sendActivityStart).not.toHaveBeenCalled();
+    expect(gemini.sendActivityEnd).not.toHaveBeenCalled();
+  });
+
+  it('keeps balanced response speed on automatic Gemini activity detection', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
+    };
+    const state = {
+      callId: 'call-1',
+      gemini,
+      preventInterruption: false,
+      assistantAudioActive: false,
+      responseSpeed: 'balanced',
+      noiseGateDbfs: -55,
+      noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
+    };
+    const speechPayload = findPayloadInDbfsRange(-55, -50);
+
+    (gateway as any).forwardAudio(state, speechPayload);
+
+    expect(gemini.sendActivityStart).not.toHaveBeenCalled();
+    expect(gemini.sendActivityEnd).not.toHaveBeenCalled();
   });
 
   it('builds explicit spoken language and accent instructions', () => {
@@ -261,6 +357,25 @@ describe('RealtimeCallingGateway', () => {
         selectedVoice: 'google:en-IN-Chirp3-HD-Fenrir',
       },
       call: {},
+    };
+
+    expect((gateway as any).resolveSelectedLanguage(state)).toBe('hi-IN');
+    expect((gateway as any).resolveSelectedVoice(state)).toBe(
+      'google:hi-IN-Chirp3-HD-Fenrir',
+    );
+  });
+
+  it('prefers per-call selected voice and language over stale campaign values', () => {
+    const { gateway } = createGateway();
+    const state = {
+      campaign: {
+        selectedLanguage: 'en-IN',
+        selectedVoice: 'google:en-IN-Chirp3-HD-Puck',
+      },
+      call: {
+        selectedLanguage: 'hi-IN',
+        selectedVoice: 'google:hi-IN-Chirp3-HD-Fenrir',
+      },
     };
 
     expect((gateway as any).resolveSelectedLanguage(state)).toBe('hi-IN');

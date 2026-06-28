@@ -35,7 +35,7 @@ describe('GeminiLiveSessionWrapper', () => {
     expect(session.sendRealtimeInput).not.toHaveBeenCalled();
   });
 
-  it('does not set speechConfig.languageCode for native audio Live sessions', () => {
+  it('sets selected voice without rejected Live speech language code', () => {
     const wrapper = createWrapper();
 
     const config = wrapper.buildLiveConfig('AUDIO');
@@ -45,11 +45,38 @@ describe('GeminiLiveSessionWrapper', () => {
         prebuiltVoiceConfig: { voiceName: 'Puck' },
       },
     });
+    expect(config.inputAudioTranscription).toEqual({
+      languageHints: { languageCodes: ['en-IN'] },
+    });
+    expect(config.outputAudioTranscription).toEqual({
+      languageHints: { languageCodes: ['en-IN'] },
+    });
     expect(config.speechConfig).not.toHaveProperty('languageCode');
   });
 
-  it('sets automatic activity detection from the response speed preset', () => {
+  it('keeps regional language codes as transcription hints', () => {
+    const wrapper = createWrapper({ languageCode: 'hi-IN' });
+
+    const config = wrapper.buildLiveConfig('AUDIO');
+
+    expect(config.speechConfig).not.toHaveProperty('languageCode');
+    expect(config.inputAudioTranscription).toEqual({
+      languageHints: { languageCodes: ['hi-IN'] },
+    });
+  });
+
+  it('disables automatic activity detection for fast manual mode', () => {
     const wrapper = createWrapper({ responseSpeed: 'fast' });
+
+    const config = wrapper.buildLiveConfig('AUDIO');
+
+    expect(config.realtimeInputConfig.automaticActivityDetection).toEqual({
+      disabled: true,
+    });
+  });
+
+  it('sets automatic activity detection for non-fast response speed presets', () => {
+    const wrapper = createWrapper({ responseSpeed: 'balanced' });
 
     const config = wrapper.buildLiveConfig('AUDIO');
 
@@ -57,8 +84,8 @@ describe('GeminiLiveSessionWrapper', () => {
       disabled: false,
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-      prefixPaddingMs: 60,
-      silenceDurationMs: 180,
+      prefixPaddingMs: 100,
+      silenceDurationMs: 550,
     });
     expect(buildAutomaticActivityDetectionConfig('conservative')).toEqual({
       disabled: false,
@@ -67,6 +94,48 @@ describe('GeminiLiveSessionWrapper', () => {
       prefixPaddingMs: 150,
       silenceDurationMs: 800,
     });
+  });
+
+  it('sends explicit realtime activity signals', () => {
+    const wrapper = createWrapper();
+    const session = {
+      sendRealtimeInput: jest.fn(),
+    };
+    (wrapper as any).session = session;
+    (wrapper as any).closed = false;
+
+    wrapper.sendActivityStart();
+    wrapper.sendActivityEnd();
+
+    expect(session.sendRealtimeInput).toHaveBeenNthCalledWith(1, {
+      activityStart: {},
+    });
+    expect(session.sendRealtimeInput).toHaveBeenNthCalledWith(2, {
+      activityEnd: {},
+    });
+  });
+
+  it('flushes partial transcription buffers on turnComplete', async () => {
+    const wrapper = createWrapper();
+    const userTranscripts: string[] = [];
+    const modelTranscripts: string[] = [];
+    wrapper.on('user_transcript_final', (text: string) =>
+      userTranscripts.push(text),
+    );
+    wrapper.on('model_text_final', (text: string) =>
+      modelTranscripts.push(text),
+    );
+
+    await (wrapper as any).handleMessage({
+      serverContent: {
+        inputTranscription: { text: 'Hello there' },
+        outputTranscription: { text: '[SIGNAL_START] Hi, how can I help?' },
+        turnComplete: true,
+      },
+    });
+
+    expect(userTranscripts).toEqual(['Hello there']);
+    expect(modelTranscripts).toEqual(['Hi, how can I help?']);
   });
 
   it('resolves setup wait after setupComplete arrives', async () => {
