@@ -78,6 +78,9 @@ export class CallingCampaign {
   @Prop({ default: 0 })
   threshold: number;
 
+  @Prop({ default: 'fast' })
+  responseSpeed: string;
+
   @Prop({ type: [String], default: ['end_call', 'fetch_context'] })
   tools: string[];
 

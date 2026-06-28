@@ -1,6 +1,13 @@
 import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { GeminiLiveAuthService } from './gemini-live-auth.service';
+import {
+  DEFAULT_RESPONSE_SPEED,
+  ResponseSpeed,
+  buildAutomaticActivityDetectionConfig,
+  getResponseSpeedPreset,
+  normalizeResponseSpeed,
+} from './response-speed';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -13,6 +20,7 @@ export type GeminiLiveConfig = {
   toolHandlers: Map<string, ToolHandler>;
   maxOutputTokens?: number;
   inputSampleRate?: number;
+  responseSpeed?: ResponseSpeed;
 };
 
 export class GeminiLiveSessionWrapper extends EventEmitter {
@@ -49,8 +57,9 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     const model =
       this.config.model || 'gemini-2.5-flash-native-audio-preview-12-2025';
     const liveConfig = this.buildLiveConfig(Modality.AUDIO);
+    const preset = getResponseSpeedPreset(this.config.responseSpeed);
     this.logger.log(
-      `Connecting Gemini Live session model=${model} voice=${this.config.voiceName} requestedLanguage=${this.config.languageCode} tools=${this.config.tools.length} nativeAudioLanguageAuto=true`,
+      `Connecting Gemini Live session model=${model} voice=${this.config.voiceName} requestedLanguage=${this.config.languageCode} responseSpeed=${preset.responseSpeed} vadSilenceMs=${preset.silenceDurationMs} tools=${this.config.tools.length} nativeAudioLanguageAuto=true`,
     );
     this.session = await ai.live.connect({
       model,
@@ -77,6 +86,9 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
   }
 
   buildLiveConfig(audioModality: unknown) {
+    const responseSpeed = normalizeResponseSpeed(
+      this.config.responseSpeed || DEFAULT_RESPONSE_SPEED,
+    );
     return {
       responseModalities: [audioModality],
       systemInstruction: {
@@ -90,6 +102,10 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         voiceConfig: {
           prebuiltVoiceConfig: { voiceName: this.config.voiceName },
         },
+      },
+      realtimeInputConfig: {
+        automaticActivityDetection:
+          buildAutomaticActivityDetectionConfig(responseSpeed),
       },
       inputAudioTranscription: {},
       outputAudioTranscription: {},

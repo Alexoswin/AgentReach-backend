@@ -5,6 +5,7 @@ import { MongoService } from '../mongo.service';
 import { BotService } from '../bot/bot.service';
 import { GeminiLiveAuthService } from './gemini-live-auth.service';
 import { GeminiLiveSessionWrapper } from './gemini-live-session.wrapper';
+import { ResponseSpeed, getResponseSpeedPreset } from './response-speed';
 import {
   calculateDbfs,
   decodeUlawToPcm16,
@@ -39,6 +40,13 @@ type ActiveCallSession = {
   completed: boolean;
   preventInterruption: boolean;
   outboundAudioLogged: boolean;
+  responseSpeed: ResponseSpeed;
+  noiseGateDbfs: number;
+  droppedSilenceFrames: number;
+  setupStartedAt?: number;
+  setupCompletedAt?: number;
+  lastUserTranscriptAt?: number;
+  awaitingModelAudioAfterUser: boolean;
 };
 
 @Injectable()
@@ -65,6 +73,10 @@ export class RealtimeCallingGateway {
       completed: false,
       preventInterruption: false,
       outboundAudioLogged: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -60,
+      droppedSilenceFrames: 0,
+      awaitingModelAudioAfterUser: false,
     };
 
     ws.on('message', (raw) => {
@@ -150,6 +162,11 @@ export class RealtimeCallingGateway {
     state.campaign = call.campaign;
     state.contact = call.contact;
     state.preventInterruption = call.campaign.preventInterruption === true;
+    const responseSpeedPreset = getResponseSpeedPreset(
+      call.campaign.responseSpeed,
+    );
+    state.responseSpeed = responseSpeedPreset.responseSpeed;
+    state.noiseGateDbfs = responseSpeedPreset.noiseGateDbfs;
     this.sessions.set(callId, state);
 
     await this.db.callHistory.update({
@@ -177,12 +194,13 @@ export class RealtimeCallingGateway {
     const languageCode =
       state.campaign.selectedLanguage || state.campaign.language || 'en-IN';
     this.logger.log(
-      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} requestedLanguage=${languageCode} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
+      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} requestedLanguage=${languageCode} responseSpeed=${responseSpeedPreset.responseSpeed} vadSilenceMs=${responseSpeedPreset.silenceDurationMs} noiseGateDbfs=${responseSpeedPreset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
     );
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
       model,
       voiceName,
       languageCode,
+      responseSpeed: responseSpeedPreset.responseSpeed,
       systemInstruction: this.buildSystemInstruction(state),
       tools,
       toolHandlers: handlers,
@@ -192,9 +210,15 @@ export class RealtimeCallingGateway {
     state.gemini = gemini;
     this.attachGeminiEvents(ws, state, gemini);
 
+    state.setupStartedAt = Date.now();
     await gemini.connect();
     await gemini.waitForSetupComplete();
-    this.logger.log(`Gemini Live setup ready callId=${callId}`);
+    state.setupCompletedAt = Date.now();
+    this.logger.log(
+      `Gemini Live setup ready callId=${callId} setupMs=${
+        state.setupCompletedAt - state.setupStartedAt
+      }`,
+    );
     if (state.campaign.aiSpeaksFirst !== false) {
       gemini.sendText('[SIGNAL_START]');
       this.logger.log(`Gemini Live start signal sent callId=${callId}`);
@@ -210,7 +234,21 @@ export class RealtimeCallingGateway {
     if (state.preventInterruption && state.assistantTurns > state.userTurns) {
       return;
     }
-    if (dbfs < -55) return;
+    const noiseGateDbfs = Number.isFinite(state.noiseGateDbfs)
+      ? state.noiseGateDbfs
+      : getResponseSpeedPreset(state.responseSpeed).noiseGateDbfs;
+    if (dbfs < noiseGateDbfs) {
+      state.droppedSilenceFrames++;
+      if (
+        state.droppedSilenceFrames === 1 ||
+        state.droppedSilenceFrames % 100 === 0
+      ) {
+        this.logger.debug(
+          `Dropped low-level caller audio callId=${state.callId} frames=${state.droppedSilenceFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
+        );
+      }
+      return;
+    }
     state.gemini.sendAudio(resamplePcm16(pcm, 8000, 16000));
   }
 
@@ -221,11 +259,23 @@ export class RealtimeCallingGateway {
   ) {
     gemini.on('audio_chunk', (chunk: Buffer) => {
       if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
       if (!state.outboundAudioLogged) {
         state.outboundAudioLogged = true;
+        const sinceSetupMs = state.setupStartedAt
+          ? now - state.setupStartedAt
+          : undefined;
         this.logger.debug(
-          `Gemini Live audio chunk outbound callId=${state.callId} bytes=${chunk.length}`,
+          `Gemini Live first outbound audio callId=${state.callId} bytes=${chunk.length} sinceSetupMs=${sinceSetupMs ?? 'n/a'}`,
         );
+      }
+      if (state.awaitingModelAudioAfterUser && state.lastUserTranscriptAt) {
+        this.logger.log(
+          `Gemini Live response latency callId=${state.callId} responseSpeed=${state.responseSpeed} firstAudioAfterUserMs=${
+            now - state.lastUserTranscriptAt
+          }`,
+        );
+        state.awaitingModelAudioAfterUser = false;
       }
       const payload = transcodePcm24kToUlaw8k(chunk).toString('base64');
       ws.send(
@@ -250,16 +300,21 @@ export class RealtimeCallingGateway {
 
     gemini.on('user_transcript_final', (text: string) => {
       state.userTurns++;
+      state.lastUserTranscriptAt = Date.now();
+      state.awaitingModelAudioAfterUser = true;
       this.logger.debug(
-        `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length}`,
+        `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length} droppedSilenceFrames=${state.droppedSilenceFrames}`,
       );
       void this.appendScript(state.callId, 'user', text);
     });
 
     gemini.on('model_text_final', (text: string) => {
       state.assistantTurns++;
+      const sinceUserFinalMs = state.lastUserTranscriptAt
+        ? Date.now() - state.lastUserTranscriptAt
+        : undefined;
       this.logger.debug(
-        `Gemini Live model transcript callId=${state.callId} turn=${state.assistantTurns} length=${text.length}`,
+        `Gemini Live model transcript callId=${state.callId} turn=${state.assistantTurns} length=${text.length} textAfterUserMs=${sinceUserFinalMs ?? 'n/a'}`,
       );
       void this.appendScript(state.callId, 'assistant', text);
     });
@@ -363,14 +418,25 @@ export class RealtimeCallingGateway {
         },
       });
       handlers.set('fetch_context', async (args) => {
+        const startedAt = Date.now();
         const query = String(args.query || '').trim();
         const botId =
           String(args.bot_id || '').trim() ||
           String(state.campaign.aiCallingBotId || '').trim();
         if (!query || !botId) {
+          this.logger.debug(
+            `Gemini Live fetch_context skipped callId=${state.callId} queryLength=${query.length} botId=${botId || 'none'} durationMs=${
+              Date.now() - startedAt
+            }`,
+          );
           return { context: [], scores: [], sources: [], references: [] };
         }
         const results = await this.botService.searchBotKnowledge(botId, query, 4);
+        this.logger.debug(
+          `Gemini Live fetch_context callId=${state.callId} botId=${botId} queryLength=${query.length} results=${results.length} durationMs=${
+            Date.now() - startedAt
+          }`,
+        );
         return {
           context: results.map((item) => item.content),
           scores: results.map((item) => item.score),

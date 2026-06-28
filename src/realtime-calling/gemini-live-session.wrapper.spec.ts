@@ -1,7 +1,11 @@
-import { GeminiLiveSessionWrapper } from './gemini-live-session.wrapper';
+import {
+  GeminiLiveConfig,
+  GeminiLiveSessionWrapper,
+} from './gemini-live-session.wrapper';
+import { buildAutomaticActivityDetectionConfig } from './response-speed';
 
 describe('GeminiLiveSessionWrapper', () => {
-  function createWrapper() {
+  function createWrapper(overrides: Partial<GeminiLiveConfig> = {}) {
     return new GeminiLiveSessionWrapper({} as any, {
       systemInstruction: 'System prompt',
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -9,6 +13,7 @@ describe('GeminiLiveSessionWrapper', () => {
       languageCode: 'en-IN',
       tools: [],
       toolHandlers: new Map(),
+      ...overrides,
     });
   }
 
@@ -41,6 +46,27 @@ describe('GeminiLiveSessionWrapper', () => {
       },
     });
     expect(config.speechConfig).not.toHaveProperty('languageCode');
+  });
+
+  it('sets automatic activity detection from the response speed preset', () => {
+    const wrapper = createWrapper({ responseSpeed: 'fast' });
+
+    const config = wrapper.buildLiveConfig('AUDIO');
+
+    expect(config.realtimeInputConfig.automaticActivityDetection).toEqual({
+      disabled: false,
+      startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+      endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
+      prefixPaddingMs: 100,
+      silenceDurationMs: 350,
+    });
+    expect(buildAutomaticActivityDetectionConfig('conservative')).toEqual({
+      disabled: false,
+      startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+      endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+      prefixPaddingMs: 150,
+      silenceDurationMs: 800,
+    });
   });
 
   it('resolves setup wait after setupComplete arrives', async () => {

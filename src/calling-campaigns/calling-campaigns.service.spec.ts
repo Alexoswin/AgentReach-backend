@@ -72,6 +72,23 @@ function createService(fixtures?: {
 }
 
 describe('CallingCampaignsService', () => {
+  it('defaults responseSpeed to fast and normalizes supported values', () => {
+    const { service } = createService();
+
+    expect((service as any).normalizeCampaignPayload({}).responseSpeed).toBe(
+      'fast',
+    );
+    expect(
+      (service as any).normalizeCampaignPayload({
+        responseSpeed: 'conservative',
+      }).responseSpeed,
+    ).toBe('conservative');
+    expect(
+      (service as any).normalizeCampaignPayload({ responseSpeed: 'slow' })
+        .responseSpeed,
+    ).toBe('fast');
+  });
+
   it('returns streaming TwiML for Twilio answer webhooks', async () => {
     const { service, db } = createService({
       calls: [

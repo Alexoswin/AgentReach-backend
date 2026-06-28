@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
 import { BotService } from '../bot/bot.service';
+import { normalizeResponseSpeed } from '../realtime-calling/response-speed';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 
@@ -512,6 +513,7 @@ export class CallingCampaignsService {
       'gemini-2.5-flash-native-audio-preview-12-2025';
     data.maxTokens = this.numberOr(dto.maxTokens, 4000);
     data.threshold = this.numberOr(dto.threshold, 0);
+    data.responseSpeed = normalizeResponseSpeed(dto.responseSpeed);
     data.tools = Array.isArray(dto.tools)
       ? dto.tools
       : ['end_call', 'fetch_context'];

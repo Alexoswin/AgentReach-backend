@@ -1,6 +1,7 @@
 import {
   IsArray,
   IsBoolean,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -162,6 +163,16 @@ export class CreateCallingCampaignDto {
   @IsNumber()
   @IsOptional()
   threshold?: number;
+
+  @ApiProperty({
+    required: false,
+    enum: ['fast', 'balanced', 'conservative'],
+    default: 'fast',
+  })
+  @IsString()
+  @IsIn(['fast', 'balanced', 'conservative'])
+  @IsOptional()
+  responseSpeed?: string;
 
   @ApiProperty({ required: false, type: [String] })
   @IsArray()
