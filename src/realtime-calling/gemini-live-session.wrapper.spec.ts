@@ -57,8 +57,8 @@ describe('GeminiLiveSessionWrapper', () => {
       disabled: false,
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-      prefixPaddingMs: 100,
-      silenceDurationMs: 350,
+      prefixPaddingMs: 60,
+      silenceDurationMs: 180,
     });
     expect(buildAutomaticActivityDetectionConfig('conservative')).toEqual({
       disabled: false,

@@ -19,9 +19,9 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
       responseSpeed: 'fast',
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-      prefixPaddingMs: 100,
-      silenceDurationMs: 350,
-      noiseGateDbfs: -60,
+      prefixPaddingMs: 60,
+      silenceDurationMs: 180,
+      noiseGateDbfs: -62,
     },
     balanced: {
       responseSpeed: 'balanced',
