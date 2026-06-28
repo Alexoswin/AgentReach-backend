@@ -185,7 +185,7 @@ describe('RealtimeCallingGateway', () => {
       preventInterruption: false,
       assistantAudioActive: false,
       responseSpeed: 'fast',
-      noiseGateDbfs: -60,
+      noiseGateDbfs: -50,
       noiseSuppressedFrames: 0,
       manualActivityActive: false,
       manualAudioMs: 0,
@@ -195,7 +195,7 @@ describe('RealtimeCallingGateway', () => {
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
     expect(calculateDbfs(gemini.sendAudio.mock.calls[0][0])).toBe(-100);
 
-    const quietPayload = findPayloadInDbfsRange(-60, -55);
+    const quietPayload = findPayloadInDbfsRange(-55, -52);
     (gateway as any).forwardAudio(state, quietPayload);
 
     expect(gemini.sendAudio).toHaveBeenCalledTimes(2);
@@ -217,12 +217,12 @@ describe('RealtimeCallingGateway', () => {
       preventInterruption: true,
       assistantAudioActive: false,
       responseSpeed: 'fast',
-      noiseGateDbfs: -60,
+      noiseGateDbfs: -50,
       noiseSuppressedFrames: 0,
       manualActivityActive: false,
       manualAudioMs: 0,
     };
-    const speechPayload = findPayloadInDbfsRange(-60, -55);
+    const speechPayload = findPayloadInDbfsRange(-50, -45);
 
     (gateway as any).forwardAudio(state, speechPayload);
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
@@ -246,12 +246,12 @@ describe('RealtimeCallingGateway', () => {
       preventInterruption: false,
       assistantAudioActive: false,
       responseSpeed: 'fast',
-      noiseGateDbfs: -62,
+      noiseGateDbfs: -50,
       noiseSuppressedFrames: 0,
       manualActivityActive: false,
       manualAudioMs: 0,
     };
-    const speechPayload = findPayloadInDbfsRange(-62, -55);
+    const speechPayload = findPayloadInDbfsRange(-50, -45);
     const silencePayload = Buffer.alloc(160, 0xff).toString('base64');
 
     (gateway as any).forwardAudio(state, speechPayload);
@@ -279,12 +279,12 @@ describe('RealtimeCallingGateway', () => {
       preventInterruption: false,
       assistantAudioActive: false,
       responseSpeed: 'fast',
-      noiseGateDbfs: -55,
+      noiseGateDbfs: -50,
       noiseSuppressedFrames: 0,
       manualActivityActive: false,
       manualAudioMs: 0,
     };
-    const noisePayload = findPayloadInDbfsRange(-65, -60);
+    const noisePayload = findPayloadInDbfsRange(-55, -52);
 
     (gateway as any).forwardAudio(state, noisePayload);
     (gateway as any).forwardAudio(state, noisePayload);
@@ -307,12 +307,12 @@ describe('RealtimeCallingGateway', () => {
       preventInterruption: false,
       assistantAudioActive: false,
       responseSpeed: 'balanced',
-      noiseGateDbfs: -55,
+      noiseGateDbfs: -48,
       noiseSuppressedFrames: 0,
       manualActivityActive: false,
       manualAudioMs: 0,
     };
-    const speechPayload = findPayloadInDbfsRange(-55, -50);
+    const speechPayload = findPayloadInDbfsRange(-48, -44);
 
     (gateway as any).forwardAudio(state, speechPayload);
 
@@ -336,6 +336,7 @@ describe('RealtimeCallingGateway', () => {
     expect(instruction).toContain('Accent and locale: Indian English.');
     expect(instruction).toContain('You must speak only in English.');
     expect(instruction).toContain('Do not switch to American or British English');
+    expect(instruction).toContain('Ignore background noise');
   });
 
   it('extracts Gemini Live voice names from stored Google voice ids', () => {

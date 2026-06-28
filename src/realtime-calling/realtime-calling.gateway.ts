@@ -551,6 +551,8 @@ export class RealtimeCallingGateway {
       `Spoken language: ${languageProfile.spokenLanguage}.`,
       `Accent and locale: ${languageProfile.accent}.`,
       `You must speak only in ${languageProfile.spokenLanguage}. ${languageProfile.instruction}`,
+      'Ignore background noise, typing, distant voices, static, and unclear audio. Do not answer or react unless the contact speaks clearly to you.',
+      'If the audio is unclear, briefly ask the contact to repeat instead of guessing.',
       'Keep each spoken turn brief and natural. Ask one clear question at a time.',
       'If the contact is busy, ask for a better callback time.',
       'Never claim the call is human. Never invent pricing, policies, or facts.',

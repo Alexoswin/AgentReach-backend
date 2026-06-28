@@ -24,7 +24,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
       prefixPaddingMs: 60,
       silenceDurationMs: 180,
-      noiseGateDbfs: -62,
+      noiseGateDbfs: -50,
     },
     balanced: {
       responseSpeed: 'balanced',
@@ -33,7 +33,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
       prefixPaddingMs: 100,
       silenceDurationMs: 550,
-      noiseGateDbfs: -55,
+      noiseGateDbfs: -48,
     },
     conservative: {
       responseSpeed: 'conservative',
@@ -42,7 +42,7 @@ export const RESPONSE_SPEED_PRESETS: Record<ResponseSpeed, ResponseSpeedPreset> 
       endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
       prefixPaddingMs: 150,
       silenceDurationMs: 800,
-      noiseGateDbfs: -55,
+      noiseGateDbfs: -45,
     },
   };
 
