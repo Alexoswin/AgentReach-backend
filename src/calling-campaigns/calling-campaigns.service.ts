@@ -2581,7 +2581,7 @@ AI Agent: Done. I will share the context with the team and make sure the next me
     }
 
     if (lowInformationTurn) {
-      return `Thanks, ${firstName}. ${contextSummary} What would you like to cover next?`;
+      return `Thanks, ${firstName}. ${contextSummary} `;
     }
 
     return userTurns <= 1
@@ -3473,7 +3473,6 @@ AI Agent: Done. I will share the context with the team and make sure the next me
       ),
     );
   }
-
 
   private getGeminiTwilioTimeoutMs() {
     return Math.floor(

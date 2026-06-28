@@ -14,22 +14,6 @@ export class CreateCallingCampaignDto {
   @IsOptional()
   description?: string;
 
-  @ApiProperty({
-    required: false,
-    example: 'Evaluate candidate fit and scheduling next steps',
-  })
-  @IsString()
-  @IsOptional()
-  objective?: string;
-
-  @ApiProperty({
-    required: false,
-    example: 'You are Sarah, a recruiter for TechCorp. Be friendly...',
-  })
-  @IsString()
-  @IsOptional()
-  prompt?: string;
-
   @ApiProperty({ required: false, example: 'generic' })
   @IsString()
   @IsOptional()

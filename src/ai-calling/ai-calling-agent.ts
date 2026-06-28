@@ -574,7 +574,7 @@ export function buildFallbackChatReply(
 
   if (isGreeting) {
     const intro = summarizeSnippet(bot.knowledge || '') || 'your questions';
-    return `Hi, this is ${bot.name}. I'm your ${bot.role}, and I can help with ${compactSentence(intro, 120)}. What would you like to start with?`;
+    return `Hi, this is ${bot.name}. I'm your ${bot.role}, and I can help with ${compactSentence(intro, 120)}.`;
   }
 
   if (isThanks) {

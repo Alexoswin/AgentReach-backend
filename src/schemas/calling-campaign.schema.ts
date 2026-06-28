@@ -13,12 +13,6 @@ export class CallingCampaign {
   description?: string;
 
   @Prop()
-  objective?: string;
-
-  @Prop()
-  prompt?: string;
-
-  @Prop()
   voiceQuality?: string;
 
   @Prop()

@@ -14,7 +14,6 @@ import {
 } from '@nestjs/common';
 import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
-import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Public } from '../auth/public.decorator';
 
@@ -35,28 +34,6 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Get all AI calling campaigns' })
   async findAll() {
     return this.callingCampaignsService.findAll();
-  }
-
-  @Post('generate')
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({ summary: 'Generate an AI calling campaign from a prompt' })
-  async generate(@Body() dto: GenerateCallingCampaignDto) {
-    return this.callingCampaignsService.generateCampaign(dto);
-  }
-
-  @Post('generate-jobs')
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({
-    summary: 'Start AI calling campaign generation from a prompt',
-  })
-  async startGenerate(@Body() dto: GenerateCallingCampaignDto) {
-    return this.callingCampaignsService.startCampaignGeneration(dto);
-  }
-
-  @Get('generate-jobs/:id')
-  @ApiOperation({ summary: 'Get AI calling campaign generation status' })
-  async generationStatus(@Param('id') id: string) {
-    return this.callingCampaignsService.getCampaignGenerationStatus(id);
   }
 
   @Post('twilio/answer/:callId')
