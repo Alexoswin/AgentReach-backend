@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { GeminiLiveAuthService } from './gemini-live-auth.service';
 
@@ -15,8 +16,10 @@ export type GeminiLiveConfig = {
 };
 
 export class GeminiLiveSessionWrapper extends EventEmitter {
+  private readonly logger = new Logger(GeminiLiveSessionWrapper.name);
   private session: any | null = null;
   private closed = true;
+  private setupCompleteReceived = false;
   private userTranscriptBuffer = '';
   private modelTranscriptBuffer = '';
   private firstAudioPacket = true;
@@ -35,6 +38,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
   }
 
   async connect() {
+    this.setupCompleteReceived = false;
     const [{ GoogleGenAI, Modality }, apiKey] = await Promise.all([
       import('@google/genai'),
       this.authService.requireApiKey(),
@@ -42,40 +46,54 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
 
     const ai = new GoogleGenAI({ apiKey });
     this.closed = false;
+    const model =
+      this.config.model || 'gemini-2.5-flash-native-audio-preview-12-2025';
+    const liveConfig = this.buildLiveConfig(Modality.AUDIO);
+    this.logger.log(
+      `Connecting Gemini Live session model=${model} voice=${this.config.voiceName} requestedLanguage=${this.config.languageCode} tools=${this.config.tools.length} nativeAudioLanguageAuto=true`,
+    );
     this.session = await ai.live.connect({
-      model:
-        this.config.model ||
-        'gemini-2.5-flash-native-audio-preview-12-2025',
-      config: {
-        responseModalities: [Modality.AUDIO],
-        systemInstruction: {
-          parts: [{ text: this.config.systemInstruction }],
-        },
-        tools: this.config.tools.length
-          ? [{ functionDeclarations: this.config.tools }]
-          : undefined,
-        generationConfig: {
-          maxOutputTokens: this.config.maxOutputTokens || 4000,
-        },
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: this.config.voiceName },
-          },
-          languageCode: this.config.languageCode,
-        },
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-      },
+      model,
+      config: liveConfig,
       callbacks: {
-        onopen: () => this.emit('open'),
+        onopen: () => {
+          this.logger.log(`Gemini Live socket opened model=${model}`);
+          this.emit('open');
+        },
         onmessage: (message: any) => void this.handleMessage(message),
-        onerror: (error: Error) => this.emit('error', error),
+        onerror: (error: Error) => {
+          this.logger.error(`Gemini Live socket error: ${error.message}`);
+          this.emit('error', error);
+        },
         onclose: (event: any) => {
           this.closed = true;
+          this.logger.warn(
+            `Gemini Live socket closed code=${event?.code || 'unknown'} reason=${event?.reason || ''}`,
+          );
           this.emit('close', event);
         },
       },
     } as any);
+  }
+
+  buildLiveConfig(audioModality: unknown) {
+    return {
+      responseModalities: [audioModality],
+      systemInstruction: {
+        parts: [{ text: this.config.systemInstruction }],
+      },
+      tools: this.config.tools.length
+        ? [{ functionDeclarations: this.config.tools }]
+        : undefined,
+      maxOutputTokens: this.config.maxOutputTokens || 4000,
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: { voiceName: this.config.voiceName },
+        },
+      },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+    };
   }
 
   sendAudio(pcm16Buffer: Buffer) {
@@ -91,6 +109,16 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
 
   sendText(text: string) {
     if (!this.session || this.closed) return;
+    this.logger.debug(
+      `Sending Gemini Live text turn length=${text.length} signal=${text === '[SIGNAL_START]'}`,
+    );
+    if (typeof this.session.sendClientContent === 'function') {
+      this.session.sendClientContent({
+        turns: [{ role: 'user', parts: [{ text }] }],
+        turnComplete: true,
+      });
+      return;
+    }
     this.session.sendRealtimeInput({ text });
   }
 
@@ -108,8 +136,60 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     return this.usage;
   }
 
+  waitForSetupComplete(timeoutMs = 10000) {
+    if (this.setupCompleteReceived) return Promise.resolve();
+
+    return new Promise<void>((resolve, reject) => {
+      let timeout: NodeJS.Timeout;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.removeListener('setupComplete', onSetupComplete);
+        this.removeListener('close', onClose);
+        this.removeListener('error', onError);
+      };
+      const onSetupComplete = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = (event: any) => {
+        cleanup();
+        reject(
+          new Error(
+            `Gemini Live closed before setupComplete: ${
+              event?.code || 'unknown'
+            } ${event?.reason || ''}`.trim(),
+          ),
+        );
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+
+      timeout = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(`Gemini Live setupComplete timeout after ${timeoutMs}ms`),
+        );
+      }, timeoutMs);
+
+      this.once('setupComplete', onSetupComplete);
+      this.once('close', onClose);
+      this.once('error', onError);
+    });
+  }
+
   private async handleMessage(message: any) {
     try {
+      if (message?.setupComplete) {
+        this.setupCompleteReceived = true;
+        this.logger.log(
+          `Gemini Live setupComplete sessionId=${message.setupComplete?.sessionId || 'unknown'}`,
+        );
+        this.emit('setupComplete');
+        return;
+      }
+
       const usage = message?.usageMetadata;
       if (usage) {
         this.usage.promptTokenCount += usage.promptTokenCount || 0;
@@ -131,6 +211,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
       const data = part?.inlineData?.data;
       if (!data) continue;
       if (this.firstAudioPacket) {
+        this.logger.log(`Gemini Live first audio packet bytes=${Buffer.byteLength(data, 'base64')}`);
         this.emit('audio_start');
         this.firstAudioPacket = false;
       }
@@ -148,7 +229,10 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     if (input?.finished) {
       const text = this.userTranscriptBuffer.trim();
       this.userTranscriptBuffer = '';
-      if (text) this.emit('user_transcript_final', text);
+      if (text) {
+        this.logger.debug(`Gemini Live user transcript final length=${text.length}`);
+        this.emit('user_transcript_final', text);
+      }
     }
 
     const output = serverContent?.outputTranscription;
@@ -158,16 +242,21 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         .replace(/\[SIGNAL_START\]\s*/g, '')
         .trim();
       this.modelTranscriptBuffer = '';
-      if (text) this.emit('model_text_final', text);
+      if (text) {
+        this.logger.debug(`Gemini Live model transcript final length=${text.length}`);
+        this.emit('model_text_final', text);
+      }
     }
 
     if (serverContent?.interrupted) {
       this.firstAudioPacket = true;
+      this.logger.debug('Gemini Live interrupted signal received');
       this.emit('interrupted');
     }
 
     if (serverContent?.turnComplete) {
       const waitMs = Math.max(0, this.playbackEndAt - Date.now());
+      this.logger.debug(`Gemini Live turnComplete waitMs=${waitMs}`);
       setTimeout(() => {
         this.firstAudioPacket = true;
         this.emit('audio_done');

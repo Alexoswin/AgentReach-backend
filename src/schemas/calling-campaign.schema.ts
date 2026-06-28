@@ -63,7 +63,7 @@ export class CallingCampaign {
   @Prop({ default: 'DRAFT' })
   status: string;
 
-  @Prop({ default: false })
+  @Prop({ default: true })
   aiSpeaksFirst: boolean;
 
   @Prop({ default: false })

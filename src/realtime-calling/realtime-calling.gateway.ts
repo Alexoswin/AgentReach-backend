@@ -38,6 +38,7 @@ type ActiveCallSession = {
   endCallReason?: string;
   completed: boolean;
   preventInterruption: boolean;
+  outboundAudioLogged: boolean;
 };
 
 @Injectable()
@@ -53,6 +54,9 @@ export class RealtimeCallingGateway {
 
   registerTwilioSocket(ws: WebSocket, req: IncomingMessage) {
     const initialCallId = this.getQueryParam(req.url || '', 'callId');
+    this.logger.log(
+      `Twilio stream socket connected url=${req.url || ''} initialCallId=${initialCallId || 'none'}`,
+    );
     const state: ActiveCallSession = {
       callId: initialCallId || '',
       userTurns: 0,
@@ -60,6 +64,7 @@ export class RealtimeCallingGateway {
       pendingHangup: false,
       completed: false,
       preventInterruption: false,
+      outboundAudioLogged: false,
     };
 
     ws.on('message', (raw) => {
@@ -122,6 +127,7 @@ export class RealtimeCallingGateway {
       frame.start?.customParameters?.CallId ||
       '';
     if (!callId) {
+      this.logger.warn('Twilio stream start missing callId.');
       ws.close(1008, 'Missing callId');
       return;
     }
@@ -135,6 +141,7 @@ export class RealtimeCallingGateway {
       include: { contact: true, campaign: true },
     });
     if (!call?.campaign) {
+      this.logger.warn(`Twilio stream start call not found callId=${callId}`);
       ws.close(1008, 'Call not found');
       return;
     }
@@ -160,16 +167,22 @@ export class RealtimeCallingGateway {
     });
 
     const { tools, handlers } = this.buildTools(state);
+    const model =
+      state.campaign.realtimeModel ||
+      process.env.GEMINI_LIVE_MODEL ||
+      'gemini-2.5-flash-native-audio-preview-12-2025';
+    const voiceName = this.extractVoiceName(
+      state.campaign.selectedVoice || state.campaign.voice,
+    );
+    const languageCode =
+      state.campaign.selectedLanguage || state.campaign.language || 'en-IN';
+    this.logger.log(
+      `Starting Gemini Live call callId=${callId} campaignId=${state.campaign.id || call.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} requestedLanguage=${languageCode} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
+    );
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
-      model:
-        state.campaign.realtimeModel ||
-        process.env.GEMINI_LIVE_MODEL ||
-        'gemini-2.5-flash-native-audio-preview-12-2025',
-      voiceName: this.extractVoiceName(
-        state.campaign.selectedVoice || state.campaign.voice,
-      ),
-      languageCode:
-        state.campaign.selectedLanguage || state.campaign.language || 'en-IN',
+      model,
+      voiceName,
+      languageCode,
       systemInstruction: this.buildSystemInstruction(state),
       tools,
       toolHandlers: handlers,
@@ -180,8 +193,13 @@ export class RealtimeCallingGateway {
     this.attachGeminiEvents(ws, state, gemini);
 
     await gemini.connect();
+    await gemini.waitForSetupComplete();
+    this.logger.log(`Gemini Live setup ready callId=${callId}`);
     if (state.campaign.aiSpeaksFirst !== false) {
       gemini.sendText('[SIGNAL_START]');
+      this.logger.log(`Gemini Live start signal sent callId=${callId}`);
+    } else {
+      this.logger.log(`Gemini Live waiting for contact to speak first callId=${callId}`);
     }
   }
 
@@ -203,6 +221,12 @@ export class RealtimeCallingGateway {
   ) {
     gemini.on('audio_chunk', (chunk: Buffer) => {
       if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
+      if (!state.outboundAudioLogged) {
+        state.outboundAudioLogged = true;
+        this.logger.debug(
+          `Gemini Live audio chunk outbound callId=${state.callId} bytes=${chunk.length}`,
+        );
+      }
       const payload = transcodePcm24kToUlaw8k(chunk).toString('base64');
       ws.send(
         JSON.stringify({
@@ -226,15 +250,24 @@ export class RealtimeCallingGateway {
 
     gemini.on('user_transcript_final', (text: string) => {
       state.userTurns++;
+      this.logger.debug(
+        `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length}`,
+      );
       void this.appendScript(state.callId, 'user', text);
     });
 
     gemini.on('model_text_final', (text: string) => {
       state.assistantTurns++;
+      this.logger.debug(
+        `Gemini Live model transcript callId=${state.callId} turn=${state.assistantTurns} length=${text.length}`,
+      );
       void this.appendScript(state.callId, 'assistant', text);
     });
 
     gemini.on('audio_done', () => {
+      this.logger.debug(
+        `Gemini Live audio done callId=${state.callId} pendingHangup=${state.pendingHangup}`,
+      );
       if (state.pendingHangup) {
         void this.completeCall(state, state.endCallReason || 'end_call');
         if (ws.readyState === WebSocket.OPEN) ws.close();
@@ -441,6 +474,7 @@ export class RealtimeCallingGateway {
 
   private async completeCall(state: ActiveCallSession, reason: string) {
     if (!state.callId || state.completed) return;
+    this.logger.log(`Completing Gemini Live call callId=${state.callId} reason=${reason}`);
     state.completed = true;
     const endedAt = new Date();
     const call = await this.db.callHistory.findUnique({
@@ -470,6 +504,9 @@ export class RealtimeCallingGateway {
   }
 
   private async cleanupSession(state: ActiveCallSession, reason: string) {
+    if (state.callId) {
+      this.logger.log(`Cleaning Gemini Live call session callId=${state.callId} reason=${reason}`);
+    }
     state.gemini?.close();
     if (state.callId && !state.completed) {
       const call = await this.db.callHistory.findUnique({
