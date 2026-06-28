@@ -122,7 +122,7 @@ export class MongoService implements OnModuleInit {
           existingSettings?.openRouterApiKey ||
           '',
         geminiApiKey:
-          process.env.GEMINI_API_KEY || existingSettings?.geminiApiKey || '',
+          existingSettings?.geminiApiKey || process.env.GEMINI_API_KEY || '',
         twilioAccountSid: existingSettings?.twilioAccountSid || '',
         twilioAuthToken: existingSettings?.twilioAuthToken || '',
         twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
