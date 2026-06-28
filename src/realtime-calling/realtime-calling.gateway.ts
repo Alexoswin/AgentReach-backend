@@ -39,10 +39,11 @@ type ActiveCallSession = {
   endCallReason?: string;
   completed: boolean;
   preventInterruption: boolean;
+  assistantAudioActive: boolean;
   outboundAudioLogged: boolean;
   responseSpeed: ResponseSpeed;
   noiseGateDbfs: number;
-  droppedSilenceFrames: number;
+  noiseSuppressedFrames: number;
   setupStartedAt?: number;
   setupCompletedAt?: number;
   lastUserTranscriptAt?: number;
@@ -72,10 +73,11 @@ export class RealtimeCallingGateway {
       pendingHangup: false,
       completed: false,
       preventInterruption: false,
+      assistantAudioActive: false,
       outboundAudioLogged: false,
       responseSpeed: 'fast',
       noiseGateDbfs: -60,
-      droppedSilenceFrames: 0,
+      noiseSuppressedFrames: 0,
       awaitingModelAudioAfterUser: false,
     };
 
@@ -231,23 +233,23 @@ export class RealtimeCallingGateway {
     if (!state.gemini || state.gemini.isClosed()) return;
     const pcm = decodeUlawToPcm16(payload);
     const dbfs = calculateDbfs(pcm);
-    if (state.preventInterruption && state.assistantTurns > state.userTurns) {
+    if (state.preventInterruption && state.assistantAudioActive) {
       return;
     }
     const noiseGateDbfs = Number.isFinite(state.noiseGateDbfs)
       ? state.noiseGateDbfs
       : getResponseSpeedPreset(state.responseSpeed).noiseGateDbfs;
     if (dbfs < noiseGateDbfs) {
-      state.droppedSilenceFrames++;
+      state.noiseSuppressedFrames++;
       if (
-        state.droppedSilenceFrames === 1 ||
-        state.droppedSilenceFrames % 100 === 0
+        state.noiseSuppressedFrames === 1 ||
+        state.noiseSuppressedFrames % 100 === 0
       ) {
         this.logger.debug(
-          `Dropped low-level caller audio callId=${state.callId} frames=${state.droppedSilenceFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
+          `Forwarding low-level caller audio as silence callId=${state.callId} frames=${state.noiseSuppressedFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
         );
       }
-      return;
+      pcm.fill(0);
     }
     state.gemini.sendAudio(resamplePcm16(pcm, 8000, 16000));
   }
@@ -260,6 +262,7 @@ export class RealtimeCallingGateway {
     gemini.on('audio_chunk', (chunk: Buffer) => {
       if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
       const now = Date.now();
+      state.assistantAudioActive = true;
       if (!state.outboundAudioLogged) {
         state.outboundAudioLogged = true;
         const sinceSetupMs = state.setupStartedAt
@@ -288,6 +291,7 @@ export class RealtimeCallingGateway {
     });
 
     gemini.on('interrupted', () => {
+      state.assistantAudioActive = false;
       if (
         state.preventInterruption ||
         !state.streamSid ||
@@ -303,7 +307,7 @@ export class RealtimeCallingGateway {
       state.lastUserTranscriptAt = Date.now();
       state.awaitingModelAudioAfterUser = true;
       this.logger.debug(
-        `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length} droppedSilenceFrames=${state.droppedSilenceFrames}`,
+        `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length} noiseSuppressedFrames=${state.noiseSuppressedFrames}`,
       );
       void this.appendScript(state.callId, 'user', text);
     });
@@ -320,6 +324,7 @@ export class RealtimeCallingGateway {
     });
 
     gemini.on('audio_done', () => {
+      state.assistantAudioActive = false;
       this.logger.debug(
         `Gemini Live audio done callId=${state.callId} pendingHangup=${state.pendingHangup}`,
       );

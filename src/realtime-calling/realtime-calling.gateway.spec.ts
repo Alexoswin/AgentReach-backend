@@ -143,10 +143,11 @@ describe('RealtimeCallingGateway', () => {
           pendingHangup: false,
           completed: false,
           preventInterruption: false,
+          assistantAudioActive: false,
           outboundAudioLogged: false,
           responseSpeed: 'fast',
           noiseGateDbfs: -60,
-          droppedSilenceFrames: 0,
+          noiseSuppressedFrames: 0,
           awaitingModelAudioAfterUser: false,
         },
         {
@@ -168,7 +169,7 @@ describe('RealtimeCallingGateway', () => {
     }
   });
 
-  it('drops true silence but forwards quiet speech with the fast gate', () => {
+  it('forwards true silence as silence so Gemini VAD can close turns', () => {
     const { gateway } = createGateway();
     const gemini = {
       isClosed: jest.fn(() => false),
@@ -180,17 +181,46 @@ describe('RealtimeCallingGateway', () => {
       userTurns: 0,
       assistantTurns: 0,
       preventInterruption: false,
+      assistantAudioActive: false,
       responseSpeed: 'fast',
       noiseGateDbfs: -60,
-      droppedSilenceFrames: 0,
+      noiseSuppressedFrames: 0,
     };
 
     (gateway as any).forwardAudio(state, Buffer.alloc(160, 0xff).toString('base64'));
-    expect(gemini.sendAudio).not.toHaveBeenCalled();
+    expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
+    expect(calculateDbfs(gemini.sendAudio.mock.calls[0][0])).toBe(-100);
 
     const quietPayload = findPayloadInDbfsRange(-60, -55);
     (gateway as any).forwardAudio(state, quietPayload);
 
+    expect(gemini.sendAudio).toHaveBeenCalledTimes(2);
+  });
+
+  it('only blocks caller audio during active assistant playback', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+    };
+    const state = {
+      callId: 'call-1',
+      gemini,
+      userTurns: 0,
+      assistantTurns: 1,
+      preventInterruption: true,
+      assistantAudioActive: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -60,
+      noiseSuppressedFrames: 0,
+    };
+    const speechPayload = findPayloadInDbfsRange(-60, -55);
+
+    (gateway as any).forwardAudio(state, speechPayload);
+    expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
+
+    state.assistantAudioActive = true;
+    (gateway as any).forwardAudio(state, speechPayload);
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
   });
 
