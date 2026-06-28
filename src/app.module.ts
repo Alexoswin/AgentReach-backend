@@ -9,10 +9,11 @@ import { ContactsModule } from './contacts/contacts.module';
 import { TemplatesModule } from './templates/templates.module';
 import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
 import { CallingCampaignsModule } from './calling-campaigns/calling-campaigns.module';
+import { RealtimeCallingModule } from './realtime-calling/realtime-calling.module';
 import { HistoryModule } from './history/history.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
-import { AiCallingBotsModule } from './ai-calling-bots/ai-calling-bots.module';
+import { BotModule } from './bot/bot.module';
 
 @Module({
   imports: [
@@ -31,8 +32,9 @@ import { AiCallingBotsModule } from './ai-calling-bots/ai-calling-bots.module';
     ContactsModule,
     TemplatesModule,
     EmailCampaignsModule,
-    AiCallingBotsModule,
+    BotModule,
     CallingCampaignsModule,
+    RealtimeCallingModule,
     HistoryModule,
     AnalyticsModule,
   ],

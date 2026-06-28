@@ -49,6 +49,9 @@ export class CallHistory {
   @Prop({ type: [Object], default: [] })
   scripts?: Array<Record<string, unknown>>;
 
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  conversationTokenUsage?: Record<string, unknown>;
+
   @Prop()
   transcript?: string;
 

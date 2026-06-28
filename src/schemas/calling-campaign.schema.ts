@@ -13,6 +13,12 @@ export class CallingCampaign {
   description?: string;
 
   @Prop()
+  objective?: string;
+
+  @Prop()
+  prompt?: string;
+
+  @Prop()
   voiceQuality?: string;
 
   @Prop()
@@ -20,6 +26,12 @@ export class CallingCampaign {
 
   @Prop()
   language?: string;
+
+  @Prop()
+  selectedLanguage?: string;
+
+  @Prop()
+  selectedVoice?: string;
 
   @Prop()
   aiCallingBotId?: string;
@@ -51,6 +63,24 @@ export class CallingCampaign {
   @Prop({ default: 'DRAFT' })
   status: string;
 
+  @Prop({ default: false })
+  aiSpeaksFirst: boolean;
+
+  @Prop({ default: false })
+  preventInterruption: boolean;
+
+  @Prop({ default: 'gemini-2.5-flash-native-audio-preview-12-2025' })
+  realtimeModel: string;
+
+  @Prop({ default: 4000 })
+  maxTokens: number;
+
+  @Prop({ default: 0 })
+  threshold: number;
+
+  @Prop({ type: [String], default: ['end_call', 'fetch_context'] })
+  tools: string[];
+
   @Prop({ type: [String], default: [] })
   tags: string[];
 
@@ -71,6 +101,12 @@ export class CallingCampaign {
 
   @Prop({ default: 0 })
   estimatedDuration: number;
+
+  @Prop()
+  lastLaunchedAt?: Date;
+
+  @Prop()
+  stoppedAt?: Date;
 }
 
 export const CallingCampaignSchema =
