@@ -254,7 +254,9 @@ describe('RealtimeCallingGateway', () => {
     const speechPayload = findPayloadInDbfsRange(-50, -45);
     const silencePayload = Buffer.alloc(160, 0xff).toString('base64');
 
-    (gateway as any).forwardAudio(state, speechPayload);
+    for (let i = 0; i < 10; i++) {
+      (gateway as any).forwardAudio(state, speechPayload);
+    }
     expect(gemini.sendActivityStart).toHaveBeenCalledTimes(1);
     expect(gemini.sendActivityEnd).not.toHaveBeenCalled();
 
@@ -332,9 +334,12 @@ describe('RealtimeCallingGateway', () => {
     });
 
     expect(instruction).toContain('Selected Gemini Live voice: Fenrir.');
-    expect(instruction).toContain('Spoken language: English.');
-    expect(instruction).toContain('Accent and locale: Indian English.');
-    expect(instruction).toContain('You must speak only in English.');
+    expect(instruction).toContain(
+      'Begin in English (en-IN) with Indian English.',
+    );
+    expect(instruction).toContain(
+      'if the contact speaks or asks for another language, switch to it',
+    );
     expect(instruction).toContain('Do not switch to American or British English');
     expect(instruction).toContain('Ignore background noise');
   });
@@ -383,6 +388,40 @@ describe('RealtimeCallingGateway', () => {
     expect((gateway as any).resolveSelectedVoice(state)).toBe(
       'google:hi-IN-Chirp3-HD-Fenrir',
     );
+  });
+
+  it('does not trigger activity start for short noises (< 200ms)', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
+    };
+    const state = {
+      callId: 'call-1',
+      gemini,
+      preventInterruption: false,
+      assistantAudioActive: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -50,
+      noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
+    };
+    const speechPayload = findPayloadInDbfsRange(-50, -45);
+
+    // Send 5 frames of speech (100ms)
+    for (let i = 0; i < 5; i++) {
+      (gateway as any).forwardAudio(state, speechPayload);
+    }
+    expect(gemini.sendActivityStart).not.toHaveBeenCalled();
+
+    // Send silence payload to reset
+    const silencePayload = Buffer.alloc(160, 0xff).toString('base64');
+    (gateway as any).forwardAudio(state, silencePayload);
+
+    expect(gemini.sendActivityStart).not.toHaveBeenCalled();
   });
 
   function findPayloadInDbfsRange(min: number, max: number) {

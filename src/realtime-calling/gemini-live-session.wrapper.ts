@@ -21,6 +21,7 @@ export type GeminiLiveConfig = {
   maxOutputTokens?: number;
   inputSampleRate?: number;
   responseSpeed?: ResponseSpeed;
+  preventInterruption?: boolean;
 };
 
 export class GeminiLiveSessionWrapper extends EventEmitter {
@@ -104,8 +105,9 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         },
       },
       realtimeInputConfig: {
-        automaticActivityDetection:
-          buildAutomaticActivityDetectionConfig(responseSpeed),
+        automaticActivityDetection: this.config.preventInterruption
+          ? { disabled: true }
+          : buildAutomaticActivityDetectionConfig(responseSpeed),
       },
       inputAudioTranscription: {
         languageHints: { languageCodes: [this.config.languageCode] },
@@ -291,6 +293,10 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
 
     if (serverContent?.interrupted) {
       this.firstAudioPacket = true;
+      // The barge-in clears any buffered playback on the caller's side, so drop
+      // our playback-position estimate too. Otherwise the next turnComplete waits
+      // out the pre-interrupt audio before firing audio_done (delaying hangups).
+      this.playbackEndAt = 0;
       this.logger.debug('Gemini Live interrupted signal received');
       this.emit('interrupted');
     }
@@ -329,7 +335,11 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
   }
 
   private cleanModelTranscript(text: string) {
-    return text.replace(/\[SIGNAL_START\]\s*/g, '').trim();
+    return text
+      .replace(/\[SIGNAL_START\]\s*/g, '')
+      .replace(/\[SILENCE_CHECK\]\s*/g, '')
+      .replace(/\[RESUME\]\s*/g, '')
+      .trim();
   }
 
   private async handleToolCall(toolCall: any) {

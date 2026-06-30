@@ -234,7 +234,13 @@ export class CallingCampaignsService {
       },
     });
 
-    const streamUrl = `${this.getPublicWsBaseUrl()}/twilio/stream`;
+    // Include callId in the stream URL (in addition to the Parameter below) so
+    // the backend can begin connecting to Gemini the moment the socket opens,
+    // overlapping model setup with the Twilio start handshake instead of adding
+    // latency before the first words.
+    const streamUrl = `${this.getPublicWsBaseUrl()}/twilio/stream?callId=${encodeURIComponent(
+      callId,
+    )}`;
     return this.twimlResponse(
       `<Connect><Stream url="${this.xml(streamUrl)}"><Parameter name="callId" value="${this.xml(
         callId,
