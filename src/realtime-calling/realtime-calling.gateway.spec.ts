@@ -191,7 +191,10 @@ describe('RealtimeCallingGateway', () => {
       manualAudioMs: 0,
     };
 
-    (gateway as any).forwardAudio(state, Buffer.alloc(160, 0xff).toString('base64'));
+    (gateway as any).forwardAudio(
+      state,
+      Buffer.alloc(160, 0xff).toString('base64'),
+    );
     expect(gemini.sendAudio).toHaveBeenCalledTimes(1);
     expect(calculateDbfs(gemini.sendAudio.mock.calls[0][0])).toBe(-100);
 
@@ -340,19 +343,19 @@ describe('RealtimeCallingGateway', () => {
     expect(instruction).toContain(
       'if the contact speaks or asks for another language, switch to it',
     );
-    expect(instruction).toContain('Do not switch to American or British English');
+    expect(instruction).toContain('casual, natural Indian English');
     expect(instruction).toContain('Ignore background noise');
   });
 
   it('extracts Gemini Live voice names from stored Google voice ids', () => {
     const { gateway } = createGateway();
 
-    expect((gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-Puck')).toBe(
-      'Puck',
-    );
-    expect((gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-fenrir')).toBe(
-      'Fenrir',
-    );
+    expect(
+      (gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-Puck'),
+    ).toBe('Puck');
+    expect(
+      (gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-fenrir'),
+    ).toBe('Fenrir');
   });
 
   it('resolves selected voice using the active selected language', () => {

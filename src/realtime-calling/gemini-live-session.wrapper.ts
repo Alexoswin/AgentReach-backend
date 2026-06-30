@@ -90,6 +90,9 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     const responseSpeed = normalizeResponseSpeed(
       this.config.responseSpeed || DEFAULT_RESPONSE_SPEED,
     );
+    const languageHints = this.getTranscriptionLanguageHints(
+      this.config.languageCode,
+    );
     return {
       responseModalities: [audioModality],
       systemInstruction: {
@@ -110,12 +113,31 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
           : buildAutomaticActivityDetectionConfig(responseSpeed),
       },
       inputAudioTranscription: {
-        languageHints: { languageCodes: [this.config.languageCode] },
+        languageHints: { languageCodes: languageHints },
       },
       outputAudioTranscription: {
-        languageHints: { languageCodes: [this.config.languageCode] },
+        languageHints: { languageCodes: languageHints },
       },
     };
+  }
+
+  // For code-switching regions, hint multiple related languages so Gemini
+  // transcribes the actual language spoken, not just the configured one.
+  private getTranscriptionLanguageHints(primaryCode: string): string[] {
+    const hints = [primaryCode];
+    const codeswitchPairs: Record<string, string[]> = {
+      'en-IN': ['hi-IN', 'ta-IN', 'te-IN', 'bn-IN', 'gu-IN', 'mr-IN'],
+      'en-US': ['es-MX'],
+      'en-GB': ['cy-GB'],
+      'fr-CA': ['en-CA'],
+      'fr-FR': ['de-DE'],
+      'es-ES': ['ca-ES'],
+      'es-MX': ['en-US'],
+      'zh-CN': ['zh-TW', 'en-US'],
+    };
+    const related = codeswitchPairs[primaryCode] || [];
+    hints.push(...related.slice(0, 2)); // Limit to 3 total languages
+    return hints;
   }
 
   sendAudio(pcm16Buffer: Buffer) {

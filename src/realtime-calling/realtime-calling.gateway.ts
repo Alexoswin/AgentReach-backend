@@ -391,7 +391,8 @@ export class RealtimeCallingGateway {
         -90,
         Math.min(
           -20,
-          prevFloor * (1 - NOISE_FLOOR_EMA_ALPHA) + dbfs * NOISE_FLOOR_EMA_ALPHA,
+          prevFloor * (1 - NOISE_FLOOR_EMA_ALPHA) +
+            dbfs * NOISE_FLOOR_EMA_ALPHA,
         ),
       );
     }
@@ -460,18 +461,21 @@ export class RealtimeCallingGateway {
           state.manualLastSpeechAudioMs = state.manualAudioMs;
         }
       } else {
-        // Send silence (zeroed) to Gemini
+        // Mid-turn dip below the gate: forward the REAL (quiet) audio, not zeroed
+        // silence. This is usually a brief pause, a soft consonant, or a trailing
+        // syllable — zeroing it punches holes into the speech and makes Gemini drop
+        // words from the transcript. The gate below still detects the pause for
+        // end-of-turn timing; it just no longer corrupts what Gemini hears.
         state.noiseSuppressedFrames++;
         if (
           state.noiseSuppressedFrames === 1 ||
           state.noiseSuppressedFrames % 100 === 0
         ) {
           this.logger.debug(
-            `Forwarding low-level caller audio as silence callId=${state.callId} frames=${state.noiseSuppressedFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs}`,
+            `Forwarding low-level caller audio as-is callId=${state.callId} frames=${state.noiseSuppressedFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs.toFixed(1)}`,
           );
         }
-        const silence = resamplePcm16(Buffer.alloc(pcm.length), 8000, 16000);
-        state.gemini.sendAudio(silence);
+        state.gemini.sendAudio(resampledReal);
 
         state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
         const localSilenceMs =
@@ -939,20 +943,28 @@ export class RealtimeCallingGateway {
       where: { id: callId },
     });
     const scripts = Array.isArray(call?.scripts) ? call.scripts : [];
+    const timestamp = new Date().toISOString();
     const nextScripts = [
       ...scripts,
-      { role, content: content.trim(), timestamp: new Date().toISOString() },
+      { role, content: content.trim(), timestamp },
     ];
+    // Format transcript with speaker labels and timestamps for readability
+    const transcript = nextScripts
+      .map((item: any) => {
+        const speaker = item.role === 'assistant' ? 'AI' : 'User';
+        const time = new Date(item.timestamp).toLocaleTimeString('en-IN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+        return `[${time}] ${speaker}: ${item.content}`;
+      })
+      .join('\n');
     await this.db.callHistory.update({
       where: { id: callId },
       data: {
         scripts: nextScripts,
-        transcript: nextScripts
-          .map(
-            (item: any) =>
-              `${item.role === 'assistant' ? 'AI' : 'User'}: ${item.content}`,
-          )
-          .join('\n'),
+        transcript,
       },
     });
   }
@@ -1147,7 +1159,7 @@ export class RealtimeCallingGateway {
         spokenLanguage: 'English',
         accent: 'Indian English',
         instruction:
-          'Use natural Indian English Indian Accent  phrasing and pronunciation. Do not switch to American or British English unless the contact asks.',
+          'Speak casual, natural Indian English — the way everyday people in India speak English on the phone. Use Indian phrasing, rhythm, and intonation (rising tone at end of statements, natural code-switching with Hindi/local words). Sound friendly and conversational, not formal. Examples: "What is it, sir/madam?", "One moment only", "No problem, I will check.", "What all you need?" Use casual fillers like "actually", "basically", "simply". Match the contact\'s energy.',
       },
       'en-US': {
         spokenLanguage: 'English',
@@ -1161,9 +1173,9 @@ export class RealtimeCallingGateway {
       },
       'hi-IN': {
         spokenLanguage: 'Hindi',
-        accent: 'Indian Hindi',
+        accent: 'Casual Hindi (Youth/Teenage)',
         instruction:
-          'Speak Hindi naturally. Use English words only if common in Indian conversation.',
+          'Speak casual, modern Hindi like teenagers use — relaxed and conversational, not formal. Use Hinglish (Hindi mixed with English words naturally). Common patterns: "Haan, bilkul", "Ek minute", "Basically yeh ek simple cheez hai", "Kya baat hai", "Chill, sab theek hai", "Mujhe bataao what all you need". Use teenage slang and casual fillers: "basically", "arre bhai", "yaar", "literally", "bro". Sound friendly, young, and relatable — like talking to a friend.',
       },
       'bn-IN': {
         spokenLanguage: 'Bengali',
@@ -1234,6 +1246,56 @@ export class RealtimeCallingGateway {
         spokenLanguage: 'Portuguese',
         accent: 'Brazilian Portuguese',
         instruction: 'Speak Portuguese naturally for Brazil.',
+      },
+      'sv-SE': {
+        spokenLanguage: 'Swedish',
+        accent: 'Swedish',
+        instruction: 'Speak Swedish naturally.',
+      },
+      'zh-CN': {
+        spokenLanguage: 'Mandarin Chinese',
+        accent: 'Mainland Chinese',
+        instruction: 'Speak Mandarin Chinese naturally, using simplified characters.',
+      },
+      'nl-NL': {
+        spokenLanguage: 'Dutch',
+        accent: 'Netherlands Dutch',
+        instruction: 'Speak Dutch naturally and directly, as spoken in the Netherlands.',
+      },
+      'pl-PL': {
+        spokenLanguage: 'Polish',
+        accent: 'Polish',
+        instruction: 'Speak Polish naturally and conversationally.',
+      },
+      'ru-RU': {
+        spokenLanguage: 'Russian',
+        accent: 'Russian',
+        instruction: 'Speak Russian naturally and clearly.',
+      },
+      'tr-TR': {
+        spokenLanguage: 'Turkish',
+        accent: 'Turkish',
+        instruction: 'Speak Turkish naturally and conversationally.',
+      },
+      'el-GR': {
+        spokenLanguage: 'Greek',
+        accent: 'Greek',
+        instruction: 'Speak Greek naturally and conversationally.',
+      },
+      'cs-CZ': {
+        spokenLanguage: 'Czech',
+        accent: 'Czech',
+        instruction: 'Speak Czech naturally and clearly.',
+      },
+      'hu-HU': {
+        spokenLanguage: 'Hungarian',
+        accent: 'Hungarian',
+        instruction: 'Speak Hungarian naturally and conversationally.',
+      },
+      'ro-RO': {
+        spokenLanguage: 'Romanian',
+        accent: 'Romanian',
+        instruction: 'Speak Romanian naturally and conversationally.',
       },
     };
     return {

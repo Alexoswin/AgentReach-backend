@@ -45,12 +45,11 @@ describe('GeminiLiveSessionWrapper', () => {
         prebuiltVoiceConfig: { voiceName: 'Puck' },
       },
     });
-    expect(config.inputAudioTranscription).toEqual({
-      languageHints: { languageCodes: ['en-IN'] },
-    });
-    expect(config.outputAudioTranscription).toEqual({
-      languageHints: { languageCodes: ['en-IN'] },
-    });
+    // Multi-language hints for code-switching regions (en-IN includes related Indian languages)
+    expect(config.inputAudioTranscription.languageHints.languageCodes).toContain('en-IN');
+    expect(config.inputAudioTranscription.languageHints.languageCodes.length).toBeGreaterThan(1);
+    expect(config.outputAudioTranscription.languageHints.languageCodes).toContain('en-IN');
+    expect(config.outputAudioTranscription.languageHints.languageCodes.length).toBeGreaterThan(1);
     expect(config.speechConfig).not.toHaveProperty('languageCode');
   });
 
@@ -60,9 +59,7 @@ describe('GeminiLiveSessionWrapper', () => {
     const config = wrapper.buildLiveConfig('AUDIO');
 
     expect(config.speechConfig).not.toHaveProperty('languageCode');
-    expect(config.inputAudioTranscription).toEqual({
-      languageHints: { languageCodes: ['hi-IN'] },
-    });
+    expect(config.inputAudioTranscription.languageHints.languageCodes).toContain('hi-IN');
   });
 
   it('disables automatic activity detection for fast manual mode', () => {
