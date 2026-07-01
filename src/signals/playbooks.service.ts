@@ -70,7 +70,9 @@ export class PlaybooksService {
       if (!p.active) return false;
       if (!p.signalTypes.includes(signalType)) return false;
       if (p.directoryIds.length === 0) return true;
-      return !!contact.directoryId && p.directoryIds.includes(contact.directoryId);
+      return (
+        !!contact.directoryId && p.directoryIds.includes(contact.directoryId)
+      );
     });
   }
 }

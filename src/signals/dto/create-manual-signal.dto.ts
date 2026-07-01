@@ -27,13 +27,16 @@ export class CreateManualSignalDto {
   @IsString()
   companyDomain?: string;
 
-  @ApiProperty({ required: false, description: 'Match against a single contact email' })
+  @ApiProperty({
+    required: false,
+    description: 'Match against a single contact email',
+  })
   @IsOptional()
   @IsString()
   contactEmail?: string;
 
   @ApiProperty({ required: false, enum: SIGNAL_TYPES })
   @IsOptional()
-  @IsIn(SIGNAL_TYPES as unknown as string[])
+  @IsIn(SIGNAL_TYPES)
   type?: string;
 }

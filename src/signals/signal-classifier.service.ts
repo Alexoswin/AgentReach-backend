@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { SettingsService } from '../settings/settings.service';
-import { Confidence, RawSignal, SignalType, SIGNAL_TYPES } from './signal.types';
+import {
+  Confidence,
+  RawSignal,
+  SignalType,
+  SIGNAL_TYPES,
+} from './signal.types';
 
 export interface Classification {
   type: SignalType;
@@ -115,7 +120,9 @@ export class SignalClassifierService {
     ) {
       type = 'funding';
       confidence = 'high';
-      const amount = haystack.match(/\$\s?\d+(?:\.\d+)?\s?(?:m|b|million|billion)/i);
+      const amount = haystack.match(
+        /\$\s?\d+(?:\.\d+)?\s?(?:m|b|million|billion)/i,
+      );
       if (amount) entities.roundSize = amount[0];
       const stage = haystack.match(/series [a-e]|seed/i);
       if (stage) entities.roundStage = stage[0];
@@ -124,7 +131,9 @@ export class SignalClassifierService {
     ) {
       type = 'hiring-surge';
       confidence = 'high';
-    } else if (has('launches', 'launched', 'unveils', 'introducing', 'announces')) {
+    } else if (
+      has('launches', 'launched', 'unveils', 'introducing', 'announces')
+    ) {
       type = 'product-launch';
       confidence = 'medium';
     } else if (has('acquires', 'acquired', 'acquisition', 'merger')) {

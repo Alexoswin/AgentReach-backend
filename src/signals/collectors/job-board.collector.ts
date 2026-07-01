@@ -1,9 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  CompanyWatchLike,
-  RawSignal,
-  SignalCollector,
-} from '../signal.types';
+import { CompanyWatchLike, RawSignal, SignalCollector } from '../signal.types';
 
 /**
  * S3 — Hiring surge. Reads the public Greenhouse job-board API for a company

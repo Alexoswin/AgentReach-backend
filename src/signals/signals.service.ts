@@ -234,9 +234,9 @@ export class SignalsService {
       (c) => !triggeredCampaignIds.has(c.campaignId),
     );
 
-    const activeWatches = (
-      await this.db.companyWatch.findMany({})
-    ).filter((w) => w.status === 'active').length;
+    const activeWatches = (await this.db.companyWatch.findMany({})).filter(
+      (w) => w.status === 'active',
+    ).length;
 
     return {
       watchedCompanies: activeWatches,

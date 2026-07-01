@@ -38,7 +38,9 @@ export class SignalsController {
   }
 
   @Get('stats')
-  @ApiOperation({ summary: 'Signal-triggered vs manual performance comparison' })
+  @ApiOperation({
+    summary: 'Signal-triggered vs manual performance comparison',
+  })
   getStats() {
     return this.signals.getStats();
   }
@@ -65,7 +67,9 @@ export class SignalsController {
 
   @Post('bounce')
   @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({ summary: 'Ingest an SES bounce/complaint (job-change signal)' })
+  @ApiOperation({
+    summary: 'Ingest an SES bounce/complaint (job-change signal)',
+  })
   bounce(@Body() dto: IngestBounceDto) {
     return this.signals.ingestBounce(dto);
   }

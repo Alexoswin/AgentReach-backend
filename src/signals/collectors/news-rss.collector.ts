@@ -1,10 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Parser from 'rss-parser';
-import {
-  CompanyWatchLike,
-  RawSignal,
-  SignalCollector,
-} from '../signal.types';
+import { CompanyWatchLike, RawSignal, SignalCollector } from '../signal.types';
 
 /**
  * S1 — Company in the news. Polls Google News RSS scoped to the company name.

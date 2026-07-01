@@ -85,7 +85,10 @@ export class TriggerService {
 
     const materialized = await this.db.template.create({
       data: {
-        name: `[Signal] ${baseTemplate.name} — ${signal.companyName || ''}`.slice(0, 120),
+        name: `[Signal] ${baseTemplate.name} — ${signal.companyName || ''}`.slice(
+          0,
+          120,
+        ),
         subject: this.injectSignal(baseTemplate.subject, signal),
         bodyHtml: this.injectSignal(baseTemplate.bodyHtml, signal),
         bodyText: this.injectSignal(baseTemplate.bodyText, signal),
@@ -97,13 +100,18 @@ export class TriggerService {
 
     const campaign = await this.db.emailCampaign.create({
       data: {
-        name: `Signal: ${SIGNAL_TYPE_LABELS[signal.type] || signal.type} — ${signal.companyName || ''}`.slice(0, 120),
+        name: `Signal: ${SIGNAL_TYPE_LABELS[signal.type] || signal.type} — ${signal.companyName || ''}`.slice(
+          0,
+          120,
+        ),
         status: 'DRAFT',
         templateId: materialized.id,
       },
     });
 
-    await this.emailCampaigns.addContacts(campaign.id, { contactIds: [contactId] });
+    await this.emailCampaigns.addContacts(campaign.id, {
+      contactIds: [contactId],
+    });
     await this.emailCampaigns.launchCampaign(campaign.id);
 
     const record = await this.db.triggeredOutreach.create({

@@ -17,7 +17,7 @@ export class CreatePlaybookDto {
 
   @ApiProperty({ example: ['funding', 'hiring-surge'] })
   @IsArray()
-  @IsIn(SIGNAL_TYPES as unknown as string[], { each: true })
+  @IsIn(SIGNAL_TYPES, { each: true })
   signalTypes: string[];
 
   @ApiProperty({ required: false, type: [String] })

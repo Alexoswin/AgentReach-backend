@@ -1,9 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  CompanyWatchLike,
-  RawSignal,
-  SignalCollector,
-} from '../signal.types';
+import { CompanyWatchLike, RawSignal, SignalCollector } from '../signal.types';
 
 /**
  * S2 — Funding rounds via SEC EDGAR full-text search (Form D).
