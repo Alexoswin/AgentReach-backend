@@ -33,6 +33,14 @@ import {
   AiCallingBotEmbedding,
   AiCallingBotEmbeddingSchema,
 } from './schemas/ai-calling-bot-embedding.schema';
+import { CompanyWatch, CompanyWatchSchema } from './schemas/company-watch.schema';
+import { Signal, SignalSchema } from './schemas/signal.schema';
+import { SignalMatch, SignalMatchSchema } from './schemas/signal-match.schema';
+import { Playbook, PlaybookSchema } from './schemas/playbook.schema';
+import {
+  TriggeredOutreach,
+  TriggeredOutreachSchema,
+} from './schemas/triggered-outreach.schema';
 
 @Global()
 @Module({
@@ -52,6 +60,11 @@ import {
         name: AiCallingBotEmbedding.name,
         schema: AiCallingBotEmbeddingSchema,
       },
+      { name: CompanyWatch.name, schema: CompanyWatchSchema },
+      { name: Signal.name, schema: SignalSchema },
+      { name: SignalMatch.name, schema: SignalMatchSchema },
+      { name: Playbook.name, schema: PlaybookSchema },
+      { name: TriggeredOutreach.name, schema: TriggeredOutreachSchema },
     ]),
   ],
   providers: [MongoService],

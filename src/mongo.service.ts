@@ -15,6 +15,11 @@ import { CallingCampaign } from './schemas/calling-campaign.schema';
 import { CallHistory } from './schemas/call-history.schema';
 import { AiCallingBot } from './schemas/ai-calling-bot.schema';
 import { AiCallingBotEmbedding } from './schemas/ai-calling-bot-embedding.schema';
+import { CompanyWatch } from './schemas/company-watch.schema';
+import { Signal } from './schemas/signal.schema';
+import { SignalMatch } from './schemas/signal-match.schema';
+import { Playbook } from './schemas/playbook.schema';
+import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
 
 type AnyModel = Model<any>;
 
@@ -31,6 +36,11 @@ export class MongoService implements OnModuleInit {
   callHistory: MongoDelegate;
   aiCallingBot: MongoDelegate;
   aiCallingBotEmbedding: MongoDelegate;
+  companyWatch: MongoDelegate;
+  signal: MongoDelegate;
+  signalMatch: MongoDelegate;
+  playbook: MongoDelegate;
+  triggeredOutreach: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -46,6 +56,12 @@ export class MongoService implements OnModuleInit {
     @InjectModel(AiCallingBot.name) private aiCallingBotModel: AnyModel,
     @InjectModel(AiCallingBotEmbedding.name)
     private aiCallingBotEmbeddingModel: AnyModel,
+    @InjectModel(CompanyWatch.name) private companyWatchModel: AnyModel,
+    @InjectModel(Signal.name) private signalModel: AnyModel,
+    @InjectModel(SignalMatch.name) private signalMatchModel: AnyModel,
+    @InjectModel(Playbook.name) private playbookModel: AnyModel,
+    @InjectModel(TriggeredOutreach.name)
+    private triggeredOutreachModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -59,6 +75,11 @@ export class MongoService implements OnModuleInit {
       callHistory: this.callHistoryModel,
       aiCallingBot: this.aiCallingBotModel,
       aiCallingBotEmbedding: this.aiCallingBotEmbeddingModel,
+      companyWatch: this.companyWatchModel,
+      signal: this.signalModel,
+      signalMatch: this.signalMatchModel,
+      playbook: this.playbookModel,
+      triggeredOutreach: this.triggeredOutreachModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -102,6 +123,23 @@ export class MongoService implements OnModuleInit {
     this.aiCallingBotEmbedding = new MongoDelegate(
       'aiCallingBotEmbedding',
       this.aiCallingBotEmbeddingModel,
+      models,
+    );
+    this.companyWatch = new MongoDelegate(
+      'companyWatch',
+      this.companyWatchModel,
+      models,
+    );
+    this.signal = new MongoDelegate('signal', this.signalModel, models);
+    this.signalMatch = new MongoDelegate(
+      'signalMatch',
+      this.signalMatchModel,
+      models,
+    );
+    this.playbook = new MongoDelegate('playbook', this.playbookModel, models);
+    this.triggeredOutreach = new MongoDelegate(
+      'triggeredOutreach',
+      this.triggeredOutreachModel,
       models,
     );
   }

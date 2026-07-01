@@ -14,6 +14,7 @@ import { HistoryModule } from './history/history.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
 import { BotModule } from './bot/bot.module';
+import { SignalsModule } from './signals/signals.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { BotModule } from './bot/bot.module';
     RealtimeCallingModule,
     HistoryModule,
     AnalyticsModule,
+    SignalsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

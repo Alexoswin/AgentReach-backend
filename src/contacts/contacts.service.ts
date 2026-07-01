@@ -6,10 +6,14 @@ import { CreateContactDirectoryDto } from './dto/create-contact-directory.dto';
 import { UpdateContactDirectoryDto } from './dto/update-contact-directory.dto';
 import { parse } from 'csv-parse';
 import * as XLSX from 'xlsx';
+import { WatchService } from '../signals/watch.service';
 
 @Injectable()
 export class ContactsService {
-  constructor(private db: MongoService) {}
+  constructor(
+    private db: MongoService,
+    private readonly watches: WatchService,
+  ) {}
 
   async findAll() {
     return this.db.contact.findMany({
@@ -124,7 +128,7 @@ export class ContactsService {
 
     await this.ensureDirectoryExists(dto.directoryId);
     const { customFields, ...rest } = dto;
-    return this.db.contact.create({
+    const contact = await this.db.contact.create({
       data: {
         ...rest,
         email,
@@ -133,6 +137,13 @@ export class ContactsService {
         customFields: customFields ? JSON.stringify(customFields) : null,
       },
     });
+
+    // Best-effort: start watching this contact's company for buying signals.
+    void this.watches
+      .ensureWatchesForEmails([{ email, company: rest.company }])
+      .catch(() => undefined);
+
+    return contact;
   }
 
   async update(id: string, dto: Partial<CreateContactDto>) {
@@ -371,6 +382,17 @@ export class ContactsService {
         skippedCount++;
       }
     }
+
+    // Best-effort: auto-create company watches for imported domains.
+    const watchEntries = rows
+      .map((row) => ({
+        email: row[mapping['email']]?.toString().trim().toLowerCase(),
+        company: row[mapping['company']]?.toString().trim(),
+      }))
+      .filter((e) => e.email);
+    void this.watches
+      .ensureWatchesForEmails(watchEntries)
+      .catch(() => undefined);
 
     return {
       success: true,
