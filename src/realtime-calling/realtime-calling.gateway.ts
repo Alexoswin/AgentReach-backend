@@ -324,7 +324,7 @@ export class RealtimeCallingGateway {
     const model =
       state.campaign.realtimeModel ||
       process.env.GEMINI_LIVE_MODEL ||
-      'gemini-2.5-flash-native-audio-preview-12-2025';
+      'gemini-3.1-flash-live-preview';
     const languageCode = this.resolveSelectedLanguage(state);
     const selectedVoice = this.resolveSelectedVoice(state);
     const voiceName = this.extractVoiceName(selectedVoice);

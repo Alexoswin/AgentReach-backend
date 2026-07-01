@@ -56,7 +56,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     const ai = new GoogleGenAI({ apiKey });
     this.closed = false;
     const model =
-      this.config.model || 'gemini-2.5-flash-native-audio-preview-12-2025';
+      this.config.model || 'gemini-3.1-flash-live-preview';
     const liveConfig = this.buildLiveConfig(Modality.AUDIO);
     const preset = getResponseSpeedPreset(this.config.responseSpeed);
     this.logger.log(

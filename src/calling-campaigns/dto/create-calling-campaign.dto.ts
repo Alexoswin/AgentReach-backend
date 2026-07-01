@@ -148,7 +148,7 @@ export class CreateCallingCampaignDto {
 
   @ApiProperty({
     required: false,
-    example: 'gemini-2.5-flash-native-audio-preview-12-2025',
+    example: 'gemini-3.1-flash-live-preview',
   })
   @IsString()
   @IsOptional()

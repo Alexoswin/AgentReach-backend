@@ -575,7 +575,7 @@ export class CallingCampaignsService {
     data.realtimeModel =
       data.realtimeModel ||
       process.env.GEMINI_LIVE_MODEL ||
-      'gemini-2.5-flash-native-audio-preview-12-2025';
+      'gemini-3.1-flash-live-preview';
     data.maxTokens = this.numberOr(dto.maxTokens, 4000);
     data.threshold = this.numberOr(dto.threshold, 0);
     data.responseSpeed = normalizeResponseSpeed(dto.responseSpeed);
@@ -722,7 +722,7 @@ export class CallingCampaignsService {
     const model =
       campaign.realtimeModel ||
       process.env.GEMINI_LIVE_MODEL ||
-      'gemini-2.5-flash-native-audio-preview-12-2025';
+      'gemini-3.1-flash-live-preview';
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
       model,
       voiceName,

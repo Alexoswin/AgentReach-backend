@@ -8,7 +8,7 @@ describe('GeminiLiveSessionWrapper', () => {
   function createWrapper(overrides: Partial<GeminiLiveConfig> = {}) {
     return new GeminiLiveSessionWrapper({} as any, {
       systemInstruction: 'System prompt',
-      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      model: 'gemini-3.1-flash-live-preview',
       voiceName: 'Puck',
       languageCode: 'en-IN',
       tools: [],

@@ -69,7 +69,7 @@ export class CallingCampaign {
   @Prop({ default: false })
   preventInterruption: boolean;
 
-  @Prop({ default: 'gemini-2.5-flash-native-audio-preview-12-2025' })
+  @Prop({ default: 'gemini-3.1-flash-live-preview' })
   realtimeModel: string;
 
   @Prop({ default: 4000 })
