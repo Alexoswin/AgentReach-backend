@@ -22,6 +22,9 @@ export type GeminiLiveConfig = {
   inputSampleRate?: number;
   responseSpeed?: ResponseSpeed;
   preventInterruption?: boolean;
+  // Session-resumption handle from a previous connection; when set, the new
+  // session continues that conversation instead of starting blank.
+  resumeHandle?: string;
 };
 
 export class GeminiLiveSessionWrapper extends EventEmitter {
@@ -112,6 +115,11 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
           ? { disabled: true }
           : buildAutomaticActivityDetectionConfig(responseSpeed),
       },
+      // Always request resumption updates so a mid-call reconnect (network blip
+      // or server goAway) can continue the conversation instead of losing it.
+      sessionResumption: this.config.resumeHandle
+        ? { handle: this.config.resumeHandle }
+        : {},
       inputAudioTranscription: {
         languageHints: { languageCodes: languageHints },
       },
@@ -267,6 +275,18 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         return;
       }
 
+      const resumption = message?.sessionResumptionUpdate;
+      if (resumption?.resumable && resumption?.newHandle) {
+        this.emit('session_handle', resumption.newHandle);
+      }
+
+      if (message?.goAway) {
+        this.logger.warn(
+          `Gemini Live goAway received timeLeft=${message.goAway.timeLeft ?? 'unknown'}`,
+        );
+        this.emit('go_away', message.goAway.timeLeft);
+      }
+
       const usage = message?.usageMetadata;
       if (usage) {
         this.usage.promptTokenCount += usage.promptTokenCount || 0;
@@ -365,24 +385,29 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
   }
 
   private async handleToolCall(toolCall: any) {
-    const responses: any[] = [];
-    for (const call of toolCall?.functionCalls || []) {
-      const handler = this.config.toolHandlers.get(call.name);
-      if (!handler) continue;
-      try {
-        responses.push({
-          id: call.id,
-          name: call.name,
-          response: { result: await handler(call.args || {}) },
-        });
-      } catch (error: any) {
-        responses.push({
-          id: call.id,
-          name: call.name,
-          response: { error: error?.message || 'Tool failed' },
-        });
-      }
-    }
+    const calls = (toolCall?.functionCalls || []).filter((call: any) =>
+      this.config.toolHandlers.has(call.name),
+    );
+    // Run handlers concurrently — the model is silent while it waits for tool
+    // responses, so sequential slow tools would compound into audible dead air.
+    const responses = await Promise.all(
+      calls.map(async (call: any) => {
+        const handler = this.config.toolHandlers.get(call.name)!;
+        try {
+          return {
+            id: call.id,
+            name: call.name,
+            response: { result: await handler(call.args || {}) },
+          };
+        } catch (error: any) {
+          return {
+            id: call.id,
+            name: call.name,
+            response: { error: error?.message || 'Tool failed' },
+          };
+        }
+      }),
+    );
     if (responses.length) {
       this.session?.sendToolResponse?.({ functionResponses: responses });
     }

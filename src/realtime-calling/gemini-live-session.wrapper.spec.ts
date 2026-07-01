@@ -135,6 +135,35 @@ describe('GeminiLiveSessionWrapper', () => {
     expect(modelTranscripts).toEqual(['Hi, how can I help?']);
   });
 
+  it('requests session resumption and reuses a prior handle', () => {
+    const fresh = createWrapper();
+    expect(fresh.buildLiveConfig('AUDIO').sessionResumption).toEqual({});
+
+    const resumed = createWrapper({ resumeHandle: 'handle-1' });
+    expect(resumed.buildLiveConfig('AUDIO').sessionResumption).toEqual({
+      handle: 'handle-1',
+    });
+  });
+
+  it('emits session handles and goAway from server messages', async () => {
+    const wrapper = createWrapper();
+    const handles: string[] = [];
+    const goAways: unknown[] = [];
+    wrapper.on('session_handle', (handle: string) => handles.push(handle));
+    wrapper.on('go_away', (timeLeft: unknown) => goAways.push(timeLeft));
+
+    await (wrapper as any).handleMessage({
+      sessionResumptionUpdate: { resumable: true, newHandle: 'handle-2' },
+    });
+    await (wrapper as any).handleMessage({
+      sessionResumptionUpdate: { resumable: false, newHandle: 'ignored' },
+    });
+    await (wrapper as any).handleMessage({ goAway: { timeLeft: '10s' } });
+
+    expect(handles).toEqual(['handle-2']);
+    expect(goAways).toEqual(['10s']);
+  });
+
   it('resolves setup wait after setupComplete arrives', async () => {
     const wrapper = createWrapper();
     const pending = wrapper.waitForSetupComplete(1000);

@@ -8,13 +8,17 @@ import {
   GeminiLiveConfig,
   GeminiLiveSessionWrapper,
 } from './gemini-live-session.wrapper';
-import { ResponseSpeed, getResponseSpeedPreset } from './response-speed';
+import { getResponseSpeedPreset } from './response-speed';
 import {
   calculateDbfs,
   decodeUlawToPcm16,
   resamplePcm16,
   transcodePcm24kToUlaw8k,
 } from './audio-codec';
+import { ActiveCallSession, TwilioFrame } from './call-session.types';
+import { buildCallTools } from './call-tools';
+import { buildCallSystemInstruction } from './call-prompt';
+import { getLanguageProfile } from './language-profiles';
 
 // Milliseconds of sustained above-gate audio required before caller audio is
 // treated as real speech. Lower = snappier turn-taking and barge-in; higher =
@@ -40,68 +44,14 @@ const ECHO_SUPPRESSION_DB = 6;
 const MAX_CALL_DURATION_MS = 10 * 60 * 1000;
 const INACTIVITY_TIMEOUT_MS = 15000;
 const MAX_INACTIVITY_STRIKES = 2;
-// fetch_context must not stall the call: fall back to empty context after this.
-const FETCH_CONTEXT_TIMEOUT_MS = 4000;
 // Safety net so a stuck call cannot burn tokens forever (native audio is
 // token-heavy, so this is a high ceiling, not a normal-case limiter).
 const MAX_CALL_TOKENS = Number(process.env.GEMINI_MAX_CALL_TOKENS || 600000);
 // At most one automatic reconnect if the Gemini socket drops mid-call.
 const MAX_RECONNECT_ATTEMPTS = 1;
-
-type TwilioFrame = {
-  event?: string;
-  streamSid?: string;
-  start?: {
-    streamSid?: string;
-    callSid?: string;
-    customParameters?: Record<string, string>;
-  };
-  media?: { payload?: string };
-  stop?: Record<string, unknown>;
-};
-
-type ActiveCallSession = {
-  callId: string;
-  streamSid?: string;
-  providerCallSid?: string;
-  call?: any;
-  campaign?: any;
-  contact?: any;
-  gemini?: GeminiLiveSessionWrapper;
-  userTurns: number;
-  assistantTurns: number;
-  pendingHangup: boolean;
-  endCallReason?: string;
-  completed: boolean;
-  preventInterruption: boolean;
-  assistantAudioActive: boolean;
-  outboundAudioLogged: boolean;
-  responseSpeed: ResponseSpeed;
-  noiseGateDbfs: number;
-  noiseSuppressedFrames: number;
-  manualActivityActive: boolean;
-  manualAudioMs: number;
-  manualLastSpeechAudioMs?: number;
-  setupStartedAt?: number;
-  setupCompletedAt?: number;
-  lastUserTranscriptAt?: number;
-  awaitingModelAudioAfterUser: boolean;
-  scriptWriteTail: Promise<void>;
-  speechActive: boolean;
-  speechDetectionMs: number;
-  speechBuffer: Buffer[];
-  noiseFloorDbfs: number;
-  ws?: WebSocket;
-  geminiConfig?: GeminiLiveConfig;
-  preparePromise?: Promise<void>;
-  reconnectAttempts: number;
-  callActive: boolean;
-  cleanedUp: boolean;
-  lastActivityAt: number;
-  inactivityStrikes: number;
-  inactivityTimer?: NodeJS.Timeout;
-  maxCallTimer?: NodeJS.Timeout;
-};
+// Cap on greeting audio held while waiting for the Twilio start frame
+// (base64 chars of 8kHz μ-law ≈ 20s of speech).
+const MAX_PENDING_OUTBOUND_CHARS = 8000 * 20 * 1.4;
 
 @Injectable()
 export class RealtimeCallingGateway {
@@ -145,6 +95,9 @@ export class RealtimeCallingGateway {
       cleanedUp: false,
       lastActivityAt: Date.now(),
       inactivityStrikes: 0,
+      startSignalSent: false,
+      pendingOutboundAudio: [],
+      pendingOutboundBytes: 0,
     };
 
     // Begin connecting to Gemini as soon as the socket opens (the callId arrives
@@ -258,6 +211,13 @@ export class RealtimeCallingGateway {
       }
     }
 
+    // Get sound flowing before any bookkeeping: release greeting audio the
+    // model already produced, and only then touch the database.
+    this.flushPendingAssistantAudio(state, ws);
+    this.maybeSendStartSignal(state);
+    state.callActive = true;
+    this.armCallTimers(state);
+
     const call = state.call;
     await this.db.callHistory.update({
       where: { id: callId },
@@ -272,18 +232,6 @@ export class RealtimeCallingGateway {
         connectedAt: call.connectedAt || new Date(),
       },
     });
-
-    state.callActive = true;
-    this.armCallTimers(state);
-
-    if (state.campaign.aiSpeaksFirst !== false) {
-      state.gemini?.sendText('[SIGNAL_START]');
-      this.logger.log(`Gemini Live start signal sent callId=${callId}`);
-    } else {
-      this.logger.log(
-        `Gemini Live waiting for contact to speak first callId=${callId}`,
-      );
-    }
   }
 
   // Load the call/campaign/contact and connect the Gemini session. Safe to call
@@ -296,6 +244,24 @@ export class RealtimeCallingGateway {
   ) {
     await this.loadCallData(state, callId);
     await this.connectGemini(state, ws);
+    // Ask for the greeting immediately: generation overlaps the rest of the
+    // Twilio start handshake, and any audio produced before streamSid is known
+    // is buffered by the audio_chunk handler and flushed at stream start.
+    this.maybeSendStartSignal(state);
+  }
+
+  private maybeSendStartSignal(state: ActiveCallSession) {
+    if (state.startSignalSent || state.completed) return;
+    if (!state.gemini || state.gemini.isClosed()) return;
+    if (state.campaign?.aiSpeaksFirst === false) {
+      this.logger.log(
+        `Gemini Live waiting for contact to speak first callId=${state.callId}`,
+      );
+      return;
+    }
+    state.startSignalSent = true;
+    state.gemini.sendText('[SIGNAL_START]');
+    this.logger.log(`Gemini Live start signal sent callId=${state.callId}`);
   }
 
   private async loadCallData(state: ActiveCallSession, callId: string) {
@@ -328,7 +294,7 @@ export class RealtimeCallingGateway {
     const languageCode = this.resolveSelectedLanguage(state);
     const selectedVoice = this.resolveSelectedVoice(state);
     const voiceName = this.extractVoiceName(selectedVoice);
-    const languageProfile = this.getLanguageProfile(languageCode);
+    const languageProfile = getLanguageProfile(languageCode);
     const preset = getResponseSpeedPreset(state.responseSpeed);
     this.logger.log(
       `Starting Gemini Live call callId=${state.callId} campaignId=${state.campaign.id || call?.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} selectedVoice=${selectedVoice} requestedLanguage=${languageCode} campaignLanguage=${state.campaign.selectedLanguage || state.campaign.language || 'none'} callLanguage=${call?.selectedLanguage || 'none'} campaignVoice=${state.campaign.selectedVoice || state.campaign.voice || 'none'} callVoice=${call?.selectedVoice || 'none'} spokenLanguage=${languageProfile.spokenLanguage} responseSpeed=${preset.responseSpeed} activityDetection=${preset.activityDetection} vadSilenceMs=${preset.silenceDurationMs} noiseGateDbfs=${preset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
@@ -351,6 +317,9 @@ export class RealtimeCallingGateway {
     if (!state.geminiConfig) {
       state.geminiConfig = this.buildGeminiConfig(state);
     }
+    // Carry the latest resumption handle so a reconnect restores the session
+    // (conversation context, pending turn) instead of starting blank.
+    state.geminiConfig.resumeHandle = state.resumeHandle;
     const gemini = new GeminiLiveSessionWrapper(
       this.geminiAuthService,
       state.geminiConfig,
@@ -397,17 +366,57 @@ export class RealtimeCallingGateway {
       );
     }
     const isSpeech = dbfs >= noiseGateDbfs;
-    // A short sound while the agent is talking is a backchannel ("mm-hmm"), not a
-    // real interruption, so it must be sustained longer before we cut the agent off.
-    const onsetMs =
-      state.assistantAudioActive && !state.preventInterruption
-        ? BACKCHANNEL_INTERRUPT_MS
-        : SPEECH_ONSET_VALIDATION_MS;
     const resampledReal = resamplePcm16(pcm, 8000, 16000);
     const isManualMode =
       preset.activityDetection === 'manual' || state.preventInterruption;
 
+    // An open manual turn is tracked by manualActivityActive — the protocol
+    // state shared with Gemini — never by the local speech flags: events such
+    // as assistant audio chunks or transcript finals reset those flags mid-turn,
+    // and keying off them used to strand Gemini waiting for an activityEnd that
+    // never came (dead air until the silence check). While the turn is open,
+    // always forward the real audio and close the turn from frame timing alone.
+    if (isManualMode && state.manualActivityActive) {
+      state.speechActive = true;
+      state.gemini.sendAudio(resampledReal);
+      state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
+      if (isSpeech) {
+        state.manualLastSpeechAudioMs = state.manualAudioMs;
+        return;
+      }
+      // Mid-turn dip below the gate: the REAL (quiet) audio was forwarded, not
+      // zeroed silence — zeroing punches holes into soft consonants and makes
+      // Gemini drop words. The gate only drives end-of-turn timing here.
+      state.noiseSuppressedFrames++;
+      if (
+        state.noiseSuppressedFrames === 1 ||
+        state.noiseSuppressedFrames % 100 === 0
+      ) {
+        this.logger.debug(
+          `Forwarding low-level caller audio as-is callId=${state.callId} frames=${state.noiseSuppressedFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs.toFixed(1)}`,
+        );
+      }
+      const localSilenceMs =
+        state.manualAudioMs - (state.manualLastSpeechAudioMs || 0);
+      if (localSilenceMs >= preset.silenceDurationMs) {
+        state.speechActive = false;
+        state.manualActivityActive = false;
+        state.gemini.sendActivityEnd();
+        this.logger.log(
+          `Gemini Live local activity end callId=${state.callId} localSilenceMs=${localSilenceMs} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs.toFixed(1)}`,
+        );
+      }
+      return;
+    }
+
     if (!state.speechActive) {
+      // A short sound while the agent is talking is a backchannel ("mm-hmm"),
+      // not a real interruption, so it must be sustained longer before we cut
+      // the agent off.
+      const onsetMs =
+        state.assistantAudioActive && !state.preventInterruption
+          ? BACKCHANNEL_INTERRUPT_MS
+          : SPEECH_ONSET_VALIDATION_MS;
       if (isSpeech) {
         state.speechDetectionMs = (state.speechDetectionMs || 0) + frameMs;
         state.speechBuffer = state.speechBuffer || [];
@@ -448,57 +457,24 @@ export class RealtimeCallingGateway {
         const silence = resamplePcm16(Buffer.alloc(pcm.length), 8000, 16000);
         state.gemini.sendAudio(silence);
       }
-    } else {
-      // Speech is active.
-      if (isSpeech) {
-        state.gemini.sendAudio(resampledReal);
-        if (isManualMode) {
-          state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
-          state.manualLastSpeechAudioMs = state.manualAudioMs;
-        } else {
-          // Track speech time in automatic mode for silence timeout fallback
-          state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
-          state.manualLastSpeechAudioMs = state.manualAudioMs;
-        }
-      } else {
-        // Mid-turn dip below the gate: forward the REAL (quiet) audio, not zeroed
-        // silence. This is usually a brief pause, a soft consonant, or a trailing
-        // syllable — zeroing it punches holes into the speech and makes Gemini drop
-        // words from the transcript. The gate below still detects the pause for
-        // end-of-turn timing; it just no longer corrupts what Gemini hears.
-        state.noiseSuppressedFrames++;
-        if (
-          state.noiseSuppressedFrames === 1 ||
-          state.noiseSuppressedFrames % 100 === 0
-        ) {
-          this.logger.debug(
-            `Forwarding low-level caller audio as-is callId=${state.callId} frames=${state.noiseSuppressedFrames} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs.toFixed(1)}`,
-          );
-        }
-        state.gemini.sendAudio(resampledReal);
+      return;
+    }
 
-        state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
-        const localSilenceMs =
-          state.manualAudioMs - (state.manualLastSpeechAudioMs || 0);
-
-        if (isManualMode) {
-          if (localSilenceMs >= preset.silenceDurationMs) {
-            state.speechActive = false;
-            state.manualActivityActive = false;
-            state.gemini.sendActivityEnd();
-            this.logger.log(
-              `Gemini Live local activity end callId=${state.callId} localSilenceMs=${localSilenceMs} dbfs=${dbfs.toFixed(1)} gate=${noiseGateDbfs.toFixed(1)}`,
-            );
-          }
-        } else {
-          // In automatic mode, reset speechActive after long silence as a fallback
-          if (localSilenceMs >= AUTOMATIC_SILENCE_RESET_MS) {
-            state.speechActive = false;
-            state.speechDetectionMs = 0;
-            state.speechBuffer = [];
-          }
-        }
-      }
+    // Automatic mode with speech active: Gemini's server-side VAD owns the
+    // turn; we forward the real audio and only keep a local silence fallback.
+    state.gemini.sendAudio(resampledReal);
+    state.manualAudioMs = (state.manualAudioMs || 0) + frameMs;
+    if (isSpeech) {
+      state.manualLastSpeechAudioMs = state.manualAudioMs;
+      return;
+    }
+    state.noiseSuppressedFrames++;
+    const localSilenceMs =
+      state.manualAudioMs - (state.manualLastSpeechAudioMs || 0);
+    if (localSilenceMs >= AUTOMATIC_SILENCE_RESET_MS) {
+      state.speechActive = false;
+      state.speechDetectionMs = 0;
+      state.speechBuffer = [];
     }
   }
 
@@ -527,18 +503,61 @@ export class RealtimeCallingGateway {
     return gate;
   }
 
+  // Reset onset validation without touching an open manual turn — closing that
+  // is forwardAudio's job (see the manualActivityActive branch).
+  private resetSpeechDetection(state: ActiveCallSession) {
+    state.speechDetectionMs = 0;
+    state.speechBuffer = [];
+    if (!state.manualActivityActive) state.speechActive = false;
+  }
+
+  private bufferPendingAssistantAudio(
+    state: ActiveCallSession,
+    payload: string,
+  ) {
+    const pending = (state.pendingOutboundAudio ||= []);
+    pending.push(payload);
+    state.pendingOutboundBytes =
+      (state.pendingOutboundBytes || 0) + payload.length;
+    while (
+      pending.length > 1 &&
+      state.pendingOutboundBytes > MAX_PENDING_OUTBOUND_CHARS
+    ) {
+      const dropped = pending.shift();
+      state.pendingOutboundBytes -= dropped?.length || 0;
+    }
+  }
+
+  private flushPendingAssistantAudio(state: ActiveCallSession, ws: WebSocket) {
+    const pending = state.pendingOutboundAudio;
+    state.pendingOutboundAudio = [];
+    state.pendingOutboundBytes = 0;
+    if (!pending?.length) return;
+    if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
+    for (const payload of pending) {
+      ws.send(
+        JSON.stringify({
+          event: 'media',
+          streamSid: state.streamSid,
+          media: { payload },
+        }),
+      );
+    }
+    this.logger.log(
+      `Flushed buffered assistant audio callId=${state.callId} frames=${pending.length}`,
+    );
+  }
+
   private attachGeminiEvents(
     ws: WebSocket,
     state: ActiveCallSession,
     gemini: GeminiLiveSessionWrapper,
   ) {
     gemini.on('audio_chunk', (chunk: Buffer) => {
-      if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
       const now = Date.now();
       state.assistantAudioActive = true;
-      state.speechActive = false;
-      state.speechDetectionMs = 0;
-      state.speechBuffer = [];
+      this.resetSpeechDetection(state);
       if (!state.outboundAudioLogged) {
         state.outboundAudioLogged = true;
         const sinceSetupMs = state.setupStartedAt
@@ -557,6 +576,12 @@ export class RealtimeCallingGateway {
         state.awaitingModelAudioAfterUser = false;
       }
       const payload = transcodePcm24kToUlaw8k(chunk).toString('base64');
+      // Greeting audio can be generated before the Twilio start frame arrives;
+      // hold it until streamSid is known instead of dropping it.
+      if (!state.streamSid) {
+        this.bufferPendingAssistantAudio(state, payload);
+        return;
+      }
       ws.send(
         JSON.stringify({
           event: 'media',
@@ -568,6 +593,8 @@ export class RealtimeCallingGateway {
 
     gemini.on('interrupted', () => {
       state.assistantAudioActive = false;
+      state.pendingOutboundAudio = [];
+      state.pendingOutboundBytes = 0;
       if (
         state.preventInterruption ||
         !state.streamSid ||
@@ -582,9 +609,7 @@ export class RealtimeCallingGateway {
       state.userTurns++;
       state.lastUserTranscriptAt = Date.now();
       state.awaitingModelAudioAfterUser = true;
-      state.speechActive = false;
-      state.speechDetectionMs = 0;
-      state.speechBuffer = [];
+      this.resetSpeechDetection(state);
       this.resetInactivity(state);
       this.logger.debug(
         `Gemini Live user transcript callId=${state.callId} turn=${state.userTurns} length=${text.length} noiseSuppressedFrames=${state.noiseSuppressedFrames}`,
@@ -605,9 +630,7 @@ export class RealtimeCallingGateway {
 
     gemini.on('audio_done', () => {
       state.assistantAudioActive = false;
-      state.speechActive = false;
-      state.speechDetectionMs = 0;
-      state.speechBuffer = [];
+      this.resetSpeechDetection(state);
       this.logger.debug(
         `Gemini Live audio done callId=${state.callId} pendingHangup=${state.pendingHangup}`,
       );
@@ -638,6 +661,18 @@ export class RealtimeCallingGateway {
       }
     });
 
+    gemini.on('session_handle', (handle: string) => {
+      state.resumeHandle = handle;
+    });
+
+    gemini.on('go_away', (timeLeft: unknown) => {
+      // The server will close this connection shortly; the close handler
+      // reconnects with the resumption handle, so just leave a trace here.
+      this.logger.warn(
+        `Gemini Live goAway received callId=${state.callId} timeLeft=${String(timeLeft ?? 'unknown')}`,
+      );
+    });
+
     gemini.on('error', (error: Error) => {
       this.logger.error(`Gemini Live session error: ${error.message}`);
       void this.appendError(state.callId, error);
@@ -663,13 +698,17 @@ export class RealtimeCallingGateway {
       return;
     }
     state.reconnectAttempts++;
+    const resuming = Boolean(state.resumeHandle);
     this.logger.warn(
-      `Gemini socket dropped mid-call; reconnecting callId=${state.callId} attempt=${state.reconnectAttempts}`,
+      `Gemini socket dropped mid-call; reconnecting callId=${state.callId} attempt=${state.reconnectAttempts} resuming=${resuming}`,
     );
     try {
       await this.connectGemini(state, ws);
-      // New session has no memory; prompt a brief, natural recovery.
-      state.gemini?.sendText('[RESUME]');
+      state.manualActivityActive = false;
+      state.speechActive = false;
+      // With a resumption handle the session continues where it left off; only
+      // a blank session needs the model prompted into a natural recovery.
+      if (!resuming) state.gemini?.sendText('[RESUME]');
       this.resetInactivity(state);
     } catch (error: any) {
       this.logger.error(
@@ -762,179 +801,20 @@ export class RealtimeCallingGateway {
   }
 
   private buildTools(state: ActiveCallSession) {
-    const enabledTools = new Set<string>(
-      Array.isArray(state.campaign?.tools)
-        ? state.campaign.tools
-        : ['end_call', 'fetch_context'],
-    );
-    const tools: Array<Record<string, unknown>> = [];
-    const handlers = new Map<
-      string,
-      (args: Record<string, unknown>) => Promise<unknown>
-    >();
-
-    if (enabledTools.has('end_call')) {
-      tools.push({
-        name: 'end_call',
-        description:
-          'Ends the call. Invoke only after the conversation objectives are complete and after delivering a closing statement.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            reason: {
-              type: 'STRING',
-              description: 'Short reason for ending the call.',
-            },
-          },
-          required: ['reason'],
-        },
-      });
-      handlers.set('end_call', async (args) => {
-        if (state.userTurns < 1) {
-          return {
-            status:
-              'Call cannot be ended yet. Speak with the contact first, then continue toward the objective.',
-          };
-        }
-        state.pendingHangup = true;
-        state.endCallReason = String(args.reason || 'conversation_complete');
-        await this.db.callHistory.update({
-          where: { id: state.callId },
-          data: { endCallReason: state.endCallReason },
-        });
-        return {
-          status:
-            'Call ending is scheduled after the final spoken audio finishes.',
-        };
-      });
-    }
-
-    if (enabledTools.has('fetch_context')) {
-      tools.push({
-        name: 'fetch_context',
-        description:
-          'Fetch relevant knowledge-base context for a specific user question.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            query: {
-              type: 'STRING',
-              description: 'Standalone search query from the user question.',
-            },
-            bot_id: {
-              type: 'STRING',
-              description: 'Optional bot id. Use the configured bot id.',
-            },
-          },
-          required: ['query'],
-        },
-      });
-      handlers.set('fetch_context', async (args) => {
-        const startedAt = Date.now();
-        const query = String(args.query || '').trim();
-        const botId =
-          String(args.bot_id || '').trim() ||
-          String(state.campaign.aiCallingBotId || '').trim();
-        if (!query || !botId) {
-          this.logger.debug(
-            `Gemini Live fetch_context skipped callId=${state.callId} queryLength=${query.length} botId=${botId || 'none'} durationMs=${
-              Date.now() - startedAt
-            }`,
-          );
-          return { context: [], scores: [], sources: [], references: [] };
-        }
-        const results = await this.withTimeout(
-          this.botService
-            .searchBotKnowledge(botId, query, 4)
-            .catch((error: any) => {
-              this.logger.warn(
-                `Gemini Live fetch_context search failed callId=${state.callId}: ${error?.message || error}`,
-              );
-              return [] as Awaited<
-                ReturnType<typeof this.botService.searchBotKnowledge>
-              >;
-            }),
-          FETCH_CONTEXT_TIMEOUT_MS,
-          [],
-        );
-        this.logger.debug(
-          `Gemini Live fetch_context callId=${state.callId} botId=${botId} queryLength=${query.length} results=${results.length} durationMs=${
-            Date.now() - startedAt
-          }`,
-        );
-        return {
-          context: results.map((item) => item.content),
-          scores: results.map((item) => item.score),
-          sources: results.map((item) => ({
-            sourceName: item.metadata?.sourceName || 'knowledge-base',
-            sourceType: item.metadata?.sourceType || 'document',
-            score: item.score,
-          })),
-          references: results
-            .map((item) => item.metadata?.ref || item.id)
-            .filter(Boolean),
-        };
-      });
-    }
-
-    return { tools, handlers };
+    return buildCallTools(state, {
+      logger: this.logger,
+      db: this.db,
+      botService: this.botService,
+    });
   }
 
   private buildSystemInstruction(state: ActiveCallSession) {
-    const campaign = state.campaign || {};
-    const contact = state.contact || {};
-    const botId = campaign.aiCallingBotId || '';
-    const languageProfile = this.getLanguageProfile(
-      this.resolveSelectedLanguage(state),
-    );
-    const liveVoiceName = this.extractVoiceName(
-      this.resolveSelectedVoice(state),
-    );
-    const pieces = [
-      'You are the live voice agent for an outbound AgentReach call.',
-      `Default spoken language: ${languageProfile.spokenLanguage} (${languageProfile.code}) using ${languageProfile.accent}. Open the call in this language.`,
-      `Agent name: ${campaign.botName || 'Agent'}.`,
-      `Role: ${campaign.botRole || 'AI calling specialist'}.`,
-      `Goal: ${campaign.botGoal || campaign.objective || 'Understand the contact need and capture a clear next step.'}.`,
-      `Selected Gemini Live voice: ${liveVoiceName}.`,
-      campaign.prompt ? `Campaign prompt: ${campaign.prompt}` : '',
-      campaign.botPersonality
-        ? `Personality: ${campaign.botPersonality}`
-        : 'Personality: warm, concise, calm, and naturally conversational.',
-      campaign.botKnowledge ? `Known facts: ${campaign.botKnowledge}` : '',
-      campaign.botRules ? `Rules: ${campaign.botRules}` : '',
-      campaign.botObjectionHandling
-        ? `Objection handling: ${campaign.botObjectionHandling}`
-        : '',
-      campaign.botGreeting ? `Opening greeting: ${campaign.botGreeting}` : '',
-      `Contact: ${
-        [contact.firstName, contact.lastName, contact.company, contact.jobTitle]
-          .filter(Boolean)
-          .join(' ') || 'Unknown contact'
-      }.`,
-      contact.notes ? `Contact notes: ${contact.notes}` : '',
-      `Begin in ${languageProfile.spokenLanguage} (${languageProfile.code}) with ${languageProfile.accent}. ${languageProfile.instruction}`,
-      'Language is not fixed: if the contact speaks or asks for another language, switch to it right away and keep speaking their language naturally for the rest of the call, the way a fluent bilingual person would. Mirror whatever language they use, and switch back if they switch.',
-      'This is a live phone conversation. Talk like a real person — relaxed, warm, and natural, never scripted or robotic.',
-      'Keep every turn short: usually one sentence, two at most. Say one thing, then let the contact respond.',
-      'Use natural spoken language — contractions, simple everyday words, and short acknowledgements like "sure", "got it", "right", or "mm-hmm".',
-      'Reply immediately and get to the point. Do not repeat yourself, over-explain, or list things the contact did not ask for.',
-      "Match the contact's pace and energy. If they are quick, be quick; if they are unsure, slow down.",
-      'Ignore background noise, typing, distant voices, and static. If the audio is genuinely unclear, briefly ask them to repeat instead of guessing.',
-      'If the contact is busy, ask for a better callback time.',
-      'Never claim the call is human. Never invent pricing, policies, or facts.',
-      botId
-        ? `When specific knowledge-base facts are needed, say a short natural filler first (like "let me check that for you") and then call fetch_context with bot_id "${botId}" before answering, so the line is never silent while you look it up.`
-        : '',
-      'If you receive [SILENCE_CHECK], the line has gone quiet — briefly and warmly check whether the contact is still there.',
-      'If you receive [RESUME], the connection briefly dropped — apologize very briefly for any cut-off and naturally pick the conversation back up.',
-      'After a natural closing statement and once the objective is complete, call end_call.',
-      campaign.aiSpeaksFirst !== false
-        ? 'When you receive [SIGNAL_START], begin with the opening greeting. Do not call tools at the start.'
-        : 'Wait for the contact to speak first before greeting.',
-    ];
-
-    return pieces.filter(Boolean).join('\n');
+    return buildCallSystemInstruction({
+      campaign: state.campaign || {},
+      contact: state.contact || {},
+      languageProfile: getLanguageProfile(this.resolveSelectedLanguage(state)),
+      liveVoiceName: this.extractVoiceName(this.resolveSelectedVoice(state)),
+    });
   }
 
   private async appendScript(callId: string, role: string, content: string) {
@@ -1149,187 +1029,9 @@ export class RealtimeCallingGateway {
     return `google:${language}-Chirp3-HD-${voiceName}`;
   }
 
-  private getLanguageProfile(languageCode?: string) {
-    const code = String(languageCode || 'en-IN').trim() || 'en-IN';
-    const profiles: Record<
-      string,
-      { spokenLanguage: string; accent: string; instruction: string }
-    > = {
-      'en-IN': {
-        spokenLanguage: 'English',
-        accent: 'Indian English',
-        instruction:
-          'Speak casual, natural Indian English — the way everyday people in India speak English on the phone. Use Indian phrasing, rhythm, and intonation (rising tone at end of statements, natural code-switching with Hindi/local words). Sound friendly and conversational, not formal. Examples: "What is it, sir/madam?", "One moment only", "No problem, I will check.", "What all you need?" Use casual fillers like "actually", "basically", "simply". Match the contact\'s energy.',
-      },
-      'en-US': {
-        spokenLanguage: 'English',
-        accent: 'American English',
-        instruction: 'Use natural American English phrasing and pronunciation.',
-      },
-      'en-GB': {
-        spokenLanguage: 'English',
-        accent: 'British English',
-        instruction: 'Use natural British English phrasing and pronunciation.',
-      },
-      'hi-IN': {
-        spokenLanguage: 'Hindi',
-        accent: 'Casual Hindi (Youth/Teenage)',
-        instruction:
-          'Speak casual, modern Hindi like teenagers use — relaxed and conversational, not formal. Use Hinglish (Hindi mixed with English words naturally). Common patterns: "Haan, bilkul", "Ek minute", "Basically yeh ek simple cheez hai", "Kya baat hai", "Chill, sab theek hai", "Mujhe bataao what all you need". Use teenage slang and casual fillers: "basically", "arre bhai", "yaar", "literally", "bro". Sound friendly, young, and relatable — like talking to a friend.',
-      },
-      'bn-IN': {
-        spokenLanguage: 'Bengali',
-        accent: 'Indian Bengali',
-        instruction: 'Speak Bengali naturally.',
-      },
-      'gu-IN': {
-        spokenLanguage: 'Gujarati',
-        accent: 'Indian Gujarati',
-        instruction: 'Speak Gujarati naturally.',
-      },
-      'kn-IN': {
-        spokenLanguage: 'Kannada',
-        accent: 'Indian Kannada',
-        instruction: 'Speak Kannada naturally.',
-      },
-      'ml-IN': {
-        spokenLanguage: 'Malayalam',
-        accent: 'Indian Malayalam',
-        instruction: 'Speak Malayalam naturally.',
-      },
-      'mr-IN': {
-        spokenLanguage: 'Marathi',
-        accent: 'Indian Marathi',
-        instruction: 'Speak Marathi naturally.',
-      },
-      'ta-IN': {
-        spokenLanguage: 'Tamil',
-        accent: 'Indian Tamil',
-        instruction: 'Speak Tamil naturally.',
-      },
-      'te-IN': {
-        spokenLanguage: 'Telugu',
-        accent: 'Indian Telugu',
-        instruction: 'Speak Telugu naturally.',
-      },
-      'es-ES': {
-        spokenLanguage: 'Spanish',
-        accent: 'Spain Spanish',
-        instruction: 'Speak Spanish naturally for Spain.',
-      },
-      'es-MX': {
-        spokenLanguage: 'Spanish',
-        accent: 'Mexican Spanish',
-        instruction: 'Speak Spanish naturally for Mexico.',
-      },
-      'fr-FR': {
-        spokenLanguage: 'French',
-        accent: 'France French',
-        instruction: 'Speak French naturally for France.',
-      },
-      'fr-CA': {
-        spokenLanguage: 'French',
-        accent: 'Canadian French',
-        instruction: 'Speak French naturally for Canada.',
-      },
-      'de-DE': {
-        spokenLanguage: 'German',
-        accent: 'German',
-        instruction: 'Speak German naturally.',
-      },
-      'it-IT': {
-        spokenLanguage: 'Italian',
-        accent: 'Italian',
-        instruction: 'Speak Italian naturally.',
-      },
-      'pt-BR': {
-        spokenLanguage: 'Portuguese',
-        accent: 'Brazilian Portuguese',
-        instruction: 'Speak Portuguese naturally for Brazil.',
-      },
-      'sv-SE': {
-        spokenLanguage: 'Swedish',
-        accent: 'Swedish',
-        instruction: 'Speak Swedish naturally.',
-      },
-      'zh-CN': {
-        spokenLanguage: 'Mandarin Chinese',
-        accent: 'Mainland Chinese',
-        instruction: 'Speak Mandarin Chinese naturally, using simplified characters.',
-      },
-      'nl-NL': {
-        spokenLanguage: 'Dutch',
-        accent: 'Netherlands Dutch',
-        instruction: 'Speak Dutch naturally and directly, as spoken in the Netherlands.',
-      },
-      'pl-PL': {
-        spokenLanguage: 'Polish',
-        accent: 'Polish',
-        instruction: 'Speak Polish naturally and conversationally.',
-      },
-      'ru-RU': {
-        spokenLanguage: 'Russian',
-        accent: 'Russian',
-        instruction: 'Speak Russian naturally and clearly.',
-      },
-      'tr-TR': {
-        spokenLanguage: 'Turkish',
-        accent: 'Turkish',
-        instruction: 'Speak Turkish naturally and conversationally.',
-      },
-      'el-GR': {
-        spokenLanguage: 'Greek',
-        accent: 'Greek',
-        instruction: 'Speak Greek naturally and conversationally.',
-      },
-      'cs-CZ': {
-        spokenLanguage: 'Czech',
-        accent: 'Czech',
-        instruction: 'Speak Czech naturally and clearly.',
-      },
-      'hu-HU': {
-        spokenLanguage: 'Hungarian',
-        accent: 'Hungarian',
-        instruction: 'Speak Hungarian naturally and conversationally.',
-      },
-      'ro-RO': {
-        spokenLanguage: 'Romanian',
-        accent: 'Romanian',
-        instruction: 'Speak Romanian naturally and conversationally.',
-      },
-    };
-    return {
-      code,
-      ...(profiles[code] || {
-        spokenLanguage: code,
-        accent: code,
-        instruction:
-          'Follow the selected locale consistently for every spoken turn.',
-      }),
-    };
-  }
-
   private parseNumber(value: unknown, fallback: number) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
-  }
-
-  // Resolve to `fallback` if `promise` does not settle within `ms`, so a slow
-  // dependency (e.g. a knowledge-base query) can never stall the live call.
-  private async withTimeout<T>(
-    promise: Promise<T>,
-    ms: number,
-    fallback: T,
-  ): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<T>((resolve) => {
-      timer = setTimeout(() => resolve(fallback), ms);
-    });
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
   }
 
   private parseFrame(raw: string): TwilioFrame | null {

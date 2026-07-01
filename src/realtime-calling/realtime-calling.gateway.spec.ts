@@ -270,6 +270,82 @@ describe('RealtimeCallingGateway', () => {
     expect(gemini.sendActivityEnd).toHaveBeenCalledTimes(1);
   });
 
+  it('closes a manual turn even when local speech flags were reset externally', () => {
+    const { gateway } = createGateway();
+    const gemini = {
+      isClosed: jest.fn(() => false),
+      sendAudio: jest.fn(),
+      sendActivityStart: jest.fn(),
+      sendActivityEnd: jest.fn(),
+    };
+    const state: any = {
+      callId: 'call-1',
+      gemini,
+      preventInterruption: false,
+      assistantAudioActive: false,
+      responseSpeed: 'fast',
+      noiseGateDbfs: -50,
+      noiseSuppressedFrames: 0,
+      manualActivityActive: false,
+      manualAudioMs: 0,
+    };
+    const speechPayload = findPayloadInDbfsRange(-50, -45);
+    const silencePayload = Buffer.alloc(160, 0xff).toString('base64');
+
+    for (let i = 0; i < 10; i++) {
+      (gateway as any).forwardAudio(state, speechPayload);
+    }
+    expect(gemini.sendActivityStart).toHaveBeenCalledTimes(1);
+
+    // Simulate the resets that assistant audio chunks / transcript finals used
+    // to apply mid-turn. The open activity must still be closed afterwards,
+    // otherwise Gemini waits forever for activityEnd and the line goes dead.
+    state.speechActive = false;
+    state.speechDetectionMs = 0;
+    state.speechBuffer = [];
+
+    for (let i = 0; i < 10; i++) {
+      (gateway as any).forwardAudio(state, silencePayload);
+    }
+
+    expect(gemini.sendActivityStart).toHaveBeenCalledTimes(1);
+    expect(gemini.sendActivityEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('buffers assistant audio arriving before streamSid and flushes it at start', () => {
+    const { gateway } = createGateway();
+    const { EventEmitter } = require('node:events');
+    const gemini = new EventEmitter();
+    gemini.getUsage = () => ({ totalTokenCount: 0 });
+    const ws = { readyState: 1, send: jest.fn(), close: jest.fn() };
+    const state: any = {
+      callId: 'call-1',
+      assistantAudioActive: false,
+      outboundAudioLogged: false,
+      responseSpeed: 'fast',
+      awaitingModelAudioAfterUser: false,
+      manualActivityActive: false,
+      pendingOutboundAudio: [],
+      pendingOutboundBytes: 0,
+      gemini,
+    };
+
+    (gateway as any).attachGeminiEvents(ws, state, gemini);
+    gemini.emit('audio_chunk', Buffer.alloc(480 * 2));
+
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(state.pendingOutboundAudio.length).toBe(1);
+
+    state.streamSid = 'MZ123';
+    (gateway as any).flushPendingAssistantAudio(state, ws);
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sent.event).toBe('media');
+    expect(sent.streamSid).toBe('MZ123');
+    expect(state.pendingOutboundAudio.length).toBe(0);
+  });
+
   it('does not repeatedly start activity for low-level noise', () => {
     const { gateway } = createGateway();
     const gemini = {
