@@ -20,9 +20,19 @@ export class Playbook {
   @Prop({ type: [String], default: [] })
   directoryIds: string[];
 
-  // Template used to generate the outreach email.
-  @Prop({ required: true })
-  templateId: string;
+  // Outreach channel: 'email' launches an email campaign from templateId;
+  // 'call' clones the calling campaign referenced by callCampaignId.
+  @Prop({ default: 'email', enum: ['email', 'call'] })
+  channel: string;
+
+  // Template used to generate the outreach email (required for channel=email).
+  @Prop()
+  templateId?: string;
+
+  // Calling campaign whose bot/voice/prompt settings are cloned per trigger
+  // (required for channel=call).
+  @Prop()
+  callCampaignId?: string;
 
   // 'auto' fires immediately for high-confidence matches; 'review' queues them.
   @Prop({ required: true, default: 'review', enum: ['auto', 'review'] })
@@ -37,6 +47,17 @@ export class Playbook {
 
   @Prop({ default: true })
   active: boolean;
+
+  // Quiet hours: when enabled, auto-fired triggers outside the send window are
+  // deferred until the window opens (server-local hours, [start, end)).
+  @Prop({ default: false })
+  quietHoursEnabled: boolean;
+
+  @Prop({ default: 8 })
+  sendWindowStartHour: number;
+
+  @Prop({ default: 18 })
+  sendWindowEndHour: number;
 }
 
 export const PlaybookSchema = SchemaFactory.createForClass(Playbook);

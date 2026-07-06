@@ -31,6 +31,7 @@ export class NewsRssCollector implements SignalCollector {
             summary: this.stripHtml(item.contentSnippet || item.content || ''),
             url: item.link,
             occurredAt,
+            dedupKey: item.guid || item.link,
             raw: { guid: item.guid },
           };
         })

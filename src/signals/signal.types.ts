@@ -25,8 +25,22 @@ export interface RawSignal {
   occurredAt?: Date;
   /** Collector's best-guess type; the classifier may override it. */
   suggestedType?: SignalType;
+  /**
+   * Stable per-event identity for dedup (e.g. an EDGAR accession id or RSS
+   * guid). Without it the hash falls back to url/title, which collapses
+   * distinct events that share presentation text.
+   */
+  dedupKey?: string;
   raw?: Record<string, any>;
 }
+
+/** How a signal was linked to a contact — shown in the review queue. */
+export type MatchReason = 'email-domain' | 'company-name';
+
+export const MATCH_REASON_LABELS: Record<string, string> = {
+  'email-domain': 'Work email domain matches the company',
+  'company-name': 'Company name matches (fuzzy)',
+};
 
 export interface CompanyWatchLike {
   id: string;

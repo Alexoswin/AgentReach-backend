@@ -33,6 +33,15 @@ export class SignalMatch {
 
   @Prop()
   note?: string;
+
+  // Why the contact matched: 'email-domain' | 'company-name'.
+  @Prop()
+  matchReason?: string;
+
+  // Denormalized from the signal so rejection-suppression can query
+  // (contactId, companyDomain) pairs without loading every signal.
+  @Prop({ lowercase: true, trim: true, index: true })
+  companyDomain?: string;
 }
 
 export const SignalMatchSchema = SchemaFactory.createForClass(SignalMatch);

@@ -25,6 +25,10 @@ export class TriggeredOutreach {
   @Prop({ type: String })
   campaignId?: string;
 
+  // 'email' | 'call' — which pipeline the trigger launched.
+  @Prop({ default: 'email' })
+  channel: string;
+
   @Prop({ type: Date, default: () => new Date() })
   launchedAt: Date;
 

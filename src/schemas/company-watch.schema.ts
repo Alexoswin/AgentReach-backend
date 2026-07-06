@@ -25,6 +25,11 @@ export class CompanyWatch {
   @Prop({ type: Object, default: {} })
   lastPolledAt: Record<string, string>;
 
+  // Per-source ISO timestamp of the last signal actually ingested — lets the
+  // UI show which sources have real coverage vs. silently returning nothing.
+  @Prop({ type: Object, default: {} })
+  lastSignalAt: Record<string, string>;
+
   // 'active' | 'paused'
   @Prop({ default: 'active', enum: ['active', 'paused'] })
   status: string;

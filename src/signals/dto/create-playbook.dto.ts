@@ -5,6 +5,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Max,
   Min,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
@@ -26,9 +27,20 @@ export class CreatePlaybookDto {
   @IsString({ each: true })
   directoryIds?: string[];
 
-  @ApiProperty()
+  @ApiProperty({ enum: ['email', 'call'], default: 'email', required: false })
+  @IsOptional()
+  @IsIn(['email', 'call'])
+  channel?: string;
+
+  @ApiProperty({ required: false, description: 'Required when channel=email' })
+  @IsOptional()
   @IsString()
-  templateId: string;
+  templateId?: string;
+
+  @ApiProperty({ required: false, description: 'Required when channel=call' })
+  @IsOptional()
+  @IsString()
+  callCampaignId?: string;
 
   @ApiProperty({ enum: ['auto', 'review'], default: 'review' })
   @IsIn(['auto', 'review'])
@@ -50,4 +62,23 @@ export class CreatePlaybookDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @IsBoolean()
+  quietHoursEnabled?: boolean;
+
+  @ApiProperty({ required: false, default: 8, minimum: 0, maximum: 23 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(23)
+  sendWindowStartHour?: number;
+
+  @ApiProperty({ required: false, default: 18, minimum: 1, maximum: 24 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(24)
+  sendWindowEndHour?: number;
 }
