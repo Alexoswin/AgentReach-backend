@@ -18,13 +18,10 @@ export class SystemSettings {
   awsSenderEmail: string;
 
   @Prop({ default: '' })
-  openRouterApiKey: string;
-
-  @Prop({ default: 'nex-agi/nex-n2-pro:free' })
-  openRouterModel: string;
-
-  @Prop({ default: '' })
   geminiApiKey: string;
+
+  @Prop({ default: 'gemini-2.5-flash-lite' })
+  geminiTextModel: string;
 
   @Prop({ default: '' })
   twilioAccountSid: string;

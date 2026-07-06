@@ -11,7 +11,6 @@ export const ENCRYPTED_CREDENTIAL_PREFIX = 'enc:v1:';
 export const SYSTEM_CREDENTIAL_FIELDS = [
   'awsAccessKeyId',
   'awsSecretAccessKey',
-  'openRouterApiKey',
   'geminiApiKey',
   'twilioAccountSid',
   'twilioAuthToken',

@@ -39,7 +39,7 @@ export class TemplatesController {
   @Post('generate')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({
-    summary: 'Generate a personalized template using OpenRouter AI',
+    summary: 'Generate a personalized template using Gemini AI',
   })
   async generateTemplate(@Body() dto: GenerateTemplateDto) {
     return this.templatesService.generateAiTemplate(dto);

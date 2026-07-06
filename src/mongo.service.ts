@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { DEFAULT_OPENROUTER_MODEL } from './config/openrouter';
+import { DEFAULT_GEMINI_TEXT_MODEL } from './config/gemini-text';
 import { encryptSystemSettingsData } from './settings/credential-encryption';
 import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
@@ -155,16 +155,13 @@ export class MongoService implements OnModuleInit {
           process.env.AWS_KEY_ID || existingSettings?.awsAccessKeyId || '',
         awsSecretAccessKey:
           process.env.AWS_KEY || existingSettings?.awsSecretAccessKey || '',
-        openRouterApiKey:
-          process.env.OPENROUTER_KEY ||
-          existingSettings?.openRouterApiKey ||
-          '',
         geminiApiKey:
           existingSettings?.geminiApiKey || process.env.GEMINI_API_KEY || '',
         twilioAccountSid: existingSettings?.twilioAccountSid || '',
         twilioAuthToken: existingSettings?.twilioAuthToken || '',
         twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
-        openRouterModel: DEFAULT_OPENROUTER_MODEL,
+        geminiTextModel:
+          existingSettings?.geminiTextModel || DEFAULT_GEMINI_TEXT_MODEL,
       }),
       create: encryptSystemSettingsData({
         id: 'default',
@@ -172,9 +169,8 @@ export class MongoService implements OnModuleInit {
         awsSecretAccessKey: process.env.AWS_KEY || '',
         awsRegion: 'us-east-1',
         awsSenderEmail: 'oswin.alex@oswinalex.site',
-        openRouterApiKey: process.env.OPENROUTER_KEY || '',
-        openRouterModel: DEFAULT_OPENROUTER_MODEL,
         geminiApiKey: process.env.GEMINI_API_KEY || '',
+        geminiTextModel: DEFAULT_GEMINI_TEXT_MODEL,
       }),
     });
 

@@ -2,7 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { resolveOpenRouterModel } from '../config/openrouter';
+import { resolveGeminiTextModel } from '../config/gemini-text';
 import {
   MASKED_CREDENTIAL,
   SYSTEM_CREDENTIAL_FIELDS,
@@ -48,8 +48,8 @@ export class SettingsService {
       }
     }
 
-    if (dto.openRouterModel !== undefined) {
-      data.openRouterModel = resolveOpenRouterModel(dto.openRouterModel);
+    if (dto.geminiTextModel !== undefined) {
+      data.geminiTextModel = resolveGeminiTextModel(dto.geminiTextModel);
     }
 
     const encryptedData = encryptSystemSettingsData(data);
@@ -122,61 +122,6 @@ export class SettingsService {
     }
   }
 
-  async testOpenRouter() {
-    const settings = await this.getRawSettings();
-    if (!settings || !settings.openRouterApiKey) {
-      throw new BadRequestException('OpenRouter API Key is missing.');
-    }
-
-    if (
-      settings.openRouterApiKey.toLowerCase().includes('mock') ||
-      settings.openRouterApiKey.toLowerCase().includes('test')
-    ) {
-      return {
-        success: true,
-        message: 'OpenRouter connection verified successfully (Mock Mode).',
-        model: settings.openRouterModel,
-      };
-    }
-
-    try {
-      const response = await fetch(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${settings.openRouterApiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://reachconvert.com',
-            'X-Title': 'ReachConvert',
-          },
-          body: JSON.stringify({
-            model: resolveOpenRouterModel(settings.openRouterModel),
-            messages: [{ role: 'user', content: 'respond with ok' }],
-          }),
-        },
-      );
-
-      const data = await response.json();
-      if (!response.ok) {
-        return {
-          success: false,
-          error: data.error?.message || response.statusText,
-        };
-      }
-
-      return {
-        success: true,
-        message: 'OpenRouter connection verified successfully.',
-        response: data.choices?.[0]?.message?.content || JSON.stringify(data),
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message || 'Unknown OpenRouter error',
-      };
-    }
-  }
 
   async testTwilio() {
     const settings = await this.getRawSettings();

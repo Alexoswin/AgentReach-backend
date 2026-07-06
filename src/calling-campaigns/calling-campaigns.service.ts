@@ -114,6 +114,53 @@ export class CallingCampaignsService {
     return this.launch(id, true);
   }
 
+  async scheduleCampaign(id: string, scheduledAt: string) {
+    await this.findOne(id);
+
+    const when = new Date(scheduledAt);
+    if (Number.isNaN(when.getTime())) {
+      throw new BadRequestException('Invalid schedule date/time');
+    }
+    if (when.getTime() <= Date.now()) {
+      throw new BadRequestException('Schedule time must be in the future');
+    }
+
+    await this.db.callingCampaign.update({
+      where: { id },
+      data: {
+        status: 'SCHEDULED',
+        scheduleType: 'SCHEDULED',
+        scheduledAt: when,
+      },
+    });
+
+    return {
+      success: true,
+      scheduledAt: when.toISOString(),
+      message: `Calling campaign scheduled for ${when.toISOString()}`,
+    };
+  }
+
+  async unscheduleCampaign(id: string) {
+    await this.findOne(id);
+    await this.db.callingCampaign.update({
+      where: { id },
+      data: {
+        status: 'DRAFT',
+        scheduleType: 'IMMEDIATE',
+        scheduledAt: null,
+      },
+    });
+    return { success: true, message: 'Schedule cancelled' };
+  }
+
+  /** Returns SCHEDULED calling campaigns whose scheduledAt is due. */
+  async findDueScheduled() {
+    return this.db.callingCampaign.findMany({
+      where: { status: 'SCHEDULED', scheduledAt: { lte: new Date() } },
+    });
+  }
+
   async stopCampaign(id: string) {
     const campaign = await this.findOne(id);
     const settings = await this.settingsService.getRawSettings();

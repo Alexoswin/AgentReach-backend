@@ -37,12 +37,6 @@ export class SettingsController {
     return this.settingsService.testAwsSes();
   }
 
-  @Post('test-openrouter')
-  @ApiOperation({ summary: 'Test OpenRouter connection' })
-  async testOpenRouter() {
-    return this.settingsService.testOpenRouter();
-  }
-
   @Post('test-twilio')
   @ApiOperation({ summary: 'Test Twilio connection' })
   async testTwilio() {

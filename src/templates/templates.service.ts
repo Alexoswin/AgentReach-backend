@@ -3,7 +3,8 @@ import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
-import { resolveOpenRouterModel } from '../config/openrouter';
+import { GoogleGenAI } from '@google/genai';
+import { resolveGeminiTextModel } from '../config/gemini-text';
 import { decryptSystemSettings } from '../settings/credential-encryption';
 import { PDFParse } from 'pdf-parse';
 
@@ -225,12 +226,12 @@ export class TemplatesService {
       }),
     );
 
-    const hasNoKey = !settings || !settings.openRouterApiKey;
+    const hasNoKey = !settings || !settings.geminiApiKey;
     const isMockKey =
       settings &&
-      (settings.openRouterApiKey.toLowerCase().includes('mock') ||
-        settings.openRouterApiKey.toLowerCase().includes('test') ||
-        settings.openRouterApiKey === '');
+      (settings.geminiApiKey.toLowerCase().includes('mock') ||
+        settings.geminiApiKey.toLowerCase().includes('test') ||
+        settings.geminiApiKey === '');
 
     if (hasNoKey || isMockKey) {
       // Return highly relevant mock data on the fly
@@ -281,36 +282,16 @@ ${bodyInstructions}
 
 Do NOT write any preamble, explanation, or markdown backticks outside of the JSON. Return only the JSON object.`;
 
-      const response = await fetch(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${settings.openRouterApiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://reachconvert.com',
-            'X-Title': 'ReachConvert',
-          },
-          body: JSON.stringify({
-            model: resolveOpenRouterModel(settings.openRouterModel),
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' },
-          }),
-        },
-      );
+      const ai = new GoogleGenAI({ apiKey: settings.geminiApiKey });
+      const response = await ai.models.generateContent({
+        model: resolveGeminiTextModel(settings.geminiTextModel),
+        contents: prompt,
+        config: { responseMimeType: 'application/json' },
+      });
 
-      const data = await response.json();
-      if (!response.ok) {
-        const detail =
-          data.error?.metadata?.raw ||
-          data.error?.message ||
-          response.statusText;
-        throw new Error(detail);
-      }
-
-      const contentString = data.choices?.[0]?.message?.content;
+      const contentString = (response.text || '').trim();
       if (!contentString) {
-        throw new Error('Empty response received from OpenRouter');
+        throw new Error('Empty response received from Gemini');
       }
 
       // Handle raw markdown wrappers in response if any

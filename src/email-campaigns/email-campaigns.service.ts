@@ -130,6 +130,68 @@ export class EmailCampaignsService {
     });
   }
 
+  async scheduleCampaign(id: string, scheduledAt: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id },
+      include: { template: true, contacts: true },
+    });
+
+    if (!campaign) {
+      throw new BadRequestException('Campaign not found');
+    }
+    if (!campaign.template) {
+      throw new BadRequestException(
+        'Cannot schedule a campaign without an email template',
+      );
+    }
+    if (!campaign.contacts || campaign.contacts.length === 0) {
+      throw new BadRequestException('No contacts in this campaign');
+    }
+    if (campaign.status === 'RUNNING') {
+      throw new BadRequestException('Campaign is already running');
+    }
+
+    const when = new Date(scheduledAt);
+    if (Number.isNaN(when.getTime())) {
+      throw new BadRequestException('Invalid schedule date/time');
+    }
+    if (when.getTime() <= Date.now()) {
+      throw new BadRequestException('Schedule time must be in the future');
+    }
+
+    await this.db.emailCampaign.update({
+      where: { id },
+      data: { status: 'SCHEDULED', scheduledAt: when },
+    });
+
+    return {
+      success: true,
+      scheduledAt: when.toISOString(),
+      message: `Campaign scheduled for ${when.toISOString()}`,
+    };
+  }
+
+  async unscheduleCampaign(id: string) {
+    const campaign = await this.db.emailCampaign.findUnique({ where: { id } });
+    if (!campaign) {
+      throw new BadRequestException('Campaign not found');
+    }
+
+    await this.db.emailCampaign.update({
+      where: { id },
+      data: { status: 'DRAFT', scheduledAt: null },
+    });
+
+    return { success: true, message: 'Schedule cancelled' };
+  }
+
+  /** Returns SCHEDULED campaigns whose scheduledAt is due (used by the cron). */
+  async findDueScheduled() {
+    return this.db.emailCampaign.findMany({
+      where: { status: 'SCHEDULED', scheduledAt: { lte: new Date() } },
+    });
+  }
+
   async launchCampaign(id: string) {
     const campaign = await this.db.emailCampaign.findUnique({
       where: { id },

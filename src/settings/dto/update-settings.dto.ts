@@ -25,17 +25,12 @@ export class UpdateSettingsDto {
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()
-  openRouterApiKey?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  openRouterModel?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
   geminiApiKey?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  geminiTextModel?: string;
 
   @ApiProperty({ required: false })
   @IsString()

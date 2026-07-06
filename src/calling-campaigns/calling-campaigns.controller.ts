@@ -179,6 +179,18 @@ export class CallingCampaignsController {
     return this.service.relaunchCampaign(id);
   }
 
+  @Post(':id/schedule')
+  @ApiOperation({ summary: 'Schedule AI calling campaign for a future time' })
+  schedule(@Param('id') id: string, @Body() body: { scheduledAt: string }) {
+    return this.service.scheduleCampaign(id, body.scheduledAt);
+  }
+
+  @Post(':id/unschedule')
+  @ApiOperation({ summary: 'Cancel a scheduled AI calling campaign' })
+  unschedule(@Param('id') id: string) {
+    return this.service.unscheduleCampaign(id);
+  }
+
   @Post(':id/stop')
   @ApiOperation({ summary: 'Stop AI calling campaign' })
   stop(@Param('id') id: string) {

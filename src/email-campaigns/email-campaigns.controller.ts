@@ -77,4 +77,19 @@ export class EmailCampaignsController {
   async launchCampaign(@Param('id') id: string) {
     return this.emailCampaignsService.launchCampaign(id);
   }
+
+  @Post(':id/schedule')
+  @ApiOperation({ summary: 'Schedule the email campaign for a future time' })
+  async schedule(
+    @Param('id') id: string,
+    @Body() body: { scheduledAt: string },
+  ) {
+    return this.emailCampaignsService.scheduleCampaign(id, body.scheduledAt);
+  }
+
+  @Post(':id/unschedule')
+  @ApiOperation({ summary: 'Cancel a scheduled email campaign' })
+  async unschedule(@Param('id') id: string) {
+    return this.emailCampaignsService.unscheduleCampaign(id);
+  }
 }
