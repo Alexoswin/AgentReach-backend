@@ -10,6 +10,24 @@ Google Gemini Live for real-time, low-latency voice conversations.
 
 ---
 
+## System documentation
+
+Contributor-facing docs for the full workspace live one level up in [`../docs`](../docs):
+
+- [Full architecture](../docs/ARCHITECTURE.md)
+- [Feature documentation index](../docs/FEATURES.md)
+- [Authentication, profile, and appearance](../docs/features/auth-and-profile.md)
+- [Settings and provider integrations](../docs/features/settings-and-integrations.md)
+- [Contacts and directories](../docs/features/contacts.md)
+- [Email campaigns and templates](../docs/features/email-campaigns-and-templates.md)
+- [AI calling and realtime voice](../docs/features/ai-calling-and-realtime-voice.md)
+- [Signals and playbooks](../docs/features/signals-and-playbooks.md)
+
+Use this README for backend setup and route orientation. Use `../docs` for
+cross-app architecture and deeper feature implementation notes.
+
+---
+
 ## Tech stack
 
 | Concern            | Choice                                                        |
@@ -169,7 +187,7 @@ pair `POST /generate-jobs` + `GET /generate-jobs/:id`; `POST /reference-pdf`.
 
 ### Email Campaigns — `/api/email-campaigns`
 CRUD on `/`, `/:id`; `POST /:id/contacts`, `DELETE /:id/contacts/:contactId`;
-`POST /:id/launch`.
+`POST /:id/launch`; `POST /:id/schedule`; `POST /:id/unschedule`.
 
 ### AI Calling Bots — `/api/ai-calling-bots`
 CRUD on `/`, `/:id`; `GET /voices/google`; RAG endpoints `POST /:id/search` and
@@ -179,8 +197,9 @@ and embedded.
 ### Calling Campaigns — `/api/calling-campaigns`
 `GET /dashboard`, CRUD on `/`, `/:id`; AI generation (`/generate`, async
 `/generate-jobs` + `/generate-jobs/:id`); lifecycle `POST /:id/launch`, `/relaunch`,
-`/stop`; recording audio proxy `GET /recordings/:callId/audio`; and Twilio webhook
-callbacks under `/twilio/*` (answer, respond, status, recording).
+`/schedule`, `/unschedule`, `/stop`; recording audio proxy
+`GET /recordings/:callId/audio`; and Twilio webhook callbacks under `/twilio/*`
+(answer, respond, status, recording).
 
 ### Signals — `/api/signals`
 `GET /` (feed, `?type=`), `GET /types`, `GET /stats`, `GET /review-queue`,
