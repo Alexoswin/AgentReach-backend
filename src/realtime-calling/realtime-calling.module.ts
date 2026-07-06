@@ -3,10 +3,11 @@ import { BotModule } from '../bot/bot.module';
 import { SettingsModule } from '../settings/settings.module';
 import { GeminiLiveAuthService } from './gemini-live-auth.service';
 import { RealtimeCallingGateway } from './realtime-calling.gateway';
+import { CallMonitorHub } from './call-monitor.hub';
 
 @Module({
   imports: [BotModule, SettingsModule],
-  providers: [RealtimeCallingGateway, GeminiLiveAuthService],
-  exports: [RealtimeCallingGateway],
+  providers: [RealtimeCallingGateway, GeminiLiveAuthService, CallMonitorHub],
+  exports: [RealtimeCallingGateway, CallMonitorHub],
 })
 export class RealtimeCallingModule {}

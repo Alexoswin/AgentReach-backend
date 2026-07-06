@@ -13,6 +13,7 @@ import {
   RetrievedKnowledge,
   TrainingPdfFile,
 } from './bot.types';
+import { HD_VOICE_ID_PATTERN } from '../config/voice-format';
 import {
   chunkText,
   clampNumber,
@@ -351,7 +352,7 @@ export class BotService {
   private normalizeVoice(rawVoice: string, language: string) {
     const voice = rawVoice.trim();
     if (voice.startsWith('google:')) return voice;
-    if (/^[a-z]{2}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(voice)) {
+    if (HD_VOICE_ID_PATTERN.test(voice)) {
       return `google:${voice}`;
     }
     const profile = this.getGoogleVoiceProfiles().find(

@@ -5,6 +5,7 @@ import {
   decodeUlawToPcm16,
   transcodePcm24kToUlaw8k,
 } from './audio-codec';
+import { extractHdVoiceName } from '../config/voice-format';
 
 describe('RealtimeCallingGateway', () => {
   function createGateway() {
@@ -424,14 +425,10 @@ describe('RealtimeCallingGateway', () => {
   });
 
   it('extracts Gemini Live voice names from stored Google voice ids', () => {
-    const { gateway } = createGateway();
-
-    expect(
-      (gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-Puck'),
-    ).toBe('Puck');
-    expect(
-      (gateway as any).extractVoiceName('google:en-IN-Chirp3-HD-fenrir'),
-    ).toBe('Fenrir');
+    expect(extractHdVoiceName('google:en-IN-Chirp3-HD-Puck')).toBe('Puck');
+    expect(extractHdVoiceName('google:en-IN-Chirp3-HD-fenrir')).toBe(
+      'Fenrir',
+    );
   });
 
   it('resolves selected voice using the active selected language', () => {

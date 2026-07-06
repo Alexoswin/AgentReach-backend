@@ -19,6 +19,10 @@ import { ActiveCallSession, TwilioFrame } from './call-session.types';
 import { buildCallTools } from './call-tools';
 import { buildCallSystemInstruction } from './call-prompt';
 import { getLanguageProfile } from './language-profiles';
+import {
+  extractHdVoiceName,
+  normalizeGoogleVoiceForLanguage,
+} from '../config/voice-format';
 
 // Milliseconds of sustained above-gate audio required before caller audio is
 // treated as real speech. Lower = snappier turn-taking and barge-in; higher =
@@ -293,7 +297,7 @@ export class RealtimeCallingGateway {
       'gemini-3.1-flash-live-preview';
     const languageCode = this.resolveSelectedLanguage(state);
     const selectedVoice = this.resolveSelectedVoice(state);
-    const voiceName = this.extractVoiceName(selectedVoice);
+    const voiceName = extractHdVoiceName(selectedVoice);
     const languageProfile = getLanguageProfile(languageCode);
     const preset = getResponseSpeedPreset(state.responseSpeed);
     this.logger.log(
@@ -813,7 +817,7 @@ export class RealtimeCallingGateway {
       campaign: state.campaign || {},
       contact: state.contact || {},
       languageProfile: getLanguageProfile(this.resolveSelectedLanguage(state)),
-      liveVoiceName: this.extractVoiceName(this.resolveSelectedVoice(state)),
+      liveVoiceName: extractHdVoiceName(this.resolveSelectedVoice(state)),
     });
   }
 
@@ -987,15 +991,6 @@ export class RealtimeCallingGateway {
     }
   }
 
-  private extractVoiceName(voice?: string) {
-    const raw = String(voice || 'google:en-IN-Chirp3-HD-Puck').replace(
-      /^google:/i,
-      '',
-    );
-    const name = raw.split('-').at(-1) || 'Puck';
-    return name.charAt(0).toUpperCase() + name.slice(1);
-  }
-
   private resolveSelectedLanguage(state: ActiveCallSession) {
     const campaign = state.campaign || {};
     const call = state.call || {};
@@ -1016,17 +1011,7 @@ export class RealtimeCallingGateway {
       campaign.selectedVoice ||
       campaign.voice ||
       `google:${language}-Chirp3-HD-Puck`;
-    return this.normalizeGoogleVoiceForLanguage(raw, language);
-  }
-
-  private normalizeGoogleVoiceForLanguage(voice: string, language: string) {
-    const raw = String(voice || '').trim();
-    const withoutProvider = raw.replace(/^google:/i, '');
-    const match = withoutProvider.match(
-      /^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-([A-Za-z]+)$/,
-    );
-    const voiceName = match?.[1] || withoutProvider.split('-').at(-1) || 'Puck';
-    return `google:${language}-Chirp3-HD-${voiceName}`;
+    return normalizeGoogleVoiceForLanguage(raw, language);
   }
 
   private parseNumber(value: unknown, fallback: number) {

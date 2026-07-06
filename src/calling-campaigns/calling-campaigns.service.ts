@@ -12,6 +12,10 @@ import { BotService } from '../bot/bot.service';
 import { GeminiLiveAuthService } from '../realtime-calling/gemini-live-auth.service';
 import { GeminiLiveSessionWrapper } from '../realtime-calling/gemini-live-session.wrapper';
 import { normalizeResponseSpeed } from '../realtime-calling/response-speed';
+import {
+  extractHdVoiceName,
+  normalizeGoogleVoiceForLanguage,
+} from '../config/voice-format';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 
@@ -610,7 +614,7 @@ export class CallingCampaignsService {
     const voice = String(data.selectedVoice || data.voice || '').trim();
     data.language = language;
     data.selectedLanguage = language;
-    data.voice = this.normalizeVoice(voice, language);
+    data.voice = normalizeGoogleVoiceForLanguage(voice, language);
     data.selectedVoice = data.voice;
     data.voiceQuality = data.voiceQuality || 'hd';
     data.aiSpeaksFirst =
@@ -641,22 +645,6 @@ export class CallingCampaignsService {
       data.estimatedDuration = this.numberOr(dto.estimatedDuration, 0);
     }
     return data;
-  }
-
-  private normalizeVoice(rawVoice: string, language: string) {
-    const trimmed = rawVoice || `google:${language}-Chirp3-HD-Puck`;
-    if (trimmed.startsWith('google:')) {
-      const voice = trimmed.replace(/^google:/i, '');
-      const match = voice.match(
-        /^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-([A-Za-z]+)$/,
-      );
-      return match ? `google:${language}-Chirp3-HD-${match[1]}` : trimmed;
-    }
-    if (/^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$/.test(trimmed)) {
-      const voiceName = trimmed.split('-').at(-1) || 'Puck';
-      return `google:${language}-Chirp3-HD-${voiceName}`;
-    }
-    return `google:${language}-Chirp3-HD-${trimmed || 'Puck'}`;
   }
 
   private async withCounts(campaign: any) {
@@ -763,8 +751,8 @@ export class CallingCampaignsService {
       campaign.selectedVoice ||
       campaign.voice ||
       `google:${languageCode}-Chirp3-HD-Puck`;
-    const voiceName = this.extractVoiceName(
-      this.normalizeVoice(selectedVoice, languageCode),
+    const voiceName = extractHdVoiceName(
+      normalizeGoogleVoiceForLanguage(selectedVoice, languageCode),
     );
     const model =
       campaign.realtimeModel ||
@@ -799,15 +787,6 @@ export class CallingCampaignsService {
     } finally {
       gemini.close();
     }
-  }
-
-  private extractVoiceName(voice?: string) {
-    const raw = String(voice || 'google:en-IN-Chirp3-HD-Puck').replace(
-      /^google:/i,
-      '',
-    );
-    const name = raw.split('-').at(-1) || 'Puck';
-    return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
   private getDialedNetworkRange(phoneNumber?: string | null) {
