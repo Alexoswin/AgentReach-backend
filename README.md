@@ -37,7 +37,7 @@ cross-app architecture and deeper feature implementation notes.
 | Database           | MongoDB via [Mongoose 9](https://mongoosejs.com) (`@nestjs/mongoose`) |
 | Auth               | JWT access + refresh tokens, custom salted-hash passwords     |
 | Email              | AWS SES (`@aws-sdk/client-ses`)                               |
-| LLM (text)         | OpenRouter (template/campaign generation, signal classification) |
+| LLM (text)         | Google Gemini text models (template/campaign generation, signal classification) |
 | LLM (voice)        | Google Gemini Live (`@google/genai`) — native audio streaming |
 | Telephony          | Twilio (outbound calls, media streams, recordings)           |
 | RAG / embeddings   | Gemini embeddings stored in MongoDB for bot knowledge bases   |
@@ -74,7 +74,7 @@ Client (Next.js frontend)
 └───────────────────────────────────────────────────────────┘
         │                         │                    │
         ▼                         ▼                    ▼
-    MongoDB                  AWS SES / OpenRouter   Twilio / Gemini
+    MongoDB                  AWS SES / Gemini       Twilio / Gemini
 ```
 
 ### Modules
@@ -82,7 +82,7 @@ Client (Next.js frontend)
 | Module               | Path                             | Responsibility |
 | -------------------- | -------------------------------- | -------------- |
 | **Auth**             | `src/auth`                       | Register, login, refresh, logout, profile/password updates, `me`. Issues JWT access + refresh tokens. A global `AuthGuard` protects every route unless marked `@Public()`. |
-| **Settings**         | `src/settings`                   | Stores per-install credentials (AWS SES, OpenRouter, Twilio, Gemini) **encrypted at rest**. Connection-test endpoints for each provider and a Gemini voice preview. |
+| **Settings**         | `src/settings`                   | Stores per-install credentials (AWS SES, Twilio, Gemini) **encrypted at rest**. Connection-test endpoints for each provider and a Gemini voice preview. |
 | **Contacts**         | `src/contacts`                   | Contact + contact-directory CRUD, CSV/XLSX/PDF file parsing, and bulk import. |
 | **Templates**        | `src/templates`                  | Email template CRUD, predefined templates, AI generation (sync + async job), and reference-PDF ingestion for style matching. |
 | **EmailCampaigns**   | `src/email-campaigns`            | Campaign CRUD, add/remove contacts, and launch (sends via SES, tracks per-contact status). |
@@ -135,7 +135,7 @@ npm run start:dev         # watch mode on http://localhost:3001
 | `GEMINI_API_KEY`           | optional | Bootstrap fallback. The encrypted key saved in Settings takes precedence. |
 | `GEMINI_LIVE_MODEL`        | optional | Gemini Live model id (e.g. `gemini-2.5-flash-native-audio-preview-12-2025`). |
 
-> Most provider credentials (AWS SES, OpenRouter, Twilio, Gemini) are configured at
+> Most provider credentials (AWS SES, Twilio, Gemini) are configured at
 > runtime through **Settings** in the UI and stored **encrypted** in MongoDB, not in
 > `.env`. If a required credential is missing, the connection-test and provider
 > services return a descriptive error (some fall back to a "mock mode" response).
@@ -174,7 +174,7 @@ unless noted. Explore the live, always-accurate contract in **Swagger** at `/doc
 
 ### Settings — `/api/settings`
 `GET /` (masked), `PATCH /` (encrypted update), and connection tests:
-`POST /test-ses`, `/test-openrouter`, `/test-twilio`, `/test-gemini`,
+`POST /test-ses`, `/test-twilio`, `/test-gemini`,
 `/preview-gemini-voice`.
 
 ### Contacts — `/api/contacts`
