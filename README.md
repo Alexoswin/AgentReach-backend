@@ -25,6 +25,8 @@ Contributor-facing docs for the full workspace live one level up in [`../docs`](
 
 Use this README for backend setup and route orientation. Use `../docs` for
 cross-app architecture and deeper feature implementation notes.
+For operator-facing product guides, use the in-app `/documentation` portal in
+the frontend; for engineering details, use `../docs`.
 
 ---
 
