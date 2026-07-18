@@ -315,6 +315,7 @@ class MongoDelegate {
         const range: any = {};
         if ('gte' in value) range.$gte = value.gte;
         if ('lte' in value) range.$lte = value.lte;
+        if ('in' in value) range.$in = value.in;
         query[field] = Object.keys(range).length > 0 ? range : value;
       } else {
         query[field] = value;

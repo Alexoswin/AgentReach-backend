@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { EmailCampaignsService } from './email-campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -43,10 +44,7 @@ export class EmailCampaignsController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update campaign properties' })
-  async update(
-    @Param('id') id: string,
-    @Body() dto: Partial<CreateCampaignDto> & { status?: string },
-  ) {
+  async update(@Param('id') id: string, @Body() dto: UpdateCampaignDto) {
     return this.emailCampaignsService.update(id, dto);
   }
 

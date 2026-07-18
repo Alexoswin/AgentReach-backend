@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
 import {
   SESClient,
@@ -8,9 +9,6 @@ import {
   SendRawEmailCommand,
 } from '@aws-sdk/client-ses';
 import { decryptSystemSettings } from '../settings/credential-encryption';
-
-const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
-const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 
 @Injectable()
 export class EmailCampaignsService {
@@ -20,7 +18,7 @@ export class EmailCampaignsService {
     const campaigns = await this.db.emailCampaign.findMany({
       include: {
         template: { select: { id: true, name: true } },
-        contacts: { select: { id: true } },
+        contacts: { select: { id: true, deliveryStatus: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -31,8 +29,18 @@ export class EmailCampaignsService {
       status: c.status,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
+      scheduledAt: c.scheduledAt,
       template: c.template,
       contactCount: c.contacts.length,
+      pendingCount: c.contacts.filter(
+        (contact: any) => contact.deliveryStatus === 'PENDING',
+      ).length,
+      failedCount: c.contacts.filter(
+        (contact: any) => contact.deliveryStatus === 'FAILED',
+      ).length,
+      sentCount: c.contacts.filter((contact: any) =>
+        ['SENT', 'DELIVERED'].includes(contact.deliveryStatus),
+      ).length,
     }));
   }
 
@@ -57,19 +65,39 @@ export class EmailCampaignsService {
   }
 
   async create(dto: CreateCampaignDto) {
+    if (dto.templateId) {
+      await this.assertTemplateExists(dto.templateId);
+    }
+
     return this.db.emailCampaign.create({
       data: dto,
     });
   }
 
-  async update(
-    id: string,
-    dto: Partial<CreateCampaignDto> & { status?: string },
-  ) {
+  async update(id: string, dto: UpdateCampaignDto) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id },
+    });
+    if (!campaign) {
+      throw new BadRequestException('Campaign not found');
+    }
+    if (dto.templateId) {
+      await this.assertTemplateExists(dto.templateId);
+    }
+
     return this.db.emailCampaign.update({
       where: { id },
       data: dto,
     });
+  }
+
+  private async assertTemplateExists(templateId: string) {
+    const template = await this.db.template.findUnique({
+      where: { id: templateId },
+    });
+    if (!template) {
+      throw new BadRequestException('Template not found');
+    }
   }
 
   async remove(id: string) {
@@ -86,32 +114,46 @@ export class EmailCampaignsService {
       throw new BadRequestException('Campaign not found');
     }
 
-    let addedCount = 0;
-    for (const contactId of dto.contactIds) {
-      // Check if contact exists
-      const contact = await this.db.contact.findUnique({
-        where: { id: contactId },
-      });
-      if (!contact) continue;
+    const uniqueContactIds = Array.from(new Set(dto.contactIds));
+    if (uniqueContactIds.length === 0) {
+      return { success: true, addedCount: 0 };
+    }
 
-      // Check if contact already in campaign
-      const existing = await this.db.emailCampaignContact.findFirst({
-        where: { campaignId, contactId },
-      });
+    const [existingContacts, existingLinks] = await Promise.all([
+      this.db.contact.findMany({
+        where: { id: { in: uniqueContactIds } },
+      }),
+      this.db.emailCampaignContact.findMany({
+        where: { campaignId, contactId: { in: uniqueContactIds } },
+      }),
+    ]);
 
-      if (!existing) {
-        await this.db.emailCampaignContact.create({
+    const validContactIds = new Set(
+      existingContacts.map((contact: any) => contact.id),
+    );
+    const alreadyLinkedContactIds = new Set(
+      existingLinks.map((link: any) => link.contactId),
+    );
+
+    const contactIdsToAdd = uniqueContactIds.filter(
+      (contactId) =>
+        validContactIds.has(contactId) &&
+        !alreadyLinkedContactIds.has(contactId),
+    );
+
+    await Promise.all(
+      contactIdsToAdd.map((contactId) =>
+        this.db.emailCampaignContact.create({
           data: {
             campaignId,
             contactId,
             deliveryStatus: 'PENDING',
           },
-        });
-        addedCount++;
-      }
-    }
+        }),
+      ),
+    );
 
-    return { success: true, addedCount };
+    return { success: true, addedCount: contactIdsToAdd.length };
   }
 
   async removeContact(campaignId: string, contactId: string) {
@@ -219,31 +261,41 @@ export class EmailCampaignsService {
       throw new BadRequestException('No contacts in this campaign');
     }
 
-    const pendingCount = campaign.contacts.filter(
+    const neverAttempted = campaign.contacts.filter(
       (contact: any) => contact.deliveryStatus === 'PENDING',
-    ).length;
-    const isRelaunch = pendingCount === 0;
+    );
+    const failed = campaign.contacts.filter(
+      (contact: any) => contact.deliveryStatus === 'FAILED',
+    );
 
-    if (isRelaunch) {
+    if (neverAttempted.length === 0 && failed.length === 0) {
+      throw new BadRequestException(
+        'No pending contacts to send. Everyone in this campaign has already been sent successfully — add more recipients to send to more people.',
+      );
+    }
+
+    const isRetry = neverAttempted.length === 0 && failed.length > 0;
+
+    if (isRetry) {
+      // Only requeue contacts that previously failed; leave already-sent
+      // recipients untouched so relaunching never re-emails someone twice.
       await this.db.emailCampaignContact.updateMany({
-        where: { campaignId: id },
+        where: { campaignId: id, deliveryStatus: 'FAILED' },
         data: {
           deliveryStatus: 'PENDING',
           sentTime: null,
           subject: null,
           bodyHtml: null,
           bodyText: null,
-          openStatus: false,
-          replyStatus: false,
           errorMessage: null,
         },
       });
     }
 
-    // Set campaign status to RUNNING
+    // Set campaign status to RUNNING and clear any stale schedule
     await this.db.emailCampaign.update({
       where: { id },
-      data: { status: 'RUNNING' },
+      data: { status: 'RUNNING', scheduledAt: null },
     });
 
     // Execute sending in the background
@@ -251,8 +303,8 @@ export class EmailCampaignsService {
 
     return {
       success: true,
-      message: isRelaunch
-        ? 'Campaign relaunched. All recipients were queued again.'
+      message: isRetry
+        ? `Retrying ${failed.length} previously failed recipient${failed.length === 1 ? '' : 's'}.`
         : 'Campaign execution started in background',
     };
   }
@@ -276,7 +328,15 @@ export class EmailCampaignsService {
         },
       });
 
-      if (!campaign || !campaign.template) return;
+      if (!campaign) return;
+
+      if (!campaign.template) {
+        await this.db.emailCampaign.update({
+          where: { id: campaignId },
+          data: { status: 'FAILED' },
+        });
+        return;
+      }
 
       const template = campaign.template;
       const isMockSes =
@@ -284,6 +344,14 @@ export class EmailCampaignsService {
         !settings.awsAccessKeyId ||
         settings.awsAccessKeyId.toLowerCase().includes('mock') ||
         settings.awsAccessKeyId.toLowerCase().includes('test');
+
+      const senderEmail = settings?.awsSenderEmail?.trim();
+      if (!isMockSes && !senderEmail) {
+        throw new Error(
+          'No sender email configured. Add a Sender Email Address in Settings before launching real campaigns.',
+        );
+      }
+      const senderSource = senderEmail ? `<${senderEmail}>` : '';
 
       let client: SESClient | null = null;
       if (!isMockSes && settings) {
@@ -355,36 +423,43 @@ export class EmailCampaignsService {
               throw new Error('Simulated AWS SES delivery throttling error');
             }
           } else {
-            if (attachments.length > 0) {
-              const command = new SendRawEmailCommand({
-                RawMessage: {
-                  Data: Buffer.from(
-                    this.buildRawEmail({
-                      to: contact.email,
-                      subject,
-                      bodyHtml,
-                      bodyText,
-                      attachments,
-                    }),
-                  ),
-                },
-              });
+            await this.sendWithRetry(async () => {
+              if (attachments.length > 0) {
+                const command = new SendRawEmailCommand({
+                  RawMessage: {
+                    Data: Buffer.from(
+                      this.buildRawEmail({
+                        to: contact.email,
+                        subject,
+                        bodyHtml,
+                        bodyText,
+                        attachments,
+                        from: senderSource,
+                      }),
+                    ),
+                  },
+                });
 
-              await client.send(command);
-            } else {
-              const command = new SendEmailCommand({
-                Source: SENDER_SOURCE,
-                Destination: {
-                  ToAddresses: [contact.email],
-                },
-                Message: {
-                  Subject: { Data: subject },
-                  Body: messageBody,
-                },
-              });
+                await client!.send(command);
+              } else {
+                const command = new SendEmailCommand({
+                  Source: senderSource,
+                  Destination: {
+                    ToAddresses: [contact.email],
+                  },
+                  Message: {
+                    Subject: { Data: subject },
+                    Body: messageBody,
+                  },
+                });
 
-              await client.send(command);
-            }
+                await client!.send(command);
+              }
+            });
+
+            // Small pacing delay between real sends to stay under SES's
+            // per-second sending rate and avoid throttling errors.
+            await new Promise((r) => setTimeout(r, 250));
 
             await this.db.emailCampaignContact.update({
               where: { id: campaignContact.id },
@@ -423,6 +498,21 @@ export class EmailCampaignsService {
         where: { id: campaignId },
         data: { status: 'FAILED' },
       });
+    }
+  }
+
+  /** Retries a single SES send once after a short backoff on throttling-style errors. */
+  private async sendWithRetry(send: () => Promise<unknown>) {
+    try {
+      await send();
+    } catch (err: any) {
+      const message = String(err?.name || err?.message || '').toLowerCase();
+      const isThrottling =
+        message.includes('throttl') || message.includes('rate exceeded');
+      if (!isThrottling) throw err;
+
+      await new Promise((r) => setTimeout(r, 1000));
+      await send();
     }
   }
 
@@ -469,17 +559,19 @@ export class EmailCampaignsService {
     bodyHtml,
     bodyText,
     attachments,
+    from,
   }: {
     to: string;
     subject: string;
     bodyHtml: string;
     bodyText: string;
     attachments: { name: string; contentType: string; contentBase64: string }[];
+    from: string;
   }) {
     const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const lines: string[] = [
-      `From: ${SENDER_SOURCE}`,
+      `From: ${from}`,
       `To: ${to}`,
       `Subject: ${this.encodeMimeHeader(subject)}`,
       'MIME-Version: 1.0',

@@ -11,8 +11,6 @@ import {
   maskSystemSettings,
 } from './credential-encryption';
 
-const SENDER_EMAIL = 'oswin.alex@oswinalex.site';
-const SENDER_SOURCE = `"oswin.alex" <${SENDER_EMAIL}>`;
 @Injectable()
 export class SettingsService {
   constructor(private db: MongoService) {}
@@ -72,6 +70,14 @@ export class SettingsService {
         'AWS SES is not fully configured (Key and Secret are required).',
       );
     }
+    if (!settings.awsSenderEmail) {
+      throw new BadRequestException(
+        'Add a Sender Email Address before testing your SES connection.',
+      );
+    }
+
+    const senderEmail = settings.awsSenderEmail;
+    const senderSource = `<${senderEmail}>`;
 
     if (
       settings.awsAccessKeyId.toLowerCase().includes('mock') ||
@@ -95,9 +101,9 @@ export class SettingsService {
       });
 
       const command = new SendEmailCommand({
-        Source: SENDER_SOURCE,
+        Source: senderSource,
         Destination: {
-          ToAddresses: [SENDER_EMAIL],
+          ToAddresses: [senderEmail],
         },
         Message: {
           Subject: { Data: 'ReachConvert Connection Test' },
@@ -112,7 +118,7 @@ export class SettingsService {
       await client.send(command);
       return {
         success: true,
-        message: `AWS SES verified. Test email sent from ${SENDER_EMAIL}`,
+        message: `AWS SES verified. Test email sent from ${senderEmail}`,
       };
     } catch (error: any) {
       return {
