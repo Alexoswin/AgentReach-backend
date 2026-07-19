@@ -7,6 +7,7 @@ import { IncomingMessage } from 'http';
 import { Duplex } from 'stream';
 import { Server as WsServer } from 'ws';
 import { RealtimeCallingGateway } from './realtime-calling/realtime-calling.gateway';
+import { createProxyMiddleware } from 'http-proxy-middleware';
 
 const REQUEST_BODY_LIMIT = '50mb';
 
@@ -37,12 +38,22 @@ async function bootstrap() {
   const wsServer = new WsServer({ noServer: true });
   const realtimeGateway = app.get(RealtimeCallingGateway);
 
+  const webpilotProxy = createProxyMiddleware({
+    target: configService.get<string>('WEBPILOT_URL') || 'http://localhost:8001',
+    changeOrigin: true,
+    ws: true,
+  }) as any;
+
   httpServer.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const pathname = (req.url || '').split('?')[0];
     if (pathname === '/twilio/stream') {
       wsServer.handleUpgrade(req, socket, head, (ws) => {
         realtimeGateway.registerTwilioSocket(ws, req);
       });
+      return;
+    }
+    if (pathname.startsWith('/ws/webpilot')) {
+      webpilotProxy.upgrade(req, socket, head);
       return;
     }
     socket.destroy();
