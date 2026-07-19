@@ -1,4 +1,11 @@
-import { IsString, IsUUID, IsOptional, IsIn } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  IsOptional,
+  IsIn,
+  IsEmail,
+  IsArray,
+} from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export const CAMPAIGN_STATUSES = [
@@ -24,4 +31,16 @@ export class UpdateCampaignDto {
   @IsIn(CAMPAIGN_STATUSES)
   @IsOptional()
   status?: string;
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsArray()
+  @IsEmail({}, { each: true })
+  @IsOptional()
+  cc?: string[];
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsArray()
+  @IsEmail({}, { each: true })
+  @IsOptional()
+  bcc?: string[];
 }

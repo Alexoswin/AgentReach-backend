@@ -20,7 +20,7 @@ export class SystemSettings {
   @Prop({ default: '' })
   geminiApiKey: string;
 
-  @Prop({ default: 'gemini-2.5-flash-lite' })
+  @Prop({ default: 'gemini-flash-lite-latest' })
   geminiTextModel: string;
 
   @Prop({ default: '' })

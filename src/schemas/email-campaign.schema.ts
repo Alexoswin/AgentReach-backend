@@ -21,6 +21,13 @@ export class EmailCampaign {
   // Reference to Template._id
   @Prop({ type: String, ref: 'Template', default: null })
   templateId?: string | null;
+
+  // Extra recipients CC'd/BCC'd on every email sent for this campaign.
+  @Prop({ type: [String], default: [] })
+  cc?: string[];
+
+  @Prop({ type: [String], default: [] })
+  bcc?: string[];
 }
 
 export const EmailCampaignSchema = SchemaFactory.createForClass(EmailCampaign);

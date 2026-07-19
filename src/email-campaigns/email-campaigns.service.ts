@@ -352,6 +352,8 @@ export class EmailCampaignsService {
         );
       }
       const senderSource = senderEmail ? `<${senderEmail}>` : '';
+      const ccAddresses = (campaign.cc || []).filter(Boolean);
+      const bccAddresses = (campaign.bcc || []).filter(Boolean);
 
       let client: SESClient | null = null;
       if (!isMockSes && settings) {
@@ -426,10 +428,16 @@ export class EmailCampaignsService {
             await this.sendWithRetry(async () => {
               if (attachments.length > 0) {
                 const command = new SendRawEmailCommand({
+                  Destinations: [
+                    contact.email,
+                    ...ccAddresses,
+                    ...bccAddresses,
+                  ],
                   RawMessage: {
                     Data: Buffer.from(
                       this.buildRawEmail({
                         to: contact.email,
+                        cc: ccAddresses,
                         subject,
                         bodyHtml,
                         bodyText,
@@ -446,6 +454,10 @@ export class EmailCampaignsService {
                   Source: senderSource,
                   Destination: {
                     ToAddresses: [contact.email],
+                    CcAddresses: ccAddresses.length ? ccAddresses : undefined,
+                    BccAddresses: bccAddresses.length
+                      ? bccAddresses
+                      : undefined,
                   },
                   Message: {
                     Subject: { Data: subject },
@@ -555,6 +567,7 @@ export class EmailCampaignsService {
 
   private buildRawEmail({
     to,
+    cc,
     subject,
     bodyHtml,
     bodyText,
@@ -562,6 +575,7 @@ export class EmailCampaignsService {
     from,
   }: {
     to: string;
+    cc?: string[];
     subject: string;
     bodyHtml: string;
     bodyText: string;
@@ -573,6 +587,7 @@ export class EmailCampaignsService {
     const lines: string[] = [
       `From: ${from}`,
       `To: ${to}`,
+      ...(cc && cc.length > 0 ? [`Cc: ${cc.join(', ')}`] : []),
       `Subject: ${this.encodeMimeHeader(subject)}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,

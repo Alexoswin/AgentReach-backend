@@ -233,7 +233,13 @@ export class TemplatesService {
         settings.geminiApiKey.toLowerCase().includes('test') ||
         settings.geminiApiKey === '');
 
-    if (hasNoKey || isMockKey) {
+    if (hasNoKey) {
+      throw new BadRequestException(
+        'Gemini API key is not configured. Please set your API key in AI settings.',
+      );
+    }
+
+    if (isMockKey) {
       // Return highly relevant mock data on the fly
       const subject = `Opportunities in ${dto.audience} - Application/Intro`;
       const referenceLine = referenceContext
@@ -324,6 +330,11 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
         bodyText,
       };
     } catch (error: any) {
+      console.error('Gemini API Error:', {
+        message: error.message,
+        status: error.status,
+        details: error.response?.data || error.error || error,
+      });
       throw new BadRequestException('AI Generation failed: ' + error.message);
     }
   }
