@@ -10,6 +10,13 @@ import { PDFParse } from 'pdf-parse';
 
 const MAX_TEMPLATE_ATTACHMENTS = 5;
 const MAX_TEMPLATE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+// Every attachment is stored base64-encoded inside the Template document and
+// re-encoded into the MIME payload at send time. Both ends have hard ceilings:
+// MongoDB rejects documents over 16 MB, and SES rejects raw messages over
+// 10 MB. Base64 inflates bytes by ~4/3, so the decoded total has to stay well
+// under both. 7 MB decoded ≈ 9.4 MB on the wire, which clears SES with room
+// for headers and the body parts.
+const MAX_TEMPLATE_ATTACHMENTS_TOTAL_BYTES = 7 * 1024 * 1024;
 const MAX_REFERENCE_PDF_BYTES = 8 * 1024 * 1024;
 
 type TemplateGenerationJob = {
@@ -436,12 +443,13 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
       );
     }
 
-    return attachments.map((attachment, index) => {
+    let totalBytes = 0;
+
+    const normalized = attachments.map((attachment, index) => {
       const name = attachment.name?.trim();
       const contentBase64 = attachment.contentBase64?.trim();
       const contentType =
         attachment.contentType?.trim() || 'application/octet-stream';
-      const size = Number(attachment.size) || 0;
 
       if (!name) {
         throw new BadRequestException(
@@ -455,11 +463,24 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
         );
       }
 
-      if (size <= 0 || size > MAX_TEMPLATE_ATTACHMENT_BYTES) {
+      // Derive the size from the payload rather than trusting the client-sent
+      // `size` field — otherwise a caller can declare 1 byte and post an
+      // arbitrarily large blob straight past the per-file cap.
+      const size = this.decodedBase64Bytes(contentBase64);
+
+      if (size <= 0) {
+        throw new BadRequestException(
+          `Attachment ${name} is empty or not valid base64`,
+        );
+      }
+
+      if (size > MAX_TEMPLATE_ATTACHMENT_BYTES) {
         throw new BadRequestException(
           `Attachment ${name} must be 5 MB or smaller`,
         );
       }
+
+      totalBytes += size;
 
       return {
         id: attachment.id || `attachment-${Date.now()}-${index}`,
@@ -469,6 +490,29 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
         contentBase64,
       };
     });
+
+    if (totalBytes > MAX_TEMPLATE_ATTACHMENTS_TOTAL_BYTES) {
+      throw new BadRequestException(
+        `Attachments total ${this.formatBytes(totalBytes)}, which is over the ` +
+          `${this.formatBytes(MAX_TEMPLATE_ATTACHMENTS_TOTAL_BYTES)} limit for a single email. ` +
+          'Remove a file or attach a download link instead.',
+      );
+    }
+
+    return normalized;
+  }
+
+  /** Decoded byte length of a base64 string, without allocating a Buffer. */
+  private decodedBase64Bytes(value: string) {
+    const clean = value.replace(/\s/g, '');
+    if (!clean || !/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return 0;
+    const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+    return Math.floor((clean.length * 3) / 4) - padding;
+  }
+
+  private formatBytes(bytes: number) {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   }
 
   private htmlToText(html: string) {

@@ -76,6 +76,15 @@ export class EmailCampaignsController {
     return this.emailCampaignsService.launchCampaign(id);
   }
 
+  @Post(':id/relaunch')
+  @ApiOperation({
+    summary:
+      'Re-send the campaign to every recipient, including those already sent',
+  })
+  async relaunchCampaign(@Param('id') id: string) {
+    return this.emailCampaignsService.relaunchCampaign(id);
+  }
+
   @Post(':id/schedule')
   @ApiOperation({ summary: 'Schedule the email campaign for a future time' })
   async schedule(

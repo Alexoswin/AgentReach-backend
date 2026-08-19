@@ -10,6 +10,9 @@ import {
 } from '@aws-sdk/client-ses';
 import { decryptSystemSettings } from '../settings/credential-encryption';
 
+/** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
+const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
+
 @Injectable()
 export class EmailCampaignsService {
   constructor(private db: MongoService) {}
@@ -70,7 +73,7 @@ export class EmailCampaignsService {
     }
 
     return this.db.emailCampaign.create({
-      data: dto,
+      data: this.withNormalizedCopyLists(dto),
     });
   }
 
@@ -87,8 +90,131 @@ export class EmailCampaignsService {
 
     return this.db.emailCampaign.update({
       where: { id },
-      data: dto,
+      data: this.withNormalizedCopyLists(dto),
     });
+  }
+
+  /**
+   * Lower-cases and de-duplicates the CC/BCC lists, and drops any address that
+   * appears in both. A duplicate address means SES delivers the same message
+   * twice to one mailbox, which reads as a bug to the recipient and inflates
+   * the complaint rate that governs the whole sending identity.
+   */
+  private withNormalizedCopyLists<
+    T extends { cc?: string[]; bcc?: string[] },
+  >(dto: T): T {
+    const normalize = (list?: string[]) =>
+      Array.from(
+        new Set((list || []).map((entry) => entry.trim().toLowerCase())),
+      ).filter(Boolean);
+
+    const next: T = { ...dto };
+
+    if (dto.cc !== undefined) next.cc = normalize(dto.cc);
+    if (dto.bcc !== undefined) {
+      const cc = new Set(next.cc ?? []);
+      // CC wins when an address is on both lists — it is the visible one, so
+      // silently dropping it from CC would change what recipients see.
+      next.bcc = normalize(dto.bcc).filter((entry) => !cc.has(entry));
+    }
+
+    return next;
+  }
+
+  /**
+   * Re-sends the whole campaign, including recipients who already received it.
+   *
+   * `launchCampaign` deliberately never re-emails a successful recipient, so a
+   * finished campaign cannot be restarted through it. This is the explicit
+   * opt-in for "send the whole thing again" — the caller is responsible for
+   * confirming that duplicate delivery is intended.
+   */
+  async relaunchCampaign(id: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id },
+      include: { template: true, contacts: true },
+    });
+
+    if (!campaign) {
+      throw new BadRequestException('Campaign not found');
+    }
+    if (!campaign.template) {
+      throw new BadRequestException(
+        'Cannot relaunch a campaign without an email template',
+      );
+    }
+    if (campaign.status === 'RUNNING') {
+      throw new BadRequestException('Campaign is already running');
+    }
+    if (campaign.contacts.length === 0) {
+      throw new BadRequestException('No contacts in this campaign');
+    }
+
+    this.assertMessageFitsSesLimit(campaign.template);
+
+    // Reset every recipient, not just the failed ones.
+    await this.db.emailCampaignContact.updateMany({
+      where: { campaignId: id },
+      data: {
+        deliveryStatus: 'PENDING',
+        sentTime: null,
+        subject: null,
+        bodyHtml: null,
+        bodyText: null,
+        errorMessage: null,
+      },
+    });
+
+    await this.db.emailCampaign.update({
+      where: { id },
+      data: { status: 'RUNNING', scheduledAt: null },
+    });
+
+    this.runBackgroundSending(campaign.id);
+
+    const count = campaign.contacts.length;
+    return {
+      success: true,
+      message: `Re-sending this campaign to all ${count} recipient${count === 1 ? '' : 's'}.`,
+    };
+  }
+
+  /**
+   * SES rejects raw messages larger than 10 MB *after* base64 encoding. Without
+   * this check the campaign launches happily and then fails per-contact with an
+   * opaque SES error, marking every recipient FAILED and burning send quota on
+   * a message that could never have been delivered.
+   */
+  private assertMessageFitsSesLimit(template: {
+    subject?: string;
+    bodyHtml?: string;
+    bodyText?: string;
+    attachments?: { name: string; contentBase64: string }[];
+  }) {
+    const attachments = template.attachments || [];
+    if (attachments.length === 0) return;
+
+    // What actually travels is the base64 text, not the decoded bytes.
+    const encodedBytes = attachments.reduce(
+      (total, attachment) =>
+        total + (attachment.contentBase64?.replace(/\s/g, '').length || 0),
+      0,
+    );
+    const bodyBytes =
+      Buffer.byteLength(template.bodyHtml || '', 'utf8') +
+      Buffer.byteLength(template.bodyText || '', 'utf8');
+    // MIME boundaries, headers and CRLF line breaks every 76 chars.
+    const overheadBytes = Math.ceil(encodedBytes / 76) * 2 + 2048;
+    const totalBytes = encodedBytes + bodyBytes + overheadBytes;
+
+    if (totalBytes > SES_MAX_RAW_MESSAGE_BYTES) {
+      const mb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      throw new BadRequestException(
+        `This email is about ${mb(totalBytes)} once encoded for sending, which is over ` +
+          `the ${mb(SES_MAX_RAW_MESSAGE_BYTES)} limit AWS SES accepts. ` +
+          'Remove an attachment or link to the file instead.',
+      );
+    }
   }
 
   private async assertTemplateExists(templateId: string) {
@@ -261,6 +387,8 @@ export class EmailCampaignsService {
       throw new BadRequestException('No contacts in this campaign');
     }
 
+    this.assertMessageFitsSesLimit(campaign.template);
+
     const neverAttempted = campaign.contacts.filter(
       (contact: any) => contact.deliveryStatus === 'PENDING',
     );
@@ -352,8 +480,12 @@ export class EmailCampaignsService {
         );
       }
       const senderSource = senderEmail ? `<${senderEmail}>` : '';
-      const ccAddresses = (campaign.cc || []).filter(Boolean);
-      const bccAddresses = (campaign.bcc || []).filter(Boolean);
+      const ccAddresses: string[] = (campaign.cc || [])
+        .filter(Boolean)
+        .map((entry: string) => entry.trim().toLowerCase());
+      const bccAddresses: string[] = (campaign.bcc || [])
+        .filter(Boolean)
+        .map((entry: string) => entry.trim().toLowerCase());
 
       let client: SESClient | null = null;
       if (!isMockSes && settings) {
@@ -379,6 +511,13 @@ export class EmailCampaignsService {
           });
           continue;
         }
+
+        // A contact who also sits on the campaign CC/BCC list would otherwise
+        // receive the same email twice. Drop them from the copy lists for their
+        // own send only — other recipients still copy them as configured.
+        const recipient = (contact.email || '').trim().toLowerCase();
+        const contactCc = ccAddresses.filter((entry) => entry !== recipient);
+        const contactBcc = bccAddresses.filter((entry) => entry !== recipient);
 
         const subject = this.interpolate(template.subject, contact);
         const bodyHtml = this.interpolate(template.bodyHtml, contact);
@@ -430,14 +569,14 @@ export class EmailCampaignsService {
                 const command = new SendRawEmailCommand({
                   Destinations: [
                     contact.email,
-                    ...ccAddresses,
-                    ...bccAddresses,
+                    ...contactCc,
+                    ...contactBcc,
                   ],
                   RawMessage: {
                     Data: Buffer.from(
                       this.buildRawEmail({
                         to: contact.email,
-                        cc: ccAddresses,
+                        cc: contactCc,
                         subject,
                         bodyHtml,
                         bodyText,
@@ -454,10 +593,8 @@ export class EmailCampaignsService {
                   Source: senderSource,
                   Destination: {
                     ToAddresses: [contact.email],
-                    CcAddresses: ccAddresses.length ? ccAddresses : undefined,
-                    BccAddresses: bccAddresses.length
-                      ? bccAddresses
-                      : undefined,
+                    CcAddresses: contactCc.length ? contactCc : undefined,
+                    BccAddresses: contactBcc.length ? contactBcc : undefined,
                   },
                   Message: {
                     Subject: { Data: subject },

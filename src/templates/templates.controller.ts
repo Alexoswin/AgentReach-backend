@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { TemplatesService } from './templates.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
+import { UpdateTemplateDto } from './dto/update-template.dto';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
 @ApiTags('templates')
@@ -98,7 +99,7 @@ export class TemplatesController {
   @ApiOperation({ summary: 'Update a template' })
   async update(
     @Param('id') id: string,
-    @Body() dto: Partial<CreateTemplateDto>,
+    @Body() dto: UpdateTemplateDto,
   ) {
     return this.templatesService.update(id, dto);
   }
