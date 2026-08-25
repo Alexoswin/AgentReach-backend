@@ -15,7 +15,11 @@ import {
   resamplePcm16,
   transcodePcm24kToUlaw8k,
 } from './audio-codec';
-import { ActiveCallSession, TwilioFrame } from './call-session.types';
+import {
+  ActiveCallSession,
+  CallProvider,
+  TwilioFrame,
+} from './call-session.types';
 import { buildCallTools } from './call-tools';
 import { buildCallSystemInstruction } from './call-prompt';
 import { getLanguageProfile } from './language-profiles';
@@ -69,12 +73,29 @@ export class RealtimeCallingGateway {
   ) {}
 
   registerTwilioSocket(ws: WebSocket, req: IncomingMessage) {
+    this.registerSocket(ws, req, 'twilio');
+  }
+
+  registerPlivoSocket(ws: WebSocket, req: IncomingMessage) {
+    this.registerSocket(ws, req, 'plivo');
+  }
+
+  // Twilio Media Streams and Plivo Audio Streams speak the same JSON envelope
+  // (event/start/media/stop), so one handler drives both — only the outbound
+  // frame shape differs, which sendAudioFrame/sendClearFrame/sendMarkFrame
+  // branch on via state.provider.
+  private registerSocket(
+    ws: WebSocket,
+    req: IncomingMessage,
+    provider: CallProvider,
+  ) {
     const initialCallId = this.getQueryParam(req.url || '', 'callId');
     this.logger.log(
-      `Twilio stream socket connected url=${req.url || ''} initialCallId=${initialCallId || 'none'}`,
+      `${provider} stream socket connected url=${req.url || ''} initialCallId=${initialCallId || 'none'}`,
     );
     const state: ActiveCallSession = {
       callId: initialCallId || '',
+      provider,
       userTurns: 0,
       assistantTurns: 0,
       pendingHangup: false,
@@ -185,8 +206,9 @@ export class RealtimeCallingGateway {
     }
 
     state.callId = callId;
-    state.streamSid = frame.start?.streamSid || frame.streamSid;
-    state.providerCallSid = frame.start?.callSid;
+    state.streamSid =
+      frame.start?.streamSid || frame.start?.streamId || frame.streamSid;
+    state.providerCallSid = frame.start?.callSid || frame.start?.callId;
 
     // The Gemini session may already be connecting from socket-open (early
     // connect). Reuse that; if it never started or failed, prepare it now.
@@ -226,7 +248,7 @@ export class RealtimeCallingGateway {
     await this.db.callHistory.update({
       where: { id: callId },
       data: {
-        provider: 'twilio',
+        provider: state.provider,
         providerCallSid: state.providerCallSid || call.providerCallSid,
         providerStatus: 'in-progress',
         status: 'IN_PROGRESS',
@@ -539,16 +561,79 @@ export class RealtimeCallingGateway {
     if (!pending?.length) return;
     if (!state.streamSid || ws.readyState !== WebSocket.OPEN) return;
     for (const payload of pending) {
-      ws.send(
-        JSON.stringify({
-          event: 'media',
-          streamSid: state.streamSid,
-          media: { payload },
-        }),
-      );
+      this.sendAudioFrame(state, ws, payload);
     }
     this.logger.log(
       `Flushed buffered assistant audio callId=${state.callId} frames=${pending.length}`,
+    );
+  }
+
+  // Twilio expects {event:'media', streamSid, media:{payload}}. Plivo's
+  // bidirectional Stream expects {event:'playAudio', streamId, media:{
+  // contentType, sampleRate, payload}} — per Plivo's own Java Stream SDK
+  // (PlivoStreamingHandler.playAudio), every outgoing message must carry the
+  // streamId from the start event or Plivo has no stream to route the audio
+  // into and silently drops it (confirmed: this was why the agent stayed
+  // silent on Plivo calls even though inbound transcription worked fine).
+  private sendAudioFrame(
+    state: ActiveCallSession,
+    ws: WebSocket,
+    payload: string,
+  ) {
+    if (state.provider === 'plivo') {
+      ws.send(
+        JSON.stringify({
+          event: 'playAudio',
+          streamId: state.streamSid,
+          media: {
+            contentType: 'audio/x-mulaw',
+            sampleRate: 8000,
+            payload,
+          },
+        }),
+      );
+      return;
+    }
+    ws.send(
+      JSON.stringify({
+        event: 'media',
+        streamSid: state.streamSid,
+        media: { payload },
+      }),
+    );
+  }
+
+  // Twilio's barge-in interrupt clears queued audio with {event:'clear'};
+  // Plivo's equivalent is {event:'clearAudio', streamId}.
+  private sendClearFrame(state: ActiveCallSession, ws: WebSocket) {
+    if (state.provider === 'plivo') {
+      ws.send(
+        JSON.stringify({ event: 'clearAudio', streamId: state.streamSid }),
+      );
+      return;
+    }
+    ws.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
+  }
+
+  // Twilio echoes back {event:'mark', mark:{name}} once playback reaches that
+  // point; Plivo's equivalent is {event:'checkpoint', streamId, name}.
+  private sendMarkFrame(state: ActiveCallSession, ws: WebSocket, name: string) {
+    if (state.provider === 'plivo') {
+      ws.send(
+        JSON.stringify({
+          event: 'checkpoint',
+          streamId: state.streamSid,
+          name,
+        }),
+      );
+      return;
+    }
+    ws.send(
+      JSON.stringify({
+        event: 'mark',
+        streamSid: state.streamSid,
+        mark: { name },
+      }),
     );
   }
 
@@ -586,13 +671,7 @@ export class RealtimeCallingGateway {
         this.bufferPendingAssistantAudio(state, payload);
         return;
       }
-      ws.send(
-        JSON.stringify({
-          event: 'media',
-          streamSid: state.streamSid,
-          media: { payload },
-        }),
-      );
+      this.sendAudioFrame(state, ws, payload);
     });
 
     gemini.on('interrupted', () => {
@@ -606,7 +685,7 @@ export class RealtimeCallingGateway {
       ) {
         return;
       }
-      ws.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
+      this.sendClearFrame(state, ws);
     });
 
     gemini.on('user_transcript_final', (text: string) => {
@@ -655,13 +734,7 @@ export class RealtimeCallingGateway {
       // The agent finished speaking; the ball is now in the contact's court.
       this.resetInactivity(state);
       if (state.streamSid && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            event: 'mark',
-            streamSid: state.streamSid,
-            mark: { name: `agent-turn-${Date.now()}` },
-          }),
-        );
+        this.sendMarkFrame(state, ws, `agent-turn-${Date.now()}`);
       }
     });
 

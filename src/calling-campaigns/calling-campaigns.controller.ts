@@ -122,6 +122,38 @@ export class CallingCampaignsController {
     return this.service.handleTwilioRecording(callId, query);
   }
 
+  @Post('plivo/answer/:callId')
+  @Public()
+  @HttpCode(200)
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Plivo streaming answer webhook' })
+  plivoAnswer(@Param('callId') callId: string, @Body() body: any) {
+    return this.service.handlePlivoAnswer(callId, body);
+  }
+
+  @Get('plivo/answer/:callId')
+  @Public()
+  @Header('Content-Type', 'text/xml')
+  @ApiOperation({ summary: 'Plivo streaming answer webhook fallback' })
+  plivoAnswerGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.service.handlePlivoAnswer(callId, query);
+  }
+
+  @Post('plivo/status/:callId')
+  @Public()
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Plivo ring/hangup status callback' })
+  plivoStatus(@Param('callId') callId: string, @Body() body: any) {
+    return this.service.handlePlivoStatus(callId, body);
+  }
+
+  @Get('plivo/status/:callId')
+  @Public()
+  @ApiOperation({ summary: 'Plivo ring/hangup status callback fallback' })
+  plivoStatusGet(@Param('callId') callId: string, @Query() query: any) {
+    return this.service.handlePlivoStatus(callId, query);
+  }
+
   @Get('recordings/:callId/audio')
   @ApiOperation({ summary: 'Get proxied AI call recording audio' })
   async recordingAudio(

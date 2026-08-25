@@ -5,20 +5,29 @@ import {
 } from './gemini-live-session.wrapper';
 import { ResponseSpeed } from './response-speed';
 
+// Shared shape for both Twilio Media Streams and Plivo Audio Streams frames —
+// the two protocols use the same top-level `event`/`media.payload`/`start`/
+// `stop` envelope, differing mainly in the field names inside `start`
+// (streamSid/callSid for Twilio, streamId/callId for Plivo).
 export type TwilioFrame = {
   event?: string;
   streamSid?: string;
   start?: {
     streamSid?: string;
     callSid?: string;
+    streamId?: string;
+    callId?: string;
     customParameters?: Record<string, string>;
   };
   media?: { payload?: string };
   stop?: Record<string, unknown>;
 };
 
+export type CallProvider = 'twilio' | 'plivo';
+
 export type ActiveCallSession = {
   callId: string;
+  provider: CallProvider;
   streamSid?: string;
   providerCallSid?: string;
   call?: any;

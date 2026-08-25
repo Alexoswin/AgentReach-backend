@@ -55,7 +55,9 @@ export class CallingCampaignsService {
     const campaigns = await this.db.callingCampaign.findMany({
       orderBy: { createdAt: 'desc' },
     });
-    return Promise.all(campaigns.map((campaign: any) => this.withCounts(campaign)));
+    return Promise.all(
+      campaigns.map((campaign: any) => this.withCounts(campaign)),
+    );
   }
 
   async findOne(id: string) {
@@ -98,7 +100,9 @@ export class CallingCampaignsService {
       });
     }
     if (contactIds?.length) {
-      const campaign = await this.db.callingCampaign.findUnique({ where: { id } });
+      const campaign = await this.db.callingCampaign.findUnique({
+        where: { id },
+      });
       await this.addCallableContacts(id, contactIds, campaign || {});
     }
     return this.findOne(id);
@@ -174,7 +178,18 @@ export class CallingCampaignsService {
       if (!ACTIVE_OUTCOMES.has(String(call.outcome || '').toUpperCase())) {
         continue;
       }
-      if (
+      if (call.provider === 'plivo') {
+        if (
+          call.providerCallSid &&
+          !this.isMockPlivo(settings) &&
+          settings?.plivoAuthId &&
+          settings?.plivoAuthToken
+        ) {
+          await this.cancelPlivoCall(settings, call.providerCallSid).catch(
+            (error) => this.logger.warn(error?.message || error),
+          );
+        }
+      } else if (
         call.providerCallSid &&
         !this.isMockTwilio(settings) &&
         settings?.twilioAccountSid &&
@@ -271,6 +286,10 @@ export class CallingCampaignsService {
     });
     if (!call) return this.twimlResponse('<Hangup/>');
 
+    this.logger.log(
+      `Call picked up (answered) callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallSid || call.providerCallSid || 'unknown'} to=${body?.To || call.phoneNumber || 'unknown'} answeredBy=${body?.AnsweredBy || 'unknown'}`,
+    );
+
     await this.db.callHistory.update({
       where: { id: callId },
       data: {
@@ -301,24 +320,102 @@ export class CallingCampaignsService {
     );
   }
 
-  async handleTwilioResponse(callId: string, _body: any) {
+  // Plivo's answer_url equivalent of handleTwilioAnswer. The stream is kept on
+  // the same μ-law/8kHz encoding Twilio already uses so the rest of the audio
+  // pipeline (audio-codec.ts, realtime-calling.gateway) needs no provider branch.
+  async handlePlivoAnswer(callId: string, body: any) {
+    const call = await this.db.callHistory.findUnique({
+      where: { id: callId },
+      include: { campaign: true },
+    });
+    if (!call) return this.twimlResponse('<Hangup/>');
+
+    this.logger.log(
+      `Call picked up (answered) callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallUUID || call.providerCallSid || 'unknown'} to=${body?.To || call.phoneNumber || 'unknown'}`,
+    );
+
     await this.db.callHistory.update({
       where: { id: callId },
-      data: { providerStatus: 'respond_compat_noop' },
-    }).catch(() => undefined);
+      data: {
+        provider: 'plivo',
+        providerCallSid: body?.CallUUID || call.providerCallSid,
+        providerStatus: 'in-progress',
+        status: 'IN_PROGRESS',
+        outcome: 'IN_PROGRESS',
+        sessionStatus: 'in_progress',
+        startedAt: call.startedAt || new Date(),
+        connectedAt: call.connectedAt || new Date(),
+      },
+    });
+
+    const streamUrl = `${this.getPublicWsBaseUrl()}/plivo/stream?callId=${encodeURIComponent(
+      callId,
+    )}`;
+    return this.twimlResponse(
+      `<Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${this.xml(
+        streamUrl,
+      )}</Stream>`,
+    );
+  }
+
+  async handleTwilioResponse(callId: string, _body: any) {
+    await this.db.callHistory
+      .update({
+        where: { id: callId },
+        data: { providerStatus: 'respond_compat_noop' },
+      })
+      .catch(() => undefined);
     return this.twimlResponse('');
   }
 
   async handleTwilioStatus(callId: string, body: any) {
-    const status = String(body?.CallStatus || body?.CallStatusCallback || '').toLowerCase();
+    const status = String(
+      body?.CallStatus || body?.CallStatusCallback || '',
+    ).toLowerCase();
     const duration = Number(body?.CallDuration || body?.Duration || 0);
     const outcome = this.twilioStatusToOutcome(status, duration);
-    const isDone = ['ANSWERED', 'NO_ANSWER', 'BUSY', 'FAILED', 'CANCELLED'].includes(
-      outcome,
-    );
+    const isDone = [
+      'ANSWERED',
+      'NO_ANSWER',
+      'BUSY',
+      'FAILED',
+      'CANCELLED',
+    ].includes(outcome);
 
-    const call = await this.db.callHistory.findUnique({ where: { id: callId } });
+    const call = await this.db.callHistory.findUnique({
+      where: { id: callId },
+    });
     if (!call) return { ok: true };
+
+    // SipResponseCode/ErrorCode surface *why* a call didn't connect (e.g. 480
+    // Temporarily Unavailable = phone switched off/unreachable, 503 = carrier
+    // rejected/out of range) — Twilio only includes these on the terminal
+    // "completed" status callback, not on ringing/answered.
+    const sipResponseCode = body?.SipResponseCode;
+    const errorCode = body?.ErrorCode;
+    if (status === 'ringing') {
+      this.logger.log(
+        `Call ringing callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallSid || call.providerCallSid || 'unknown'} to=${body?.To || call.phoneNumber || 'unknown'}`,
+      );
+    } else if (
+      status === 'busy' ||
+      status === 'no-answer' ||
+      status === 'failed'
+    ) {
+      const reason =
+        sipResponseCode === '480' || sipResponseCode === '487'
+          ? 'switched off / unreachable'
+          : sipResponseCode === '503' || errorCode
+            ? 'out of range / carrier rejected'
+            : status;
+      this.logger.warn(
+        `Call not connected callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallSid || call.providerCallSid || 'unknown'} status=${status} reason=${reason} sipResponseCode=${sipResponseCode || 'none'} errorCode=${errorCode || 'none'} errorMessage=${body?.ErrorMessage || 'none'}`,
+      );
+    } else {
+      this.logger.log(
+        `Call status update callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallSid || call.providerCallSid || 'unknown'} status=${status} outcome=${outcome} duration=${duration}`,
+      );
+    }
 
     await this.db.callHistory.update({
       where: { id: callId },
@@ -339,6 +436,63 @@ export class CallingCampaignsService {
     return { ok: true };
   }
 
+  // Shared handler for Plivo's ring_url and hangup_url callbacks, matching the
+  // pattern handleTwilioStatus already uses for Twilio's multi-event status
+  // callback.
+  async handlePlivoStatus(callId: string, body: any) {
+    const status = String(body?.CallStatus || '').toLowerCase();
+    const duration = Number(body?.Duration || body?.BillDuration || 0);
+    const outcome = this.plivoStatusToOutcome(status, duration);
+    const isDone = [
+      'ANSWERED',
+      'NO_ANSWER',
+      'BUSY',
+      'FAILED',
+      'CANCELLED',
+    ].includes(outcome);
+
+    const call = await this.db.callHistory.findUnique({
+      where: { id: callId },
+    });
+    if (!call) return { ok: true };
+
+    if (status === 'ringing') {
+      this.logger.log(
+        `Call ringing callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallUUID || call.providerCallSid || 'unknown'} to=${body?.To || call.phoneNumber || 'unknown'}`,
+      );
+    } else if (
+      status === 'busy' ||
+      status === 'no-answer' ||
+      status === 'failed'
+    ) {
+      this.logger.warn(
+        `Call not connected callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallUUID || call.providerCallSid || 'unknown'} status=${status} hangupCause=${body?.HangupCause || 'none'}`,
+      );
+    } else {
+      this.logger.log(
+        `Call status update callId=${callId} campaignId=${call.campaignId} providerCallSid=${body?.CallUUID || call.providerCallSid || 'unknown'} status=${status} outcome=${outcome} duration=${duration}`,
+      );
+    }
+
+    await this.db.callHistory.update({
+      where: { id: callId },
+      data: {
+        provider: 'plivo',
+        providerCallSid: body?.CallUUID || call.providerCallSid,
+        providerStatus: status || body?.CallStatus,
+        outcome,
+        status: isDone ? 'COMPLETED' : outcome,
+        sessionStatus: isDone ? 'completed' : status || 'updated',
+        duration: duration || call.duration || 0,
+        endedAt: isDone ? new Date() : call.endedAt,
+        errorMessage: body?.HangupCause || call.errorMessage,
+      },
+    });
+
+    if (isDone) await this.checkAndCompleteCampaign(call.campaignId);
+    return { ok: true };
+  }
+
   async handleTwilioRecording(callId: string, body: any) {
     const recordingUrl = body?.RecordingUrl
       ? `${body.RecordingUrl}${String(body.RecordingUrl).endsWith('.mp3') ? '' : '.mp3'}`
@@ -346,22 +500,26 @@ export class CallingCampaignsService {
     const recordingDuration = Number(
       body?.RecordingDuration || body?.Duration || 0,
     );
-    await this.db.callHistory.update({
-      where: { id: callId },
-      data: {
-        ...(recordingUrl ? { recordingUrl } : {}),
-        recordingSid: body?.RecordingSid,
-        recordingStatus: body?.RecordingStatus || 'completed',
-        recordingDuration: Number.isFinite(recordingDuration)
-          ? recordingDuration
-          : undefined,
-      },
-    }).catch(() => undefined);
+    await this.db.callHistory
+      .update({
+        where: { id: callId },
+        data: {
+          ...(recordingUrl ? { recordingUrl } : {}),
+          recordingSid: body?.RecordingSid,
+          recordingStatus: body?.RecordingStatus || 'completed',
+          recordingDuration: Number.isFinite(recordingDuration)
+            ? recordingDuration
+            : undefined,
+        },
+      })
+      .catch(() => undefined);
     return { ok: true };
   }
 
   async getCallRecordingAudio(callId: string) {
-    const call = await this.db.callHistory.findUnique({ where: { id: callId } });
+    const call = await this.db.callHistory.findUnique({
+      where: { id: callId },
+    });
     if (!call) throw new NotFoundException('Call recording not found.');
     if (!call.recordingUrl) {
       throw new NotFoundException('Recording is not available yet.');
@@ -397,9 +555,12 @@ export class CallingCampaignsService {
   private async launch(id: string, relaunch: boolean) {
     const campaign = await this.findOne(id);
     const settings = await this.settingsService.getRawSettings();
-    if (!this.hasTwilioSettings(settings)) {
+    const provider = this.getActiveProvider(settings);
+    if (!this.hasProviderSettings(settings)) {
       throw new BadRequestException(
-        'Twilio is not fully configured. Add Account SID, Auth Token, and Phone Number in Settings.',
+        provider === 'plivo'
+          ? 'Plivo is not fully configured. Add Auth ID, Auth Token, and Phone Number in Settings.'
+          : 'Twilio is not fully configured. Add Account SID, Auth Token, and Phone Number in Settings.',
       );
     }
 
@@ -440,10 +601,14 @@ export class CallingCampaignsService {
 
     await this.db.callingCampaign.update({
       where: { id },
-      data: { status: 'LAUNCHING', lastLaunchedAt: new Date(), stoppedAt: undefined },
+      data: {
+        status: 'LAUNCHING',
+        lastLaunchedAt: new Date(),
+        stoppedAt: undefined,
+      },
     });
 
-    if (this.isMockTwilio(settings)) {
+    if (this.isMockProvider(settings)) {
       const result = await this.simulateCalls(id, callable);
       await this.db.callingCampaign.update({
         where: { id },
@@ -456,11 +621,22 @@ export class CallingCampaignsService {
     for (const call of callable) {
       try {
         await this.preflightGeminiLiveCall(campaign, call);
-        const response = await this.createTwilioCall(settings, call.id, call.contact.phoneNumber);
+        const response =
+          provider === 'plivo'
+            ? await this.createPlivoCall(
+                settings,
+                call.id,
+                call.contact.phoneNumber,
+              )
+            : await this.createTwilioCall(
+                settings,
+                call.id,
+                call.contact.phoneNumber,
+              );
         await this.db.callHistory.update({
           where: { id: call.id },
           data: {
-            provider: 'twilio',
+            provider,
             providerCallSid: response.sid,
             providerStatus: response.status || 'queued',
             outcome: 'QUEUED',
@@ -554,7 +730,9 @@ export class CallingCampaignsService {
 
     for (const contactId of contactIds) {
       if (existingIds.has(contactId)) continue;
-      const contact = await this.db.contact.findUnique({ where: { id: contactId } });
+      const contact = await this.db.contact.findUnique({
+        where: { id: contactId },
+      });
       if (!contact?.phoneNumber) continue;
       await this.db.callHistory.create({
         data: {
@@ -610,7 +788,8 @@ export class CallingCampaignsService {
     }
 
     const language =
-      String(data.selectedLanguage || data.language || 'en-IN').trim() || 'en-IN';
+      String(data.selectedLanguage || data.language || 'en-IN').trim() ||
+      'en-IN';
     const voice = String(data.selectedVoice || data.voice || '').trim();
     data.language = language;
     data.selectedLanguage = language;
@@ -650,17 +829,22 @@ export class CallingCampaignsService {
   private async withCounts(campaign: any) {
     const calls = Array.isArray(campaign.calls)
       ? campaign.calls
-      : await this.db.callHistory.findMany({ where: { campaignId: campaign.id } });
+      : await this.db.callHistory.findMany({
+          where: { campaignId: campaign.id },
+        });
     return {
       ...campaign,
       calls,
       contactCount: calls.length,
-      completedCount: calls.filter((call: any) => call.status === 'COMPLETED').length,
-      answeredCount: calls.filter((call: any) => call.outcome === 'ANSWERED').length,
+      completedCount: calls.filter((call: any) => call.status === 'COMPLETED')
+        .length,
+      answeredCount: calls.filter((call: any) => call.outcome === 'ANSWERED')
+        .length,
       pendingCount: calls.filter((call: any) =>
         ACTIVE_OUTCOMES.has(String(call.outcome || '').toUpperCase()),
       ).length,
-      failedCount: calls.filter((call: any) => call.outcome === 'FAILED').length,
+      failedCount: calls.filter((call: any) => call.outcome === 'FAILED')
+        .length,
     };
   }
 
@@ -735,6 +919,67 @@ export class CallingCampaignsService {
       throw new Error(data?.message || response.statusText || 'Twilio error');
     }
     return data;
+  }
+
+  // Plivo's outbound Call API responds with a `request_uuid`, not the final
+  // `CallUUID` — the real call identifier only arrives on the answer/status
+  // webhook. `request_uuid` is stored as `providerCallSid` in the meantime so a
+  // stop-campaign issued before the call connects can still be looked up (see
+  // handlePlivoAnswer/handlePlivoStatus, which overwrite it with the real UUID).
+  private async createPlivoCall(settings: any, callId: string, to: string) {
+    const authId = settings.plivoAuthId;
+    const authToken = settings.plivoAuthToken;
+    const response = await fetch(
+      `https://api.plivo.com/v1/Account/${encodeURIComponent(authId)}/Call/`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${authId}:${authToken}`,
+          ).toString('base64')}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to,
+          from: settings.plivoPhoneNumber,
+          answer_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/answer/${encodeURIComponent(
+            callId,
+          )}`,
+          answer_method: 'POST',
+          hangup_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/status/${encodeURIComponent(
+            callId,
+          )}`,
+          hangup_method: 'POST',
+          ring_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/status/${encodeURIComponent(
+            callId,
+          )}`,
+          ring_method: 'POST',
+        }),
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.error || response.statusText || 'Plivo error');
+    }
+    return { sid: data?.request_uuid, status: 'queued' };
+  }
+
+  private async cancelPlivoCall(settings: any, callUuid: string) {
+    await fetch(
+      `https://api.plivo.com/v1/Account/${encodeURIComponent(
+        settings.plivoAuthId,
+      )}/Call/${encodeURIComponent(callUuid)}/`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${settings.plivoAuthId}:${settings.plivoAuthToken}`,
+          ).toString('base64')}`,
+        },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
   }
 
   private async preflightGeminiLiveCall(campaign: any, call: any) {
@@ -861,12 +1106,32 @@ export class CallingCampaignsService {
     return parsed.toString().replace(/\/+$/, '');
   }
 
+  /** Which telephony provider is active for placing calls. Defaults to Twilio
+   * so settings saved before Plivo support existed keep working unchanged. */
+  private getActiveProvider(settings: any): 'twilio' | 'plivo' {
+    return settings?.callProvider === 'plivo' ? 'plivo' : 'twilio';
+  }
+
   private hasTwilioSettings(settings: any) {
     return Boolean(
       settings?.twilioAccountSid &&
-        settings?.twilioAuthToken &&
-        settings?.twilioPhoneNumber,
+      settings?.twilioAuthToken &&
+      settings?.twilioPhoneNumber,
     );
+  }
+
+  private hasPlivoSettings(settings: any) {
+    return Boolean(
+      settings?.plivoAuthId &&
+      settings?.plivoAuthToken &&
+      settings?.plivoPhoneNumber,
+    );
+  }
+
+  private hasProviderSettings(settings: any) {
+    return this.getActiveProvider(settings) === 'plivo'
+      ? this.hasPlivoSettings(settings)
+      : this.hasTwilioSettings(settings);
   }
 
   private isMockTwilio(settings: any) {
@@ -880,6 +1145,23 @@ export class CallingCampaignsService {
     return haystack.includes('mock') || haystack.includes('test');
   }
 
+  private isMockPlivo(settings: any) {
+    const haystack = [
+      settings?.plivoAuthId,
+      settings?.plivoAuthToken,
+      settings?.plivoPhoneNumber,
+    ]
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes('mock') || haystack.includes('test');
+  }
+
+  private isMockProvider(settings: any) {
+    return this.getActiveProvider(settings) === 'plivo'
+      ? this.isMockPlivo(settings)
+      : this.isMockTwilio(settings);
+  }
+
   private twilioStatusToOutcome(status: string, duration: number) {
     if (status === 'queued') return 'QUEUED';
     if (status === 'initiated') return 'DIALING';
@@ -888,6 +1170,17 @@ export class CallingCampaignsService {
     if (status === 'busy') return 'BUSY';
     if (status === 'no-answer') return 'NO_ANSWER';
     if (status === 'canceled' || status === 'cancelled') return 'CANCELLED';
+    if (status === 'failed') return 'FAILED';
+    if (status === 'completed') return duration > 0 ? 'ANSWERED' : 'NO_ANSWER';
+    return status ? status.toUpperCase().replace(/-/g, '_') : 'PENDING';
+  }
+
+  private plivoStatusToOutcome(status: string, duration: number) {
+    if (status === 'ringing') return 'RINGING';
+    if (status === 'in-progress') return 'IN_PROGRESS';
+    if (status === 'busy') return 'BUSY';
+    if (status === 'no-answer') return 'NO_ANSWER';
+    if (status === 'cancelled' || status === 'canceled') return 'CANCELLED';
     if (status === 'failed') return 'FAILED';
     if (status === 'completed') return duration > 0 ? 'ANSWERED' : 'NO_ANSWER';
     return status ? status.toUpperCase().replace(/-/g, '_') : 'PENDING';

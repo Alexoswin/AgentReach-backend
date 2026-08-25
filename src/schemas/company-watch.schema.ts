@@ -14,7 +14,13 @@ export class CompanyWatch {
   companyName: string;
 
   // Normalized lowercase domain (e.g. "acme.com"); the primary matching key.
-  @Prop({ required: true, unique: true, lowercase: true, trim: true, index: true })
+  @Prop({
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    index: true,
+  })
   domain: string;
 
   // Enabled source ids: 'news-rss' | 'edgar' | 'job-board'

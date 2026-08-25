@@ -43,10 +43,22 @@ export class SettingsController {
     return this.settingsService.testTwilio();
   }
 
+  @Post('test-plivo')
+  @ApiOperation({ summary: 'Test Plivo connection' })
+  async testPlivo() {
+    return this.settingsService.testPlivo();
+  }
+
   @Post('test-gemini')
   @ApiOperation({ summary: 'Test Gemini API key connection' })
   async testGemini(@Body() body?: { geminiApiKey?: string }) {
     return this.settingsService.testGemini(body || {});
+  }
+
+  @Post('test-groww')
+  @ApiOperation({ summary: 'Test the Groww Trading API connection' })
+  async testGroww() {
+    return this.settingsService.testGroww();
   }
 
   @Post('preview-gemini-voice')
