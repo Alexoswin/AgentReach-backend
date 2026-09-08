@@ -6,7 +6,7 @@ import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { GoogleGenAI } from '@google/genai';
 import { resolveGeminiTextModel } from '../config/gemini-text';
 import { decryptSystemSettings } from '../settings/credential-encryption';
-import { PDFParse } from 'pdf-parse';
+import type { PDFParse } from 'pdf-parse';
 
 const MAX_TEMPLATE_ATTACHMENTS = 5;
 const MAX_TEMPLATE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -96,6 +96,7 @@ export class TemplatesService {
       throw new BadRequestException('Reference PDF must be 8 MB or smaller');
     }
 
+    const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({ data: file.buffer });
     try {
       const parsed = await parser.getText();

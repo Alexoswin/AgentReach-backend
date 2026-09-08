@@ -1,12 +1,14 @@
 import {
   IsArray,
   IsBoolean,
+  IsEnum,
   IsIn,
   IsNumber,
   IsOptional,
   IsString,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { GeminiLiveModel } from '../../config/gemini-live';
 
 export class CreateCallingCampaignDto {
   @ApiProperty({ example: 'AI Recruiter Initial Screen' })
@@ -148,11 +150,12 @@ export class CreateCallingCampaignDto {
 
   @ApiProperty({
     required: false,
-    example: 'gemini-3.1-flash-live-preview',
+    enum: GeminiLiveModel,
+    example: GeminiLiveModel.FlashLivePreview,
   })
-  @IsString()
+  @IsEnum(GeminiLiveModel)
   @IsOptional()
-  realtimeModel?: string;
+  realtimeModel?: GeminiLiveModel;
 
   @ApiProperty({ required: false })
   @IsNumber()

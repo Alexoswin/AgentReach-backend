@@ -52,3 +52,4 @@ coverage/
 *.sw?
 
 /generated/prisma
+.vercel

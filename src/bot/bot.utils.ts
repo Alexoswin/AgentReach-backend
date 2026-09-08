@@ -1,5 +1,4 @@
 import { BadRequestException } from '@nestjs/common';
-import { PDFParse } from 'pdf-parse';
 import {
   EMBEDDING_DIMENSIONS,
   DEFAULT_CHUNK_OVERLAP,
@@ -120,8 +119,10 @@ export async function extractPdfTrainingText(file?: TrainingPdfFile) {
     throw new BadRequestException('Training PDF must be 8 MB or smaller');
   }
 
-  let parser: PDFParse | null = null;
+  let parser: { getText(): Promise<any>; destroy(): Promise<void> } | null =
+    null;
   try {
+    const { PDFParse } = await import('pdf-parse');
     parser = new PDFParse({ data: file.buffer });
     const parsed = await parser.getText();
     const text = cleanTrainingText(parsed.text || '');

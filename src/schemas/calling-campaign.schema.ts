@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { randomUUID } from 'crypto';
+import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
 
 @Schema({ collection: 'CallingCampaign', timestamps: true })
 export class CallingCampaign {
@@ -69,7 +70,7 @@ export class CallingCampaign {
   @Prop({ default: false })
   preventInterruption: boolean;
 
-  @Prop({ default: 'gemini-3.1-flash-live-preview' })
+  @Prop({ default: DEFAULT_GEMINI_LIVE_MODEL })
   realtimeModel: string;
 
   @Prop({ default: 4000 })
