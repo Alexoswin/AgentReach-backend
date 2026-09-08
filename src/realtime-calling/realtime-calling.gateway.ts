@@ -9,6 +9,7 @@ import {
   GeminiLiveSessionWrapper,
 } from './gemini-live-session.wrapper';
 import { getResponseSpeedPreset } from './response-speed';
+import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
 import {
   calculateDbfs,
   decodeUlawToPcm16,
@@ -316,7 +317,7 @@ export class RealtimeCallingGateway {
     const model =
       state.campaign.realtimeModel ||
       process.env.GEMINI_LIVE_MODEL ||
-      'gemini-3.1-flash-live-preview';
+      DEFAULT_GEMINI_LIVE_MODEL;
     const languageCode = this.resolveSelectedLanguage(state);
     const selectedVoice = this.resolveSelectedVoice(state);
     const voiceName = extractHdVoiceName(selectedVoice);

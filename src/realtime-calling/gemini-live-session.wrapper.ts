@@ -8,6 +8,7 @@ import {
   getResponseSpeedPreset,
   normalizeResponseSpeed,
 } from './response-speed';
+import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -58,8 +59,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
 
     const ai = new GoogleGenAI({ apiKey });
     this.closed = false;
-    const model =
-      this.config.model || 'gemini-3.1-flash-live-preview';
+    const model = this.config.model || DEFAULT_GEMINI_LIVE_MODEL;
     const liveConfig = this.buildLiveConfig(Modality.AUDIO);
     const preset = getResponseSpeedPreset(this.config.responseSpeed);
     this.logger.log(
