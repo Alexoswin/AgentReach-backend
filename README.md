@@ -130,17 +130,23 @@ npm run start:dev         # watch mode on http://localhost:3001
 | -------------------------- | :------: | ----------- |
 | `PORT`                     |    no    | HTTP port. Defaults to `3001`. |
 | `DATABASE_URL`             |   yes    | MongoDB connection string. Falls back to `mongodb://localhost:27017/reachconvert`. |
-| `JWT_SECRET`               |   yes    | Secret used to sign access/refresh tokens. Use a long random value. |
+| `JWT_SECRET`               |   yes    | Secret used to sign access/refresh tokens and call webhook URLs. Use a long random value. The server refuses to start in production without it. |
 | `CREDENTIAL_ENCRYPTION_KEY`|   yes    | Key used to encrypt provider credentials stored in Settings. Required for real SES/Twilio/Gemini use. |
 | `PUBLIC_API_URL`           |  calls   | Publicly reachable API base URL — used by Twilio webhooks. |
 | `PUBLIC_WS_URL`            |  calls   | Public `wss://` URL for the `/twilio/stream` media socket. |
+| `PUBLIC_APP_URL`           | prod     | Frontend origin used in password-reset email links. |
+| `CORS_ORIGINS`             | optional | Comma-separated allowed origins. Empty allows all. |
+| `ALLOW_REGISTRATION`       | optional | `true` opens sign-up in production (closed by default — data is shared across accounts). |
+| `ALLOWED_SIGNUP_EMAILS`    | optional | Comma-separated emails that may sign up even when registration is closed. |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | optional | Creates a first account on startup if that email does not exist. |
+| `ENABLE_SWAGGER`           | optional | `true` serves `/docs` in production (off by default). |
 | `GEMINI_API_KEY`           | optional | Bootstrap fallback. The encrypted key saved in Settings takes precedence. |
 | `GEMINI_LIVE_MODEL`        | optional | Gemini Live model id (e.g. `gemini-2.5-flash-native-audio-preview-12-2025`). |
 
 > Most provider credentials (AWS SES, Twilio, Gemini) are configured at
 > runtime through **Settings** in the UI and stored **encrypted** in MongoDB, not in
 > `.env`. If a required credential is missing, the connection-test and provider
-> services return a descriptive error (some fall back to a "mock mode" response).
+> services return a descriptive error.
 
 ### Scripts
 
@@ -166,10 +172,11 @@ unless noted. Explore the live, always-accurate contract in **Swagger** at `/doc
 ### Auth — `/api/auth`
 | Method | Path | Notes |
 | ------ | ---- | ----- |
-| POST | `/register` | Public. Create an account. |
+| POST | `/register` | Public. Create an account (closed in production unless allowed — see `ALLOW_REGISTRATION`). |
 | POST | `/login` | Public. Returns access + refresh tokens. |
 | POST | `/refresh` | Public. Exchange a refresh token for new tokens. |
-| POST | `/reset-password` | Set a new password. |
+| POST | `/forgot-password` | Public. Emails a one-time reset link (30 min) via SES. Same response for unknown emails. |
+| POST | `/reset-password` | Public. Set a new password with the token from the reset link. |
 | GET  | `/me` | Current user profile. |
 | PATCH| `/profile` | Update name/email/theme/accent color. |
 | POST | `/logout` | Invalidate the session. |
