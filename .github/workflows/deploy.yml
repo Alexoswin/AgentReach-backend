@@ -91,7 +91,7 @@ jobs:
           fi
 
           # Scales to zero to keep cost down. Trade-off: the in-process @Cron
-          # jobs (campaign launcher, trade reconciliation, Groww token refresh)
+          # jobs (campaign launcher, signal collectors)
           # only run while an instance is up serving traffic. Capped at one
           # instance so call WebSocket state stays in a single process and a
           # cron never fires from two copies at once. For always-on behaviour

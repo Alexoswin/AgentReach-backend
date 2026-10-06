@@ -4,23 +4,12 @@ import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { resolveGeminiTextModel } from '../config/gemini-text';
 import {
-  DEFAULT_TRADE_MASTER_MODEL,
-  DEFAULT_TRADE_WORKER_MODEL,
-  resolveTradeModel,
-} from '../config/gemini-agent';
-import {
   MASKED_CREDENTIAL,
   SYSTEM_CREDENTIAL_FIELDS,
-  assertTradeCredentialKey,
   decryptSystemSettings,
   encryptSystemSettingsData,
   maskSystemSettings,
 } from './credential-encryption';
-import {
-  GROWW_BASE_URL,
-  fetchGrowwAccessToken,
-  growwHeaders,
-} from '../config/groww';
 
 @Injectable()
 export class SettingsService {
@@ -59,43 +48,6 @@ export class SettingsService {
 
     if (dto.geminiTextModel !== undefined) {
       data.geminiTextModel = resolveGeminiTextModel(dto.geminiTextModel);
-    }
-
-    // Same alias-normalisation the text model gets, so a retired id falls back
-    // instead of breaking the desk at the next cycle.
-    if (dto.tradeMasterModel !== undefined) {
-      data.tradeMasterModel = resolveTradeModel(
-        dto.tradeMasterModel,
-        DEFAULT_TRADE_MASTER_MODEL,
-      );
-    }
-    if (dto.tradeWorkerModel !== undefined) {
-      data.tradeWorkerModel = resolveTradeModel(
-        dto.tradeWorkerModel,
-        DEFAULT_TRADE_WORKER_MODEL,
-      );
-    }
-
-    // Broker credentials are held to a higher bar than the outreach keys.
-    try {
-      assertTradeCredentialKey(data);
-    } catch (error: any) {
-      throw new BadRequestException(error.message);
-    }
-
-    // Rotating the API key or its secret invalidates any cached daily token.
-    const rotatedGrowwCredential = [
-      'growwApiKey',
-      'growwApiSecret',
-      'growwTotpSecret',
-    ].some(
-      (field) => data[field] !== undefined && data[field] !== current?.[field],
-    );
-
-    if (rotatedGrowwCredential) {
-      data.growwAccessToken = '';
-      data.growwAccessTokenExpiresAt = null;
-      data.growwStatus = 'DISCONNECTED';
     }
 
     const encryptedData = encryptSystemSettingsData(data);
@@ -483,84 +435,6 @@ export class SettingsService {
           'Gemini API key verification failed.',
       );
     }
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  Trade-Agent connection probes                                      */
-  /* ------------------------------------------------------------------ */
-
-  /**
-   * Runs the Groww daily-approval handshake, then makes one cheap non-trading
-   * read (user margin) to prove the token actually works. Caches the token so
-   * the trade-agent module does not have to re-authenticate immediately after.
-   */
-  async testGroww() {
-    const settings = await this.getRawSettings();
-    const apiKey = settings?.growwApiKey?.trim() || '';
-    const apiSecret = settings?.growwApiSecret?.trim() || '';
-    const totpSecret = settings?.growwTotpSecret?.trim() || '';
-
-    if (!apiKey) {
-      throw new BadRequestException(
-        'Add your Groww API key before testing the connection.',
-      );
-    }
-    if (!apiSecret && !totpSecret) {
-      throw new BadRequestException(
-        'Add either a Groww API secret (daily approval) or a TOTP secret.',
-      );
-    }
-
-    try {
-      const token = await fetchGrowwAccessToken({
-        apiKey,
-        apiSecret: apiSecret || undefined,
-        totpSecret: totpSecret || undefined,
-      });
-
-      const response = await fetch(`${GROWW_BASE_URL}/margins/detail/user`, {
-        headers: growwHeaders(token.accessToken),
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        await this.markGrowwFailed();
-        return {
-          success: false,
-          error:
-            `Groww token issued, but the margin read failed: ${response.status} ${response.statusText}. ${detail}`.trim(),
-        };
-      }
-
-      await this.db.systemSettings.update({
-        where: { id: 'default' },
-        data: encryptSystemSettingsData({
-          growwAccessToken: token.accessToken,
-          growwAccessTokenExpiresAt: token.expiresAt,
-          growwStatus: 'CONNECTED',
-          growwLastVerified: new Date(),
-        }),
-      });
-
-      return {
-        success: true,
-        message: `Groww connection verified. Token valid until ${token.expiresAt.toISOString()}.`,
-      };
-    } catch (error: any) {
-      await this.markGrowwFailed();
-      return {
-        success: false,
-        error: error.message || 'Unknown Groww API error',
-      };
-    }
-  }
-
-  private async markGrowwFailed() {
-    await this.db.systemSettings.update({
-      where: { id: 'default' },
-      data: { growwStatus: 'FAILED' },
-    });
   }
 
   private async getGeminiApiKey(candidate?: string) {

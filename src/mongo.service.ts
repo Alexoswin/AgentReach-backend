@@ -2,10 +2,6 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DEFAULT_GEMINI_TEXT_MODEL } from './config/gemini-text';
-import {
-  DEFAULT_TRADE_MASTER_MODEL,
-  DEFAULT_TRADE_WORKER_MODEL,
-} from './config/gemini-agent';
 import { encryptSystemSettingsData } from './settings/credential-encryption';
 import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
@@ -24,13 +20,6 @@ import { Signal } from './schemas/signal.schema';
 import { SignalMatch } from './schemas/signal-match.schema';
 import { Playbook } from './schemas/playbook.schema';
 import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
-import { TradeAgentRun } from './schemas/trade-agent-run.schema';
-import { AgentMessage } from './schemas/agent-message.schema';
-import { TradeSignal } from './schemas/trade-signal.schema';
-import { OrderIntent } from './schemas/order-intent.schema';
-import { TradeOrder } from './schemas/trade-order.schema';
-import { PositionSnapshot } from './schemas/position-snapshot.schema';
-import { RiskEvent } from './schemas/risk-event.schema';
 
 type AnyModel = Model<any>;
 
@@ -52,13 +41,6 @@ export class MongoService implements OnModuleInit {
   signalMatch: MongoDelegate;
   playbook: MongoDelegate;
   triggeredOutreach: MongoDelegate;
-  tradeAgentRun: MongoDelegate;
-  agentMessage: MongoDelegate;
-  tradeSignal: MongoDelegate;
-  orderIntent: MongoDelegate;
-  tradeOrder: MongoDelegate;
-  positionSnapshot: MongoDelegate;
-  riskEvent: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -80,14 +62,6 @@ export class MongoService implements OnModuleInit {
     @InjectModel(Playbook.name) private playbookModel: AnyModel,
     @InjectModel(TriggeredOutreach.name)
     private triggeredOutreachModel: AnyModel,
-    @InjectModel(TradeAgentRun.name) private tradeAgentRunModel: AnyModel,
-    @InjectModel(AgentMessage.name) private agentMessageModel: AnyModel,
-    @InjectModel(TradeSignal.name) private tradeSignalModel: AnyModel,
-    @InjectModel(OrderIntent.name) private orderIntentModel: AnyModel,
-    @InjectModel(TradeOrder.name) private tradeOrderModel: AnyModel,
-    @InjectModel(PositionSnapshot.name)
-    private positionSnapshotModel: AnyModel,
-    @InjectModel(RiskEvent.name) private riskEventModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -106,13 +80,6 @@ export class MongoService implements OnModuleInit {
       signalMatch: this.signalMatchModel,
       playbook: this.playbookModel,
       triggeredOutreach: this.triggeredOutreachModel,
-      tradeAgentRun: this.tradeAgentRunModel,
-      agentMessage: this.agentMessageModel,
-      tradeSignal: this.tradeSignalModel,
-      orderIntent: this.orderIntentModel,
-      tradeOrder: this.tradeOrderModel,
-      positionSnapshot: this.positionSnapshotModel,
-      riskEvent: this.riskEventModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -175,41 +142,6 @@ export class MongoService implements OnModuleInit {
       this.triggeredOutreachModel,
       models,
     );
-    this.tradeAgentRun = new MongoDelegate(
-      'tradeAgentRun',
-      this.tradeAgentRunModel,
-      models,
-    );
-    this.agentMessage = new MongoDelegate(
-      'agentMessage',
-      this.agentMessageModel,
-      models,
-    );
-    this.tradeSignal = new MongoDelegate(
-      'tradeSignal',
-      this.tradeSignalModel,
-      models,
-    );
-    this.orderIntent = new MongoDelegate(
-      'orderIntent',
-      this.orderIntentModel,
-      models,
-    );
-    this.tradeOrder = new MongoDelegate(
-      'tradeOrder',
-      this.tradeOrderModel,
-      models,
-    );
-    this.positionSnapshot = new MongoDelegate(
-      'positionSnapshot',
-      this.positionSnapshotModel,
-      models,
-    );
-    this.riskEvent = new MongoDelegate(
-      'riskEvent',
-      this.riskEventModel,
-      models,
-    );
   }
 
   async onModuleInit() {
@@ -230,12 +162,6 @@ export class MongoService implements OnModuleInit {
         twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
         geminiTextModel:
           existingSettings?.geminiTextModel || DEFAULT_GEMINI_TEXT_MODEL,
-        // Schema defaults only apply on insert, so installs that predate the
-        // Trade-Agent need these backfilled explicitly.
-        tradeMasterModel:
-          existingSettings?.tradeMasterModel || DEFAULT_TRADE_MASTER_MODEL,
-        tradeWorkerModel:
-          existingSettings?.tradeWorkerModel || DEFAULT_TRADE_WORKER_MODEL,
       }),
       create: encryptSystemSettingsData({
         id: 'default',
@@ -245,8 +171,6 @@ export class MongoService implements OnModuleInit {
         awsSenderEmail: 'oswin.alex@oswinalex.site',
         geminiApiKey: process.env.GEMINI_API_KEY || '',
         geminiTextModel: DEFAULT_GEMINI_TEXT_MODEL,
-        tradeMasterModel: DEFAULT_TRADE_MASTER_MODEL,
-        tradeWorkerModel: DEFAULT_TRADE_WORKER_MODEL,
       }),
     });
 

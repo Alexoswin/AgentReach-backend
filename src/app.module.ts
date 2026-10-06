@@ -17,7 +17,6 @@ import { BotModule } from './bot/bot.module';
 import { SignalsModule } from './signals/signals.module';
 import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
 import { WebPilotModule } from './webpilot/webpilot.module';
-import { TradeAgentModule } from './trade-agent/trade-agent.module';
 
 @Module({
   imports: [
@@ -44,7 +43,6 @@ import { TradeAgentModule } from './trade-agent/trade-agent.module';
     SignalsModule,
     CampaignSchedulerModule,
     WebPilotModule,
-    TradeAgentModule,
   ],
   controllers: [AppController],
   providers: [AppService],

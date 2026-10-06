@@ -55,12 +55,6 @@ export class SettingsController {
     return this.settingsService.testGemini(body || {});
   }
 
-  @Post('test-groww')
-  @ApiOperation({ summary: 'Test the Groww Trading API connection' })
-  async testGroww() {
-    return this.settingsService.testGroww();
-  }
-
   @Post('preview-gemini-voice')
   @ApiOperation({ summary: 'Generate a short Google voice preview' })
   async previewGeminiVoice(

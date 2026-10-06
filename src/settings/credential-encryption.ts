@@ -18,21 +18,6 @@ export const SYSTEM_CREDENTIAL_FIELDS = [
   'plivoAuthId',
   'plivoAuthToken',
   'plivoPhoneNumber',
-  'growwApiKey',
-  'growwApiSecret',
-  'growwTotpSecret',
-  'growwAccessToken',
-] as const;
-
-/**
- * Credentials that unlock money or a brokerage account. These are held to a
- * higher bar than the outreach provider keys: see `assertTradeCredentialKey`.
- */
-export const TRADE_CREDENTIAL_FIELDS = [
-  'growwApiKey',
-  'growwApiSecret',
-  'growwTotpSecret',
-  'growwAccessToken',
 ] as const;
 
 type SystemCredentialField = (typeof SYSTEM_CREDENTIAL_FIELDS)[number];
@@ -48,30 +33,6 @@ function getEncryptionKey() {
 
 function isSystemCredentialField(key: string): key is SystemCredentialField {
   return SYSTEM_CREDENTIAL_FIELDS.includes(key as SystemCredentialField);
-}
-
-/**
- * `getEncryptionKey()` deliberately keeps its historical fallback chain so that
- * credentials encrypted before this feature existed stay readable — changing
- * the derivation would silently orphan them.
- *
- * That fallback is not good enough for a demat account's API secret or TOTP
- * seed, so writing any Groww credential requires a real, explicitly configured
- * `CREDENTIAL_ENCRYPTION_KEY`. Callers invoke this before persisting.
- */
-export function assertTradeCredentialKey(data: Record<string, any>) {
-  const touchesTradeCredential = TRADE_CREDENTIAL_FIELDS.some(
-    (field) => typeof data[field] === 'string' && data[field] !== '',
-  );
-  if (!touchesTradeCredential) return;
-
-  const configured = (process.env.CREDENTIAL_ENCRYPTION_KEY || '').trim();
-  if (configured.length < 32) {
-    throw new Error(
-      'Refusing to store broker credentials: set CREDENTIAL_ENCRYPTION_KEY to a ' +
-        'random secret of at least 32 characters before saving Groww credentials.',
-    );
-  }
 }
 
 export function isEncryptedCredential(value: unknown): value is string {

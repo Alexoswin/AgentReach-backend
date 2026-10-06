@@ -44,22 +44,6 @@ import {
   TriggeredOutreach,
   TriggeredOutreachSchema,
 } from './schemas/triggered-outreach.schema';
-import {
-  TradeAgentRun,
-  TradeAgentRunSchema,
-} from './schemas/trade-agent-run.schema';
-import {
-  AgentMessage,
-  AgentMessageSchema,
-} from './schemas/agent-message.schema';
-import { TradeSignal, TradeSignalSchema } from './schemas/trade-signal.schema';
-import { OrderIntent, OrderIntentSchema } from './schemas/order-intent.schema';
-import { TradeOrder, TradeOrderSchema } from './schemas/trade-order.schema';
-import {
-  PositionSnapshot,
-  PositionSnapshotSchema,
-} from './schemas/position-snapshot.schema';
-import { RiskEvent, RiskEventSchema } from './schemas/risk-event.schema';
 
 @Global()
 @Module({
@@ -84,13 +68,6 @@ import { RiskEvent, RiskEventSchema } from './schemas/risk-event.schema';
       { name: SignalMatch.name, schema: SignalMatchSchema },
       { name: Playbook.name, schema: PlaybookSchema },
       { name: TriggeredOutreach.name, schema: TriggeredOutreachSchema },
-      { name: TradeAgentRun.name, schema: TradeAgentRunSchema },
-      { name: AgentMessage.name, schema: AgentMessageSchema },
-      { name: TradeSignal.name, schema: TradeSignalSchema },
-      { name: OrderIntent.name, schema: OrderIntentSchema },
-      { name: TradeOrder.name, schema: TradeOrderSchema },
-      { name: PositionSnapshot.name, schema: PositionSnapshotSchema },
-      { name: RiskEvent.name, schema: RiskEventSchema },
     ]),
   ],
   providers: [MongoService],
