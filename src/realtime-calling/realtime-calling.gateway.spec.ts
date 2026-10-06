@@ -6,6 +6,7 @@ import {
   transcodePcm24kToUlaw8k,
 } from './audio-codec';
 import { extractHdVoiceName } from '../config/voice-format';
+import { signCallToken } from '../auth/secrets';
 
 describe('RealtimeCallingGateway', () => {
   function createGateway() {
@@ -155,7 +156,10 @@ describe('RealtimeCallingGateway', () => {
           start: {
             streamSid: 'MZ123',
             callSid: 'CA123',
-            customParameters: { callId: 'call-1' },
+            customParameters: {
+              callId: 'call-1',
+              token: signCallToken('call-1'),
+            },
           },
         },
       );
@@ -426,9 +430,7 @@ describe('RealtimeCallingGateway', () => {
 
   it('extracts Gemini Live voice names from stored Google voice ids', () => {
     expect(extractHdVoiceName('google:en-IN-Chirp3-HD-Puck')).toBe('Puck');
-    expect(extractHdVoiceName('google:en-IN-Chirp3-HD-fenrir')).toBe(
-      'Fenrir',
-    );
+    expect(extractHdVoiceName('google:en-IN-Chirp3-HD-fenrir')).toBe('Fenrir');
   });
 
   it('resolves selected voice using the active selected language', () => {

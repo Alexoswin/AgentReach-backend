@@ -27,6 +27,8 @@ export type CallProvider = 'twilio' | 'plivo';
 
 export type ActiveCallSession = {
   callId: string;
+  /** Signed token from the stream URL query, checked when the start frame names the call. */
+  streamToken?: string;
   provider: CallProvider;
   streamSid?: string;
   providerCallSid?: string;

@@ -1,6 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createHmac, randomBytes } from 'crypto';
+import { getJwtSecret, safeEqual } from './secrets';
 
 export type TokenType = 'access' | 'refresh';
 
@@ -14,8 +14,6 @@ interface TokenPayload {
 
 @Injectable()
 export class TokenService {
-  constructor(private configService: ConfigService) {}
-
   signAccessToken(user: { id: string; email: string }) {
     return this.signToken(user, 'access', 15 * 60);
   }
@@ -31,13 +29,18 @@ export class TokenService {
     }
 
     const expectedSignature = this.sign(`${encodedHeader}.${encodedPayload}`);
-    if (signature !== expectedSignature) {
+    if (!safeEqual(signature, expectedSignature)) {
       throw new UnauthorizedException('Invalid token signature');
     }
 
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, 'base64url').toString('utf8'),
-    ) as TokenPayload;
+    let payload: TokenPayload;
+    try {
+      payload = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as TokenPayload;
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
     if (payload.type !== type) {
       throw new UnauthorizedException('Invalid token type');
     }
@@ -81,9 +84,6 @@ export class TokenService {
   }
 
   private getSecret() {
-    return (
-      this.configService.get<string>('JWT_SECRET') ||
-      'reachconvert-local-dev-secret'
-    );
+    return getJwtSecret();
   }
 }

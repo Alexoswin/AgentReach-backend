@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { IncomingMessage } from 'http';
 import { WebSocket } from 'ws';
 import { MongoService } from '../mongo.service';
+import { verifyCallToken } from '../auth/secrets';
 import { BotService } from '../bot/bot.service';
 import { GeminiLiveAuthService } from './gemini-live-auth.service';
 import {
@@ -90,12 +91,20 @@ export class RealtimeCallingGateway {
     req: IncomingMessage,
     provider: CallProvider,
   ) {
-    const initialCallId = this.getQueryParam(req.url || '', 'callId');
+    const queryCallId = this.getQueryParam(req.url || '', 'callId');
+    const queryToken = this.getQueryParam(req.url || '', 'token');
+    // Only trust the query callId for early connect when its token checks
+    // out; otherwise wait for the start frame and verify there.
+    const initialCallId =
+      queryCallId && verifyCallToken(queryCallId, queryToken)
+        ? queryCallId
+        : '';
     this.logger.log(
-      `${provider} stream socket connected url=${req.url || ''} initialCallId=${initialCallId || 'none'}`,
+      `${provider} stream socket connected path=${(req.url || '').split('?')[0]} initialCallId=${initialCallId || 'none'}`,
     );
     const state: ActiveCallSession = {
       callId: initialCallId || '',
+      streamToken: queryToken || '',
       provider,
       userTurns: 0,
       assistantTurns: 0,
@@ -203,6 +212,14 @@ export class RealtimeCallingGateway {
     if (!callId) {
       this.logger.warn('Twilio stream start missing callId.');
       ws.close(1008, 'Missing callId');
+      return;
+    }
+
+    const token =
+      frame.start?.customParameters?.token || state.streamToken || '';
+    if (!verifyCallToken(callId, token)) {
+      this.logger.warn(`Stream start rejected: invalid token callId=${callId}`);
+      ws.close(1008, 'Invalid token');
       return;
     }
 

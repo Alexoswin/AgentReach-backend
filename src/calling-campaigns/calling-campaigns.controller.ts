@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Header,
   HttpCode,
@@ -17,6 +18,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { Public } from '../auth/public.decorator';
+import { verifyCallToken } from '../auth/secrets';
 import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { UpdateCallingCampaignDto } from './dto/update-calling-campaign.dto';
@@ -64,7 +66,12 @@ export class CallingCampaignsController {
   @HttpCode(200)
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Twilio streaming answer webhook' })
-  twilioAnswer(@Param('callId') callId: string, @Body() body: any) {
+  twilioAnswer(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handleTwilioAnswer(callId, body);
   }
 
@@ -73,6 +80,7 @@ export class CallingCampaignsController {
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Twilio streaming answer webhook fallback' })
   twilioAnswerGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handleTwilioAnswer(callId, query);
   }
 
@@ -81,7 +89,12 @@ export class CallingCampaignsController {
   @HttpCode(200)
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Legacy Twilio respond compatibility no-op' })
-  twilioRespond(@Param('callId') callId: string, @Body() body: any) {
+  twilioRespond(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handleTwilioResponse(callId, body);
   }
 
@@ -90,6 +103,7 @@ export class CallingCampaignsController {
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Legacy Twilio respond compatibility no-op' })
   twilioRespondGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handleTwilioResponse(callId, query);
   }
 
@@ -97,7 +111,12 @@ export class CallingCampaignsController {
   @Public()
   @HttpCode(200)
   @ApiOperation({ summary: 'Twilio status callback' })
-  twilioStatus(@Param('callId') callId: string, @Body() body: any) {
+  twilioStatus(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handleTwilioStatus(callId, body);
   }
 
@@ -105,6 +124,7 @@ export class CallingCampaignsController {
   @Public()
   @ApiOperation({ summary: 'Twilio status callback fallback' })
   twilioStatusGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handleTwilioStatus(callId, query);
   }
 
@@ -112,7 +132,12 @@ export class CallingCampaignsController {
   @Public()
   @HttpCode(200)
   @ApiOperation({ summary: 'Twilio recording callback' })
-  twilioRecording(@Param('callId') callId: string, @Body() body: any) {
+  twilioRecording(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handleTwilioRecording(callId, body);
   }
 
@@ -120,6 +145,7 @@ export class CallingCampaignsController {
   @Public()
   @ApiOperation({ summary: 'Twilio recording callback fallback' })
   twilioRecordingGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handleTwilioRecording(callId, query);
   }
 
@@ -128,7 +154,12 @@ export class CallingCampaignsController {
   @HttpCode(200)
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Plivo streaming answer webhook' })
-  plivoAnswer(@Param('callId') callId: string, @Body() body: any) {
+  plivoAnswer(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handlePlivoAnswer(callId, body);
   }
 
@@ -137,6 +168,7 @@ export class CallingCampaignsController {
   @Header('Content-Type', 'text/xml')
   @ApiOperation({ summary: 'Plivo streaming answer webhook fallback' })
   plivoAnswerGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handlePlivoAnswer(callId, query);
   }
 
@@ -144,7 +176,12 @@ export class CallingCampaignsController {
   @Public()
   @HttpCode(200)
   @ApiOperation({ summary: 'Plivo ring/hangup status callback' })
-  plivoStatus(@Param('callId') callId: string, @Body() body: any) {
+  plivoStatus(
+    @Param('callId') callId: string,
+    @Query('token') token: string,
+    @Body() body: any,
+  ) {
+    assertCallToken(callId, token);
     return this.service.handlePlivoStatus(callId, body);
   }
 
@@ -152,6 +189,7 @@ export class CallingCampaignsController {
   @Public()
   @ApiOperation({ summary: 'Plivo ring/hangup status callback fallback' })
   plivoStatusGet(@Param('callId') callId: string, @Query() query: any) {
+    assertCallToken(callId, query?.token);
     return this.service.handlePlivoStatus(callId, query);
   }
 
@@ -228,5 +266,13 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Stop AI calling campaign' })
   stop(@Param('id') id: string) {
     return this.service.stopCampaign(id);
+  }
+}
+
+// Provider webhooks are public; the signed token on the callback URL proves
+// the request belongs to a call this backend placed.
+function assertCallToken(callId: string, token: unknown) {
+  if (!verifyCallToken(callId, token)) {
+    throw new ForbiddenException('Invalid call token');
   }
 }

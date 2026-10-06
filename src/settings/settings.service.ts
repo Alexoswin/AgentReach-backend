@@ -79,18 +79,6 @@ export class SettingsService {
     const senderEmail = settings.awsSenderEmail;
     const senderSource = `<${senderEmail}>`;
 
-    if (
-      settings.awsAccessKeyId.toLowerCase().includes('mock') ||
-      settings.awsAccessKeyId.toLowerCase().includes('test') ||
-      settings.awsSecretAccessKey.toLowerCase().includes('mock') ||
-      settings.awsSecretAccessKey.toLowerCase().includes('test')
-    ) {
-      return {
-        success: true,
-        message: 'AWS SES connection verified successfully (Mock Mode).',
-      };
-    }
-
     try {
       const client = new SESClient({
         region: settings.awsRegion || 'us-east-1',
@@ -139,25 +127,6 @@ export class SettingsService {
       throw new BadRequestException(
         'Twilio is not fully configured (Account SID, Auth Token, and Phone Number are required).',
       );
-    }
-
-    if (
-      settings.twilioAccountSid.toLowerCase().includes('mock') ||
-      settings.twilioAccountSid.toLowerCase().includes('test') ||
-      settings.twilioAuthToken.toLowerCase().includes('mock') ||
-      settings.twilioAuthToken.toLowerCase().includes('test')
-    ) {
-      await this.db.systemSettings.update({
-        where: { id: 'default' },
-        data: {
-          twilioStatus: 'CONNECTED',
-          twilioLastVerified: new Date(),
-        },
-      });
-      return {
-        success: true,
-        message: 'Twilio connection verified successfully (Mock Mode).',
-      };
     }
 
     try {
@@ -220,25 +189,6 @@ export class SettingsService {
       throw new BadRequestException(
         'Plivo is not fully configured (Auth ID, Auth Token, and Phone Number are required).',
       );
-    }
-
-    if (
-      settings.plivoAuthId.toLowerCase().includes('mock') ||
-      settings.plivoAuthId.toLowerCase().includes('test') ||
-      settings.plivoAuthToken.toLowerCase().includes('mock') ||
-      settings.plivoAuthToken.toLowerCase().includes('test')
-    ) {
-      await this.db.systemSettings.update({
-        where: { id: 'default' },
-        data: {
-          plivoStatus: 'CONNECTED',
-          plivoLastVerified: new Date(),
-        },
-      });
-      return {
-        success: true,
-        message: 'Plivo connection verified successfully (Mock Mode).',
-      };
     }
 
     try {

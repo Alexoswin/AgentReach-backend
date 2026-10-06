@@ -1,10 +1,11 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class ResetPasswordDto {
-  @ApiProperty({ example: 'oswinalex1@gmail.com' })
-  @IsEmail()
-  email: string;
+  @ApiProperty({ description: 'One-time token from the reset email link' })
+  @IsString()
+  @MinLength(16)
+  token: string;
 
   @ApiProperty({ minLength: 8 })
   @IsString()

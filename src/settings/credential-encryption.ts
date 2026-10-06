@@ -4,6 +4,7 @@ import {
   createHash,
   randomBytes,
 } from 'crypto';
+import { isProduction } from '../auth/secrets';
 
 export const MASKED_CREDENTIAL = '••••••••••••••••';
 export const ENCRYPTED_CREDENTIAL_PREFIX = 'enc:v1:';
@@ -23,11 +24,18 @@ export const SYSTEM_CREDENTIAL_FIELDS = [
 type SystemCredentialField = (typeof SYSTEM_CREDENTIAL_FIELDS)[number];
 
 function getEncryptionKey() {
+  // Same precedence as before so credentials already stored keep decrypting;
+  // the DATABASE_URL / built-in fallbacks are only allowed outside production.
   const secret =
     process.env.CREDENTIAL_ENCRYPTION_KEY ||
     process.env.JWT_SECRET ||
-    process.env.DATABASE_URL ||
-    'reachconvert-local-credential-key';
+    (isProduction() ? '' : process.env.DATABASE_URL) ||
+    (isProduction() ? '' : 'reachconvert-local-credential-key');
+  if (!secret) {
+    throw new Error(
+      'CREDENTIAL_ENCRYPTION_KEY (or JWT_SECRET) must be set in production.',
+    );
+  }
   return createHash('sha256').update(secret).digest();
 }
 

@@ -168,42 +168,30 @@ export class MongoService implements OnModuleInit {
         awsAccessKeyId: process.env.AWS_KEY_ID || '',
         awsSecretAccessKey: process.env.AWS_KEY || '',
         awsRegion: 'us-east-1',
-        awsSenderEmail: 'oswin.alex@oswinalex.site',
+        awsSenderEmail: process.env.AWS_SENDER_EMAIL || '',
         geminiApiKey: process.env.GEMINI_API_KEY || '',
         geminiTextModel: DEFAULT_GEMINI_TEXT_MODEL,
       }),
     });
 
-    const defaultEmail = 'oswinalex1@gmail.com';
-    const existingUser = await this.user.findUnique({
-      where: { email: defaultEmail },
-    });
-    if (!existingUser) {
-      await this.user.create({
-        data: {
-          email: defaultEmail,
-          passwordHash: await hashPassword('DBIT@2026'),
-          name: 'Oswin Alex',
-          initials: 'OA',
-          title: 'Founder',
-          company: 'ReachConvert',
-          theme: 'dark-midnight',
-          accentColor: 'indigo',
-        },
+    // Optional first-run account, so a fresh deployment (where sign-up is
+    // closed by default) has a way in. Never overwrites an existing user.
+    const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (adminEmail && adminPassword) {
+      const existingUser = await this.user.findUnique({
+        where: { email: adminEmail },
       });
-    } else {
-      await this.user.update({
-        where: { id: existingUser.id },
-        data: {
-          theme:
-            existingUser.theme === 'light'
-              ? 'light-cloud'
-              : existingUser.theme === 'dark'
-                ? 'dark-midnight'
-                : existingUser.theme || 'dark-midnight',
-          accentColor: existingUser.accentColor || 'indigo',
-        },
-      });
+      if (!existingUser) {
+        await this.user.create({
+          data: {
+            email: adminEmail,
+            passwordHash: await hashPassword(adminPassword),
+            name: adminEmail.split('@')[0],
+            initials: adminEmail.slice(0, 2).toUpperCase(),
+          },
+        });
+      }
     }
   }
 }

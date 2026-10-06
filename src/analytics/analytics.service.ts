@@ -22,7 +22,6 @@ export class AnalyticsService {
     const failedCount = emailHistory.filter(
       (h) => h.deliveryStatus === 'FAILED',
     ).length;
-    const totalEmailCount = emailHistory.length;
 
     const openCount = emailHistory.filter((h) => h.openStatus).length;
     const replyCount = emailHistory.filter((h) => h.replyStatus).length;
@@ -138,15 +137,11 @@ export class AnalyticsService {
       .sort((a, b) => b.sent - a.sent)
       .slice(0, 5);
 
-    // Seed mock data for chart visuals if database is completely empty
-    if (totalEmailCount === 0 && callsMade === 0) {
-      return this.getMockAnalytics();
-    }
-
     return {
       emailMetrics: {
         sent: sentCount,
-        delivered: sentCount, // For mock simplicity, delivered == sent
+        // SES delivery receipts are not tracked, so accepted-by-SES counts as delivered.
+        delivered: sentCount,
         failed: failedCount,
         openRate,
         replyRate,
@@ -159,67 +154,6 @@ export class AnalyticsService {
       campaignPerformance,
       templatePerformance: templatePerformance.filter((t) => t.sent > 0),
       segmentPerformance,
-    };
-  }
-
-  private getMockAnalytics() {
-    return {
-      emailMetrics: {
-        sent: 128,
-        delivered: 124,
-        failed: 4,
-        openRate: 64,
-        replyRate: 22,
-      },
-      callingMetrics: {
-        callsMade: 45,
-        successRate: 78,
-        averageDuration: 84, // seconds
-      },
-      campaignPerformance: [
-        {
-          name: 'SaaS Founder Outreach',
-          sent: 50,
-          failed: 2,
-          opens: 38,
-          replies: 12,
-        },
-        {
-          name: 'Hiring Manager Pitch',
-          sent: 40,
-          failed: 1,
-          opens: 28,
-          replies: 9,
-        },
-        {
-          name: 'Follow Up Sequence',
-          sent: 38,
-          failed: 1,
-          opens: 18,
-          replies: 7,
-        },
-      ],
-      templatePerformance: [
-        {
-          name: 'Standard Job Application',
-          sent: 50,
-          openRate: 76,
-          replyRate: 24,
-        },
-        { name: 'Recruiter Connect', sent: 40, openRate: 70, replyRate: 22 },
-        {
-          name: 'Hiring Manager Quick Pitch',
-          sent: 38,
-          openRate: 47,
-          replyRate: 18,
-        },
-      ],
-      segmentPerformance: [
-        { segment: 'Google', sent: 20, openRate: 85, replyRate: 40 },
-        { segment: 'Meta', sent: 15, openRate: 80, replyRate: 33 },
-        { segment: 'Stripe', sent: 12, openRate: 75, replyRate: 25 },
-        { segment: 'TechCorp Startup', sent: 30, openRate: 50, replyRate: 10 },
-      ],
     };
   }
 

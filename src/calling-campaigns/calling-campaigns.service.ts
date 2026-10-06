@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
+import { signCallToken } from '../auth/secrets';
 import { SettingsService } from '../settings/settings.service';
 import { BotService } from '../bot/bot.service';
 import { GeminiLiveAuthService } from '../realtime-calling/gemini-live-auth.service';
@@ -311,12 +312,14 @@ export class CallingCampaignsService {
     // latency before the first words.
     const streamUrl = `${this.getPublicWsBaseUrl()}/twilio/stream?callId=${encodeURIComponent(
       callId,
-    )}`;
+    )}&token=${encodeURIComponent(signCallToken(callId))}`;
     return this.twimlResponse(
       `<Connect><Stream url="${this.xml(streamUrl)}"><Parameter name="callId" value="${this.xml(
         callId,
       )}"/><Parameter name="campaignId" value="${this.xml(
         call.campaignId,
+      )}"/><Parameter name="token" value="${this.xml(
+        signCallToken(callId),
       )}"/></Stream></Connect>`,
     );
   }
@@ -351,7 +354,7 @@ export class CallingCampaignsService {
 
     const streamUrl = `${this.getPublicWsBaseUrl()}/plivo/stream?callId=${encodeURIComponent(
       callId,
-    )}`;
+    )}&token=${encodeURIComponent(signCallToken(callId))}`;
     return this.twimlResponse(
       `<Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${this.xml(
         streamUrl,
@@ -495,9 +498,10 @@ export class CallingCampaignsService {
   }
 
   async handleTwilioRecording(callId: string, body: any) {
-    const recordingUrl = body?.RecordingUrl
-      ? `${body.RecordingUrl}${String(body.RecordingUrl).endsWith('.mp3') ? '' : '.mp3'}`
-      : undefined;
+    const recordingUrl =
+      body?.RecordingUrl && isTwilioApiUrl(String(body.RecordingUrl))
+        ? `${body.RecordingUrl}${String(body.RecordingUrl).endsWith('.mp3') ? '' : '.mp3'}`
+        : undefined;
     const recordingDuration = Number(
       body?.RecordingDuration || body?.Duration || 0,
     );
@@ -524,6 +528,11 @@ export class CallingCampaignsService {
     if (!call) throw new NotFoundException('Call recording not found.');
     if (!call.recordingUrl) {
       throw new NotFoundException('Recording is not available yet.');
+    }
+    // The request below carries the Twilio account credentials, so it must
+    // only ever go to Twilio's own API host.
+    if (!isTwilioApiUrl(call.recordingUrl)) {
+      throw new BadRequestException('Recording URL is not a Twilio URL.');
     }
 
     const settings = await this.settingsService.getRawSettings();
@@ -882,20 +891,14 @@ export class CallingCampaignsService {
     const params = new URLSearchParams({
       To: to,
       From: settings.twilioPhoneNumber,
-      Url: `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/answer/${encodeURIComponent(
-        callId,
-      )}`,
+      Url: this.callbackUrl('twilio/answer', callId),
       Method: 'POST',
-      StatusCallback: `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/status/${encodeURIComponent(
-        callId,
-      )}`,
+      StatusCallback: this.callbackUrl('twilio/status', callId),
       StatusCallbackMethod: 'POST',
       StatusCallbackEvent: 'initiated ringing answered completed',
       Record: 'true',
       RecordingChannels: 'dual',
-      RecordingStatusCallback: `${this.getPublicApiBaseUrl()}/calling-campaigns/twilio/recording/${encodeURIComponent(
-        callId,
-      )}`,
+      RecordingStatusCallback: this.callbackUrl('twilio/recording', callId),
       RecordingStatusCallbackMethod: 'POST',
       RecordingStatusCallbackEvent: 'completed',
     });
@@ -943,17 +946,11 @@ export class CallingCampaignsService {
         body: JSON.stringify({
           to,
           from: settings.plivoPhoneNumber,
-          answer_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/answer/${encodeURIComponent(
-            callId,
-          )}`,
+          answer_url: this.callbackUrl('plivo/answer', callId),
           answer_method: 'POST',
-          hangup_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/status/${encodeURIComponent(
-            callId,
-          )}`,
+          hangup_url: this.callbackUrl('plivo/status', callId),
           hangup_method: 'POST',
-          ring_url: `${this.getPublicApiBaseUrl()}/calling-campaigns/plivo/status/${encodeURIComponent(
-            callId,
-          )}`,
+          ring_url: this.callbackUrl('plivo/status', callId),
           ring_method: 'POST',
         }),
         signal: AbortSignal.timeout(15000),
@@ -1088,6 +1085,14 @@ export class CallingCampaignsService {
     }
   }
 
+  // Provider callback URL for one call, signed so the public webhook
+  // endpoints can reject requests that did not come from a call we placed.
+  private callbackUrl(path: string, callId: string) {
+    return `${this.getPublicApiBaseUrl()}/calling-campaigns/${path}/${encodeURIComponent(
+      callId,
+    )}?token=${encodeURIComponent(signCallToken(callId))}`;
+  }
+
   private getPublicApiBaseUrl() {
     const raw =
       this.configService.get<string>('PUBLIC_API_URL') ||
@@ -1202,5 +1207,14 @@ export class CallingCampaignsService {
   private numberOr(value: unknown, fallback: number) {
     const next = Number(value);
     return Number.isFinite(next) ? next : fallback;
+  }
+}
+
+function isTwilioApiUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'api.twilio.com';
+  } catch {
+    return false;
   }
 }

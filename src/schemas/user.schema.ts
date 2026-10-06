@@ -15,16 +15,22 @@ export class User {
   @Prop({ type: String, default: null })
   refreshTokenHash?: string | null;
 
-  @Prop({ default: 'Oswin Alex' })
+  @Prop({ type: String, default: null, index: true })
+  passwordResetTokenHash?: string | null;
+
+  @Prop({ type: Date, default: null })
+  passwordResetExpiresAt?: Date | null;
+
+  @Prop({ default: '' })
   name: string;
 
-  @Prop({ default: 'OA' })
+  @Prop({ default: '' })
   initials: string;
 
-  @Prop({ default: 'Founder' })
+  @Prop({ default: '' })
   title: string;
 
-  @Prop({ default: 'ReachConvert' })
+  @Prop({ default: '' })
   company: string;
 
   @Prop({ default: '' })

@@ -7,6 +7,8 @@ import { IncomingMessage, Server } from 'http';
 import { Duplex } from 'stream';
 import { Server as WsServer } from 'ws';
 import { RealtimeCallingGateway } from './realtime-calling/realtime-calling.gateway';
+import { TokenService } from './auth/token.service';
+import { getJwtSecret, isProduction } from './auth/secrets';
 
 const REQUEST_BODY_LIMIT = '50mb';
 
@@ -17,31 +19,45 @@ const REQUEST_BODY_LIMIT = '50mb';
 // listen()). The Twilio/Plivo/webpilot raw WS upgrade dispatch below only
 // receives real traffic under the persistent-process path.
 async function createApp() {
+  // Refuse to boot in production without a signing secret rather than
+  // silently falling back to a value anyone can read in the source.
+  getJwtSecret();
+
   const app = await NestFactory.create(AppModule);
 
   app.use(json({ limit: REQUEST_BODY_LIMIT }));
   app.use(urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
-  // Enable CORS for frontend requests
-  app.enableCors();
+  // CORS_ORIGINS (comma-separated) restricts which sites may call the API;
+  // unset keeps the previous allow-all behaviour.
+  const corsOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+  app.enableCors(corsOrigins.length ? { origin: corsOrigins } : undefined);
 
   // Set global API prefix
   app.setGlobalPrefix('api');
 
-  // Set up Swagger API Documentation
-  const config = new DocumentBuilder()
-    .setTitle('ReachConvert API')
-    .setDescription('ReachConvert outreach platform API endpoints')
-    .setVersion('1.0')
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('docs', app, document);
+  // Swagger is off in production unless ENABLE_SWAGGER=true.
+  const swaggerEnabled =
+    !isProduction() || process.env.ENABLE_SWAGGER === 'true';
+  if (swaggerEnabled) {
+    const config = new DocumentBuilder()
+      .setTitle('ReachConvert API')
+      .setDescription('ReachConvert outreach platform API endpoints')
+      .setVersion('1.0')
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('docs', app, document);
+  }
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3001);
   const httpServer = app.getHttpServer() as Server;
   const wsServer = new WsServer({ noServer: true });
   const realtimeGateway = app.get(RealtimeCallingGateway);
+  const tokenService = app.get(TokenService);
 
   const { createProxyMiddleware } = await import('http-proxy-middleware');
   const webpilotProxy = createProxyMiddleware({
@@ -68,6 +84,19 @@ async function createApp() {
         return;
       }
       if (pathname.startsWith('/ws/webpilot')) {
+        // Browsers cannot set headers on a WebSocket, so the access token
+        // travels as ?token=.
+        const token = new URL(
+          req.url || '',
+          'http://localhost',
+        ).searchParams.get('token');
+        try {
+          tokenService.verifyToken(token || '', 'access');
+        } catch {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
         webpilotProxy.upgrade(req, socket, head);
         return;
       }
@@ -105,8 +134,10 @@ if (!process.env.VERCEL) {
     const boundPort = Number(process.env.PORT) || port;
     await app.listen(boundPort, '0.0.0.0');
     console.log(`Backend is running on: http://localhost:${boundPort}/api`);
-    console.log(
-      `Swagger documentation is available at: http://localhost:${boundPort}/docs`,
-    );
+    if (!isProduction() || process.env.ENABLE_SWAGGER === 'true') {
+      console.log(
+        `Swagger documentation is available at: http://localhost:${boundPort}/docs`,
+      );
+    }
   });
 }

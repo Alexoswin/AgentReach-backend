@@ -26,7 +26,6 @@ type TemplateGenerationJob = {
     subject: string;
     bodyHtml: string;
     bodyText: string;
-    generatedByMock?: boolean;
   };
   error?: string;
   createdAt: string;
@@ -235,37 +234,10 @@ export class TemplatesService {
     );
 
     const hasNoKey = !settings || !settings.geminiApiKey;
-    const isMockKey =
-      settings &&
-      (settings.geminiApiKey.toLowerCase().includes('mock') ||
-        settings.geminiApiKey.toLowerCase().includes('test') ||
-        settings.geminiApiKey === '');
-
     if (hasNoKey) {
       throw new BadRequestException(
         'Gemini API key is not configured. Please set your API key in AI settings.',
       );
-    }
-
-    if (isMockKey) {
-      // Return highly relevant mock data on the fly
-      const subject = `Opportunities in ${dto.audience} - Application/Intro`;
-      const referenceLine = referenceContext
-        ? `\n\nI also wanted to highlight a relevant detail from my reference material: ${referenceContext.slice(0, 260)}`
-        : '';
-      const escapedReferenceLine = this.escapeHtml(referenceLine);
-      const bodyText = `Hi {{firstName}},\n\nI am reaching out because my goal is to ${dto.goal}. I noticed you represent ${dto.audience} and wanted to introduce myself in a ${dto.tone} manner.\n\n${dto.instructions || ''}${referenceLine}\n\nLooking forward to speaking,\n{{lastName}}`;
-      const bodyHtml =
-        format === 'HTML'
-          ? `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2937;"><p>Hi {{firstName}},</p><p>I am reaching out because my goal is to <strong>${this.escapeHtml(dto.goal)}</strong>. I noticed you represent <strong>${this.escapeHtml(dto.audience)}</strong> and wanted to introduce myself in a <em>${this.escapeHtml(dto.tone)}</em> manner.</p><p>${this.escapeHtml(dto.instructions || '')}${escapedReferenceLine}</p><p>Looking forward to speaking,<br/>{{lastName}}</p></div>`
-          : '';
-
-      return {
-        subject,
-        bodyHtml,
-        bodyText,
-        generatedByMock: true,
-      };
     }
 
     try {

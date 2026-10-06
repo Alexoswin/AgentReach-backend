@@ -467,19 +467,19 @@ export class EmailCampaignsService {
       }
 
       const template = campaign.template;
-      const isMockSes =
-        !settings ||
-        !settings.awsAccessKeyId ||
-        settings.awsAccessKeyId.toLowerCase().includes('mock') ||
-        settings.awsAccessKeyId.toLowerCase().includes('test');
+      if (!settings?.awsAccessKeyId || !settings?.awsSecretAccessKey) {
+        throw new Error(
+          'AWS SES is not configured. Add your SES credentials in Settings before launching campaigns.',
+        );
+      }
 
-      const senderEmail = settings?.awsSenderEmail?.trim();
-      if (!isMockSes && !senderEmail) {
+      const senderEmail = settings.awsSenderEmail?.trim();
+      if (!senderEmail) {
         throw new Error(
           'No sender email configured. Add a Sender Email Address in Settings before launching real campaigns.',
         );
       }
-      const senderSource = senderEmail ? `<${senderEmail}>` : '';
+      const senderSource = `<${senderEmail}>`;
       const ccAddresses: string[] = (campaign.cc || [])
         .filter(Boolean)
         .map((entry: string) => entry.trim().toLowerCase());
@@ -487,16 +487,13 @@ export class EmailCampaignsService {
         .filter(Boolean)
         .map((entry: string) => entry.trim().toLowerCase());
 
-      let client: SESClient | null = null;
-      if (!isMockSes && settings) {
-        client = new SESClient({
-          region: settings.awsRegion || 'us-east-1',
-          credentials: {
-            accessKeyId: settings.awsAccessKeyId,
-            secretAccessKey: settings.awsSecretAccessKey,
-          },
-        });
-      }
+      const client = new SESClient({
+        region: settings.awsRegion || 'us-east-1',
+        credentials: {
+          accessKeyId: settings.awsAccessKeyId,
+          secretAccessKey: settings.awsSecretAccessKey,
+        },
+      });
 
       for (const campaignContact of campaign.contacts) {
         const contact = campaignContact.contact;
@@ -520,7 +517,9 @@ export class EmailCampaignsService {
         const contactBcc = bccAddresses.filter((entry) => entry !== recipient);
 
         const subject = this.interpolate(template.subject, contact);
-        const bodyHtml = this.interpolate(template.bodyHtml, contact);
+        const bodyHtml = this.interpolate(template.bodyHtml, contact, {
+          html: true,
+        });
         const bodyText = this.interpolate(template.bodyText, contact);
         const attachments = this.normalizeTemplateAttachments(
           template.attachments,
@@ -544,83 +543,58 @@ export class EmailCampaignsService {
             throw new Error('Template has no email body content');
           }
 
-          if (isMockSes || !client || !settings) {
-            // Simulated delay and random response for Mock mode
-            await new Promise((r) => setTimeout(r, 1000));
-            // Simulate 90% success, 10% failure
-            const isSuccess = Math.random() > 0.1;
-            if (isSuccess) {
-              await this.db.emailCampaignContact.update({
-                where: { id: campaignContact.id },
-                data: {
-                  deliveryStatus: 'SENT',
-                  sentTime: new Date(),
-                  subject,
-                  bodyHtml,
-                  bodyText,
+          await this.sendWithRetry(async () => {
+            if (attachments.length > 0) {
+              const command = new SendRawEmailCommand({
+                Destinations: [contact.email, ...contactCc, ...contactBcc],
+                RawMessage: {
+                  Data: Buffer.from(
+                    this.buildRawEmail({
+                      to: contact.email,
+                      cc: contactCc,
+                      subject,
+                      bodyHtml,
+                      bodyText,
+                      attachments,
+                      from: senderSource,
+                    }),
+                  ),
                 },
               });
+
+              await client.send(command);
             } else {
-              throw new Error('Simulated AWS SES delivery throttling error');
+              const command = new SendEmailCommand({
+                Source: senderSource,
+                Destination: {
+                  ToAddresses: [contact.email],
+                  CcAddresses: contactCc.length ? contactCc : undefined,
+                  BccAddresses: contactBcc.length ? contactBcc : undefined,
+                },
+                Message: {
+                  Subject: { Data: subject },
+                  Body: messageBody,
+                },
+              });
+
+              await client.send(command);
             }
-          } else {
-            await this.sendWithRetry(async () => {
-              if (attachments.length > 0) {
-                const command = new SendRawEmailCommand({
-                  Destinations: [
-                    contact.email,
-                    ...contactCc,
-                    ...contactBcc,
-                  ],
-                  RawMessage: {
-                    Data: Buffer.from(
-                      this.buildRawEmail({
-                        to: contact.email,
-                        cc: contactCc,
-                        subject,
-                        bodyHtml,
-                        bodyText,
-                        attachments,
-                        from: senderSource,
-                      }),
-                    ),
-                  },
-                });
+          });
 
-                await client!.send(command);
-              } else {
-                const command = new SendEmailCommand({
-                  Source: senderSource,
-                  Destination: {
-                    ToAddresses: [contact.email],
-                    CcAddresses: contactCc.length ? contactCc : undefined,
-                    BccAddresses: contactBcc.length ? contactBcc : undefined,
-                  },
-                  Message: {
-                    Subject: { Data: subject },
-                    Body: messageBody,
-                  },
-                });
+          // Small pacing delay between real sends to stay under SES's
+          // per-second sending rate and avoid throttling errors.
+          await new Promise((r) => setTimeout(r, 250));
 
-                await client!.send(command);
-              }
-            });
-
-            // Small pacing delay between real sends to stay under SES's
-            // per-second sending rate and avoid throttling errors.
-            await new Promise((r) => setTimeout(r, 250));
-
-            await this.db.emailCampaignContact.update({
-              where: { id: campaignContact.id },
-              data: {
-                deliveryStatus: 'SENT',
-                sentTime: new Date(),
-                subject,
-                bodyHtml,
-                bodyText,
-              },
-            });
-          }
+          await this.db.emailCampaignContact.update({
+            where: { id: campaignContact.id },
+            data: {
+              deliveryStatus: 'SENT',
+              sentTime: new Date(),
+              subject,
+              bodyHtml,
+              bodyText,
+            },
+          });
         } catch (err: any) {
           await this.db.emailCampaignContact.update({
             where: { id: campaignContact.id },
@@ -665,31 +639,43 @@ export class EmailCampaignsService {
     }
   }
 
-  private interpolate(templateString: string, contact: any): string {
+  // Contact data comes from user imports, so in HTML bodies it is escaped
+  // rather than trusted as markup. Unknown placeholders are dropped.
+  private interpolate(
+    templateString: string,
+    contact: any,
+    { html = false }: { html?: boolean } = {},
+  ): string {
     if (!templateString) return '';
-    let result = templateString;
 
-    result = result.replace(/\{\{firstName\}\}/g, contact.firstName || '');
-    result = result.replace(/\{\{lastName\}\}/g, contact.lastName || '');
-    result = result.replace(/\{\{company\}\}/g, contact.company || '');
-    result = result.replace(/\{\{jobTitle\}\}/g, contact.jobTitle || '');
-    result = result.replace(/\{\{email\}\}/g, contact.email || '');
-
+    const values: Record<string, unknown> = {};
     if (contact.customFields) {
       try {
-        const customs = JSON.parse(contact.customFields);
-        for (const [key, value] of Object.entries(customs)) {
-          const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
-          result = result.replace(regex, (value as string) || '');
-        }
+        Object.assign(values, JSON.parse(contact.customFields));
       } catch {
         // Ignore JSON errors
       }
     }
+    Object.assign(values, {
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      company: contact.company,
+      jobTitle: contact.jobTitle,
+      email: contact.email,
+    });
 
-    // Replace any leftover placeholders
-    result = result.replace(/\{\{.*?\}\}/g, '');
-    return result;
+    return templateString.replace(/\{\{(.*?)\}\}/g, (_, key: string) => {
+      const value = Object.prototype.hasOwnProperty.call(values, key)
+        ? values[key]
+        : '';
+      const text =
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+          ? String(value)
+          : '';
+      return html ? escapeHtml(text) : text;
+    });
   }
 
   private normalizeTemplateAttachments(attachments: any[] = [], contact: any) {
@@ -723,8 +709,8 @@ export class EmailCampaignsService {
     const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const lines: string[] = [
       `From: ${from}`,
-      `To: ${to}`,
-      ...(cc && cc.length > 0 ? [`Cc: ${cc.join(', ')}`] : []),
+      `To: ${stripLineBreaks(to)}`,
+      ...(cc && cc.length > 0 ? [`Cc: ${stripLineBreaks(cc.join(', '))}`] : []),
       `Subject: ${this.encodeMimeHeader(subject)}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
@@ -791,4 +777,18 @@ export class EmailCampaignsService {
   private escapeMimeParameter(value: string) {
     return (value || 'attachment').replace(/[\r\n"]/g, '_').slice(0, 180);
   }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Keeps a value from starting a new header line in the raw MIME message.
+function stripLineBreaks(value: string) {
+  return value.replace(/[\r\n]+/g, ' ');
 }
