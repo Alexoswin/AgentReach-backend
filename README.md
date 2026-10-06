@@ -88,7 +88,7 @@ Client (Next.js frontend)
 | **Contacts**         | `src/contacts`                   | Contact + contact-directory CRUD, CSV/XLSX/PDF file parsing, and bulk import. |
 | **Templates**        | `src/templates`                  | Email template CRUD, predefined templates, AI generation (sync + async job), and reference-PDF ingestion for style matching. |
 | **EmailCampaigns**   | `src/email-campaigns`            | Campaign CRUD, add/remove contacts, and launch (sends via SES, tracks per-contact status). |
-| **Bot**              | `src/bot`                        | "AI calling bot" personas with a RAG knowledge base. PDF is chunked + embedded (Gemini) and stored for semantic search + chat. Serves the Google voice list. |
+| **Bot**              | `src/bot`                        | "AI calling bot" personas with a RAG knowledge base. PDF is chunked + embedded (Gemini) and stored for semantic search. Serves the Google voice list. |
 | **CallingCampaigns** | `src/calling-campaigns`          | Calling campaign CRUD, AI generation, launch/relaunch/stop, and Twilio webhook callbacks (answer/respond/status/recording) + recording audio proxy. |
 | **RealtimeCalling**  | `src/realtime-calling`           | The live-call engine. Upgrades `/twilio/stream` WebSockets, transcodes audio (`audio-codec.ts`), and pipes it to a Gemini Live session with tools, prompts, language profiles, and resumable sessions. |
 | **Signals**          | `src/signals`                    | Signal-based outreach. Collectors ingest events → classifier (LLM) categorizes → matching engine scores against watches/playbooks → trigger service can auto-launch outreach. Includes a review queue, playbooks, and company watches. Cron-scheduled polling. |
@@ -199,8 +199,7 @@ CRUD on `/`, `/:id`; `POST /:id/contacts`, `DELETE /:id/contacts/:contactId`;
 `POST /:id/launch`; `POST /:id/schedule`; `POST /:id/unschedule`.
 
 ### AI Calling Bots — `/api/ai-calling-bots`
-CRUD on `/`, `/:id`; `GET /voices/google`; RAG endpoints `POST /:id/search` and
-`POST /:id/chat`. Bot creation accepts a `knowledgeBasePdf` upload that is chunked
+CRUD on `/`, `/:id`; `GET /voices/google`; RAG endpoint `POST /:id/search`. Bot creation accepts a `knowledgeBasePdf` upload that is chunked
 and embedded.
 
 ### Calling Campaigns — `/api/calling-campaigns`

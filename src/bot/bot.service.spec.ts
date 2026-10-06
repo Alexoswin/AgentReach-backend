@@ -81,23 +81,4 @@ describe('BotService', () => {
     expect(results).toHaveLength(1);
     expect(results[0].metadata.sourceName).toBe('legacy');
   });
-
-  it('keeps strict chat grounded when no knowledge is available', async () => {
-    const db = createBotDb();
-    db.aiCallingBot.findUnique.mockResolvedValue({
-      id: 'bot-1',
-      name: 'Support Bot',
-      ragEnabled: true,
-      contextOutsideKnowledgeBase: false,
-    });
-    db.aiCallingBotEmbedding.findMany.mockResolvedValue([]);
-    const service = new BotService(db as any);
-
-    const response = await service.chat('bot-1', {
-      message: 'What is the refund policy?',
-    });
-
-    expect(response.reply).toContain("don't have enough information");
-    expect(response.sources).toEqual([]);
-  });
 });

@@ -17,7 +17,6 @@ import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BotService } from './bot.service';
 import { CreateBotDto } from './dto/create-bot.dto';
 import { SearchBotDto } from './dto/search-bot.dto';
-import { ChatBotDto } from './dto/chat-bot.dto';
 
 const MAX_TRAINING_PDF_BYTES = 8 * 1024 * 1024;
 
@@ -105,12 +104,5 @@ export class BotController {
   @ApiOperation({ summary: 'Search bot knowledge base' })
   search(@Param('id') id: string, @Body() dto: SearchBotDto) {
     return this.botService.search(id, dto);
-  }
-
-  @Post(':id/chat')
-  @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
-  @ApiOperation({ summary: 'Chat over bot knowledge base' })
-  chat(@Param('id') id: string, @Body() dto: ChatBotDto) {
-    return this.botService.chat(id, dto);
   }
 }

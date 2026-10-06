@@ -3,7 +3,6 @@ import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { CreateBotDto } from './dto/create-bot.dto';
 import { SearchBotDto } from './dto/search-bot.dto';
-import { ChatBotDto } from './dto/chat-bot.dto';
 import {
   DEFAULT_CHUNK_OVERLAP,
   DEFAULT_CHUNK_SIZE,
@@ -130,33 +129,6 @@ export class BotService {
     if (!query) throw new BadRequestException('Search query is required.');
     await this.findOne(id);
     return this.searchBotKnowledge(id, query, this.resolveTopK(dto.topK));
-  }
-
-  async chat(id: string, dto: ChatBotDto) {
-    const message = dto.message?.trim();
-    if (!message) throw new BadRequestException('Chat message is required.');
-
-    const bot = await this.findOne(id);
-    const results = bot.ragEnabled === false
-      ? []
-      : await this.searchBotKnowledge(id, message, this.resolveTopK(dto.topK));
-    const strictKnowledgeBound = bot.contextOutsideKnowledgeBase !== true;
-
-    if (strictKnowledgeBound && results.length === 0) {
-      return {
-        reply:
-          "I don't have enough information in the knowledge base to answer that yet. Please add more knowledge-base content or upload a PDF.",
-        sources: [],
-      };
-    }
-
-    const identity = `${bot.name || 'Agent'}${bot.role ? `, ${bot.role}` : ''}`;
-    const best = results.slice(0, 3).map((item) => summarizeSnippet(item.content));
-    const reply = best.length
-      ? `${identity}: ${best.join('\n\n')}`
-      : `${identity}: I can help with ${bot.goal || bot.botGoal || 'the configured calling objective'}.`;
-
-    return { reply, sources: results };
   }
 
   async searchBotKnowledge(
