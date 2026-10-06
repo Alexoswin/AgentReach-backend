@@ -19,6 +19,7 @@ import type { Response } from 'express';
 import { Public } from '../auth/public.decorator';
 import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
+import { UpdateCallingCampaignDto } from './dto/update-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
 
 @ApiTags('calling-campaigns')
@@ -188,7 +189,7 @@ export class CallingCampaignsController {
   @ApiOperation({ summary: 'Update an AI calling campaign' })
   update(
     @Param('id') id: string,
-    @Body() dto: Partial<CreateCallingCampaignDto> & { status?: string },
+    @Body() dto: UpdateCallingCampaignDto,
   ) {
     return this.service.update(id, dto);
   }

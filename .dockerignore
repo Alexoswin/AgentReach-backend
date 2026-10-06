@@ -1,0 +1,21 @@
+# Never ship secrets into the image (the Docker Hub repo is public)
+.env
+.env.*
+!.env.example
+
+node_modules
+dist
+build
+coverage
+*.tsbuildinfo
+*.log
+
+.git
+.github
+.vercel
+.vscode
+.idea
+.claude
+test
+Dockerfile
+.dockerignore
