@@ -7,7 +7,8 @@ import { CallingCampaignsService } from '../calling-campaigns/calling-campaigns.
  * Polls once a minute for campaigns whose scheduled launch time has arrived and
  * launches them. Campaigns are marked SCHEDULED via the `/:id/schedule`
  * endpoints; launching flips their status to RUNNING so they are not picked up
- * again. Failures are logged and the campaign is marked FAILED so a stuck
+ * again. Each launch uses the credentials of the user who scheduled it.
+ * Failures are logged and the campaign is marked FAILED so a stuck
  * SCHEDULED row is not retried forever.
  */
 @Injectable()
@@ -39,7 +40,10 @@ export class CampaignSchedulerService {
     for (const campaign of due) {
       try {
         this.logger.log(`Launching scheduled email campaign ${campaign.id}`);
-        await this.emailCampaigns.launchCampaign(campaign.id);
+        await this.emailCampaigns.launchCampaign(
+          campaign.id,
+          campaign.launchedBy,
+        );
       } catch (err) {
         this.logger.error(
           `Scheduled email campaign ${campaign.id} failed to launch: ${(err as Error).message}`,
@@ -65,7 +69,10 @@ export class CampaignSchedulerService {
     for (const campaign of due) {
       try {
         this.logger.log(`Launching scheduled calling campaign ${campaign.id}`);
-        await this.callingCampaigns.launchCampaign(campaign.id);
+        await this.callingCampaigns.launchCampaign(
+          campaign.id,
+          campaign.launchedBy,
+        );
       } catch (err) {
         this.logger.error(
           `Scheduled calling campaign ${campaign.id} failed to launch: ${(err as Error).message}`,

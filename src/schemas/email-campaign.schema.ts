@@ -18,6 +18,12 @@ export class EmailCampaign {
   @Prop()
   scheduledAt?: Date;
 
+  // User whose SES credentials send this campaign: whoever last launched or
+  // scheduled it. Background and scheduled sends run without a request, so
+  // they read the credentials through this id.
+  @Prop({ type: String, default: null })
+  launchedBy?: string | null;
+
   // Reference to Template._id
   @Prop({ type: String, ref: 'Template', default: null })
   templateId?: string | null;

@@ -11,33 +11,33 @@ const API_KEY_CACHE_TTL_MS = 30_000;
 
 @Injectable()
 export class GeminiLiveAuthService {
-  private cachedApiKey: string | null = null;
-  private cachedAt = 0;
+  // Keyed by the user whose Settings hold the key: each campaign's calls run
+  // on the Gemini key of the user who launched it.
+  private readonly cache = new Map<string, { apiKey: string; at: number }>();
 
   constructor(private readonly settingsService: SettingsService) {}
 
-  async getApiKey(candidate?: string) {
-    const provided = candidate?.trim() || '';
-    if (provided && provided !== MASKED_CREDENTIAL) return provided;
+  async getApiKey(userId: string | null | undefined) {
+    if (!userId) return '';
 
     const now = Date.now();
-    if (this.cachedApiKey !== null && now - this.cachedAt < API_KEY_CACHE_TTL_MS) {
-      return this.cachedApiKey;
+    const cached = this.cache.get(userId);
+    if (cached && now - cached.at < API_KEY_CACHE_TTL_MS) {
+      return cached.apiKey;
     }
 
-    const settings = await this.settingsService.getRawSettings();
-    const apiKey =
-      settings?.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
-    this.cachedApiKey = apiKey;
-    this.cachedAt = now;
+    const settings = await this.settingsService.getRawSettings(userId);
+    const stored = settings?.geminiApiKey?.trim() || '';
+    const apiKey = stored === MASKED_CREDENTIAL ? '' : stored;
+    this.cache.set(userId, { apiKey, at: now });
     return apiKey;
   }
 
-  async requireApiKey() {
-    const apiKey = await this.getApiKey();
+  async requireApiKey(userId: string | null | undefined) {
+    const apiKey = await this.getApiKey(userId);
     if (!apiKey) {
       throw new BadRequestException(
-        'Gemini API key is required for Gemini Live calling.',
+        'Add your Gemini API key in Settings before launching AI calls.',
       );
     }
     return apiKey;

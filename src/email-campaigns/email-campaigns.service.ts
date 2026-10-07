@@ -8,14 +8,17 @@ import {
   SendEmailCommand,
   SendRawEmailCommand,
 } from '@aws-sdk/client-ses';
-import { decryptSystemSettings } from '../settings/credential-encryption';
+import { SettingsService } from '../settings/settings.service';
 
 /** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
 const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
 
 @Injectable()
 export class EmailCampaignsService {
-  constructor(private db: MongoService) {}
+  constructor(
+    private db: MongoService,
+    private settingsService: SettingsService,
+  ) {}
 
   async findAll() {
     const campaigns = await this.db.emailCampaign.findMany({
@@ -129,7 +132,7 @@ export class EmailCampaignsService {
    * opt-in for "send the whole thing again" — the caller is responsible for
    * confirming that duplicate delivery is intended.
    */
-  async relaunchCampaign(id: string) {
+  async relaunchCampaign(id: string, userId: string | null | undefined) {
     const campaign = await this.db.emailCampaign.findUnique({
       where: { id },
       include: { template: true, contacts: true },
@@ -167,7 +170,7 @@ export class EmailCampaignsService {
 
     await this.db.emailCampaign.update({
       where: { id },
-      data: { status: 'RUNNING', scheduledAt: null },
+      data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
     });
 
     this.runBackgroundSending(campaign.id);
@@ -298,7 +301,7 @@ export class EmailCampaignsService {
     });
   }
 
-  async scheduleCampaign(id: string, scheduledAt: string) {
+  async scheduleCampaign(id: string, scheduledAt: string, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
       where: { id },
       include: { template: true, contacts: true },
@@ -329,7 +332,7 @@ export class EmailCampaignsService {
 
     await this.db.emailCampaign.update({
       where: { id },
-      data: { status: 'SCHEDULED', scheduledAt: when },
+      data: { status: 'SCHEDULED', scheduledAt: when, launchedBy: userId },
     });
 
     return {
@@ -360,7 +363,9 @@ export class EmailCampaignsService {
     });
   }
 
-  async launchCampaign(id: string) {
+  // userId is the account whose SES credentials send the campaign. It is
+  // stored as launchedBy because sending continues in the background.
+  async launchCampaign(id: string, userId: string | null | undefined) {
     const campaign = await this.db.emailCampaign.findUnique({
       where: { id },
       include: {
@@ -423,7 +428,7 @@ export class EmailCampaignsService {
     // Set campaign status to RUNNING and clear any stale schedule
     await this.db.emailCampaign.update({
       where: { id },
-      data: { status: 'RUNNING', scheduledAt: null },
+      data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
     });
 
     // Execute sending in the background
@@ -439,12 +444,6 @@ export class EmailCampaignsService {
 
   private async runBackgroundSending(campaignId: string) {
     try {
-      const settings = decryptSystemSettings(
-        await this.db.systemSettings.findUnique({
-          where: { id: 'default' },
-        }),
-      );
-
       const campaign = await this.db.emailCampaign.findUnique({
         where: { id: campaignId },
         include: {
@@ -467,6 +466,9 @@ export class EmailCampaignsService {
       }
 
       const template = campaign.template;
+      const settings = await this.settingsService.getRawSettings(
+        campaign.launchedBy,
+      );
       if (!settings?.awsAccessKeyId || !settings?.awsSecretAccessKey) {
         throw new Error(
           'AWS SES is not configured. Add your SES credentials in Settings before launching campaigns.',

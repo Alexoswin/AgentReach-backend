@@ -13,6 +13,8 @@ import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
 type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
 export type GeminiLiveConfig = {
+  // User whose Gemini key runs this session (the campaign's launcher).
+  userId: string | null | undefined;
   systemInstruction: string;
   model: string;
   voiceName: string;
@@ -54,7 +56,7 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     this.setupCompleteReceived = false;
     const [{ GoogleGenAI, Modality }, apiKey] = await Promise.all([
       import('@google/genai'),
-      this.authService.requireApiKey(),
+      this.authService.requireApiKey(this.config.userId),
     ]);
 
     const ai = new GoogleGenAI({ apiKey });

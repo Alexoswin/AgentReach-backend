@@ -11,25 +11,35 @@ import {
   maskSystemSettings,
 } from './credential-encryption';
 
+const MAX_VOICE_PREVIEW_TEXT_LENGTH = 300;
+
+/**
+ * Provider credentials (SES, Gemini, Twilio, Plivo) belong to one user. Each
+ * user's settings document is keyed by their user id, and every method here
+ * takes the id of the user it acts for, so no account can read, test or
+ * spend another account's credentials. The old shared settings document is
+ * never read.
+ */
 @Injectable()
 export class SettingsService {
   constructor(private db: MongoService) {}
 
-  async getRawSettings() {
+  async getRawSettings(userId: string | null | undefined) {
+    if (!userId) return null;
     const settings = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
+      where: { id: userId },
     });
     return decryptSystemSettings(settings);
   }
 
-  async getSettings() {
-    const settings = await this.getRawSettings();
+  async getSettings(userId: string) {
+    const settings = await this.getRawSettings(userId);
     return maskSystemSettings(settings);
   }
 
-  async updateSettings(dto: UpdateSettingsDto) {
+  async updateSettings(userId: string, dto: UpdateSettingsDto) {
     const current = await this.db.systemSettings.findUnique({
-      where: { id: 'default' },
+      where: { id: userId },
     });
     const data: any = {};
 
@@ -52,10 +62,10 @@ export class SettingsService {
 
     const encryptedData = encryptSystemSettingsData(data);
     const settings = await this.db.systemSettings.upsert({
-      where: { id: 'default' },
+      where: { id: userId },
       update: encryptedData,
       create: {
-        id: 'default',
+        id: userId,
         ...encryptedData,
       },
     });
@@ -63,8 +73,8 @@ export class SettingsService {
     return maskSystemSettings(decryptSystemSettings(settings));
   }
 
-  async testAwsSes() {
-    const settings = await this.getRawSettings();
+  async testAwsSes(userId: string) {
+    const settings = await this.getRawSettings(userId);
     if (!settings || !settings.awsAccessKeyId || !settings.awsSecretAccessKey) {
       throw new BadRequestException(
         'AWS SES is not fully configured (Key and Secret are required).',
@@ -116,8 +126,8 @@ export class SettingsService {
     }
   }
 
-  async testTwilio() {
-    const settings = await this.getRawSettings();
+  async testTwilio(userId: string) {
+    const settings = await this.getRawSettings(userId);
     if (
       !settings ||
       !settings.twilioAccountSid ||
@@ -145,7 +155,7 @@ export class SettingsService {
       if (!response.ok) {
         const errText = await response.text();
         await this.db.systemSettings.update({
-          where: { id: 'default' },
+          where: { id: userId },
           data: { twilioStatus: 'FAILED' },
         });
         return {
@@ -155,7 +165,7 @@ export class SettingsService {
       }
 
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: {
           twilioStatus: 'CONNECTED',
           twilioLastVerified: new Date(),
@@ -168,7 +178,7 @@ export class SettingsService {
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: { twilioStatus: 'FAILED' },
       });
       return {
@@ -178,8 +188,8 @@ export class SettingsService {
     }
   }
 
-  async testPlivo() {
-    const settings = await this.getRawSettings();
+  async testPlivo(userId: string) {
+    const settings = await this.getRawSettings(userId);
     if (
       !settings ||
       !settings.plivoAuthId ||
@@ -208,7 +218,7 @@ export class SettingsService {
       if (!response.ok) {
         const errText = await response.text();
         await this.db.systemSettings.update({
-          where: { id: 'default' },
+          where: { id: userId },
           data: { plivoStatus: 'FAILED' },
         });
         return {
@@ -218,7 +228,7 @@ export class SettingsService {
       }
 
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: {
           plivoStatus: 'CONNECTED',
           plivoLastVerified: new Date(),
@@ -231,7 +241,7 @@ export class SettingsService {
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: { plivoStatus: 'FAILED' },
       });
       return {
@@ -241,8 +251,8 @@ export class SettingsService {
     }
   }
 
-  async testGemini(payload: { geminiApiKey?: string } = {}) {
-    const apiKey = await this.getGeminiApiKey(payload.geminiApiKey);
+  async testGemini(userId: string, payload: { geminiApiKey?: string } = {}) {
+    const apiKey = await this.getGeminiApiKey(userId, payload.geminiApiKey);
     if (!apiKey) {
       throw new BadRequestException('Gemini API key is missing.');
     }
@@ -251,7 +261,7 @@ export class SettingsService {
       await this.testGeminiApiKey(apiKey);
 
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: {
           geminiStatus: 'CONNECTED',
           geminiLastVerified: new Date(),
@@ -264,7 +274,7 @@ export class SettingsService {
       };
     } catch (error: any) {
       await this.db.systemSettings.update({
-        where: { id: 'default' },
+        where: { id: userId },
         data: { geminiStatus: 'FAILED' },
       });
       return {
@@ -274,12 +284,20 @@ export class SettingsService {
     }
   }
 
-  async previewGeminiVoice(dto: {
-    voice: string;
-    language?: string;
-    text?: string;
-  }) {
-    const apiKey = await this.getGeminiApiKey();
+  async previewGeminiVoice(
+    userId: string,
+    dto: {
+      voice: string;
+      language?: string;
+      text?: string;
+    },
+  ) {
+    if (String(dto?.text || '').length > MAX_VOICE_PREVIEW_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Preview text must be ${MAX_VOICE_PREVIEW_TEXT_LENGTH} characters or fewer.`,
+      );
+    }
+    const apiKey = await this.getGeminiApiKey(userId);
     if (!apiKey) {
       throw new BadRequestException(
         'Gemini API key is not configured. Set it in Settings to enable voice preview.',
@@ -387,13 +405,11 @@ export class SettingsService {
     }
   }
 
-  private async getGeminiApiKey(candidate?: string) {
+  private async getGeminiApiKey(userId: string, candidate?: string) {
     const provided = candidate?.trim() || '';
     if (provided && provided !== MASKED_CREDENTIAL) return provided;
 
-    const settings = await this.getRawSettings();
-    return (
-      settings?.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || ''
-    );
+    const settings = await this.getRawSettings(userId);
+    return settings?.geminiApiKey?.trim() || '';
   }
 }

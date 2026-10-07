@@ -5,7 +5,7 @@ import { CreateTemplateDto } from './dto/create-template.dto';
 import { GenerateTemplateDto } from './dto/generate-template.dto';
 import { GoogleGenAI } from '@google/genai';
 import { resolveGeminiTextModel } from '../config/gemini-text';
-import { decryptSystemSettings } from '../settings/credential-encryption';
+import { SettingsService } from '../settings/settings.service';
 import type { PDFParse } from 'pdf-parse';
 
 const MAX_TEMPLATE_ATTACHMENTS = 5;
@@ -30,13 +30,18 @@ type TemplateGenerationJob = {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  // Generated with this user's Gemini key; only they can read the result.
+  userId: string;
 };
 
 @Injectable()
 export class TemplatesService {
   private generationJobs = new Map<string, TemplateGenerationJob>();
 
-  constructor(private db: MongoService) {}
+  constructor(
+    private db: MongoService,
+    private settingsService: SettingsService,
+  ) {}
 
   async findAll() {
     return this.db.template.findMany({
@@ -126,25 +131,26 @@ export class TemplatesService {
     }
   }
 
-  startAiTemplateGeneration(dto: GenerateTemplateDto) {
+  startAiTemplateGeneration(dto: GenerateTemplateDto, userId: string) {
     const now = new Date().toISOString();
     const job: TemplateGenerationJob = {
       id: randomUUID(),
       status: 'PENDING',
       createdAt: now,
       updatedAt: now,
+      userId,
     };
 
     this.generationJobs.set(job.id, job);
 
-    void this.runTemplateGenerationJob(job.id, dto);
+    void this.runTemplateGenerationJob(job.id, dto, userId);
 
     return job;
   }
 
-  getAiTemplateGenerationStatus(id: string) {
+  getAiTemplateGenerationStatus(id: string, userId: string) {
     const job = this.generationJobs.get(id);
-    if (!job) {
+    if (!job || job.userId !== userId) {
       throw new BadRequestException('Template generation job not found');
     }
     return job;
@@ -221,17 +227,13 @@ export class TemplatesService {
     ];
   }
 
-  async generateAiTemplate(dto: GenerateTemplateDto) {
+  async generateAiTemplate(dto: GenerateTemplateDto, userId: string) {
     const format = dto.format === 'TEXT' ? 'TEXT' : 'HTML';
     const referenceContext = this.buildReferenceContext(
       dto.referenceDocumentText,
       dto.referenceDocumentName,
     );
-    const settings = decryptSystemSettings(
-      await this.db.systemSettings.findUnique({
-        where: { id: 'default' },
-      }),
-    );
+    const settings = await this.settingsService.getRawSettings(userId);
 
     const hasNoKey = !settings || !settings.geminiApiKey;
     if (hasNoKey) {
@@ -319,7 +321,11 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     }
   }
 
-  private async runTemplateGenerationJob(id: string, dto: GenerateTemplateDto) {
+  private async runTemplateGenerationJob(
+    id: string,
+    dto: GenerateTemplateDto,
+    userId: string,
+  ) {
     const started = new Date().toISOString();
     const current = this.generationJobs.get(id);
     if (!current) return;
@@ -331,7 +337,7 @@ Do NOT write any preamble, explanation, or markdown backticks outside of the JSO
     });
 
     try {
-      const result = await this.generateAiTemplate(dto);
+      const result = await this.generateAiTemplate(dto, userId);
       this.generationJobs.set(id, {
         ...this.generationJobs.get(id)!,
         status: 'COMPLETED',

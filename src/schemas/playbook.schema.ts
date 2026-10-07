@@ -58,6 +58,10 @@ export class Playbook {
 
   @Prop({ default: 18 })
   sendWindowEndHour: number;
+
+  // User whose SES credentials send this playbook's automatic outreach.
+  @Prop({ type: String, default: null })
+  createdBy?: string | null;
 }
 
 export const PlaybookSchema = SchemaFactory.createForClass(Playbook);

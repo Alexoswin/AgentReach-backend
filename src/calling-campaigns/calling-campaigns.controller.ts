@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   StreamableFile,
   UsePipes,
@@ -240,20 +241,28 @@ export class CallingCampaignsController {
 
   @Post(':id/launch')
   @ApiOperation({ summary: 'Launch AI calling campaign' })
-  launch(@Param('id') id: string) {
-    return this.service.launchCampaign(id);
+  launch(@Req() request: any, @Param('id') id: string) {
+    return this.service.launchCampaign(id, request.user.id);
   }
 
   @Post(':id/relaunch')
   @ApiOperation({ summary: 'Relaunch AI calling campaign' })
-  relaunch(@Param('id') id: string) {
-    return this.service.relaunchCampaign(id);
+  relaunch(@Req() request: any, @Param('id') id: string) {
+    return this.service.relaunchCampaign(id, request.user.id);
   }
 
   @Post(':id/schedule')
   @ApiOperation({ summary: 'Schedule AI calling campaign for a future time' })
-  schedule(@Param('id') id: string, @Body() body: { scheduledAt: string }) {
-    return this.service.scheduleCampaign(id, body.scheduledAt);
+  schedule(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() body: { scheduledAt: string },
+  ) {
+    return this.service.scheduleCampaign(
+      id,
+      String(body?.scheduledAt ?? ''),
+      request.user.id,
+    );
   }
 
   @Post(':id/unschedule')

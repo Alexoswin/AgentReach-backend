@@ -116,15 +116,18 @@ export class CallingCampaignsService {
     return this.db.callingCampaign.delete({ where: { id } });
   }
 
-  async launchCampaign(id: string) {
-    return this.launch(id, false);
+  // userId is the account whose Twilio/Plivo and Gemini credentials place the
+  // calls; it is recorded on the campaign as launchedBy for the webhooks and
+  // live-call socket that run later without a request.
+  async launchCampaign(id: string, userId: string | null | undefined) {
+    return this.launch(id, false, userId);
   }
 
-  async relaunchCampaign(id: string) {
-    return this.launch(id, true);
+  async relaunchCampaign(id: string, userId: string | null | undefined) {
+    return this.launch(id, true, userId);
   }
 
-  async scheduleCampaign(id: string, scheduledAt: string) {
+  async scheduleCampaign(id: string, scheduledAt: string, userId: string) {
     await this.findOne(id);
 
     const when = new Date(scheduledAt);
@@ -141,6 +144,7 @@ export class CallingCampaignsService {
         status: 'SCHEDULED',
         scheduleType: 'SCHEDULED',
         scheduledAt: when,
+        launchedBy: userId,
       },
     });
 
@@ -173,7 +177,10 @@ export class CallingCampaignsService {
 
   async stopCampaign(id: string) {
     const campaign = await this.findOne(id);
-    const settings = await this.settingsService.getRawSettings();
+    // Calls can only be cancelled with the account that placed them.
+    const settings = await this.settingsService.getRawSettings(
+      campaign.launchedBy,
+    );
     let cancelledCalls = 0;
 
     for (const call of campaign.calls || []) {
@@ -535,9 +542,19 @@ export class CallingCampaignsService {
       throw new BadRequestException('Recording URL is not a Twilio URL.');
     }
 
-    const settings = await this.settingsService.getRawSettings();
+    // The recording lives in the Twilio account that placed the call.
+    const campaign = call.campaignId
+      ? await this.db.callingCampaign.findUnique({
+          where: { id: call.campaignId },
+        })
+      : null;
+    const settings = await this.settingsService.getRawSettings(
+      campaign?.launchedBy,
+    );
     if (!settings?.twilioAccountSid || !settings?.twilioAuthToken) {
-      throw new BadRequestException('Twilio credentials are not configured.');
+      throw new BadRequestException(
+        'The Twilio account that placed this call is no longer configured.',
+      );
     }
 
     const response = await fetch(call.recordingUrl, {
@@ -562,9 +579,13 @@ export class CallingCampaignsService {
     };
   }
 
-  private async launch(id: string, relaunch: boolean) {
+  private async launch(
+    id: string,
+    relaunch: boolean,
+    userId: string | null | undefined,
+  ) {
     const campaign = await this.findOne(id);
-    const settings = await this.settingsService.getRawSettings();
+    const settings = await this.settingsService.getRawSettings(userId);
     const provider = this.getActiveProvider(settings);
     if (!this.hasProviderSettings(settings)) {
       throw new BadRequestException(
@@ -615,6 +636,7 @@ export class CallingCampaignsService {
         status: 'LAUNCHING',
         lastLaunchedAt: new Date(),
         stoppedAt: undefined,
+        launchedBy: userId,
       },
     });
 
@@ -630,7 +652,7 @@ export class CallingCampaignsService {
     const twilio = { placed: 0, failed: 0, errors: [] as string[] };
     for (const call of callable) {
       try {
-        await this.preflightGeminiLiveCall(campaign, call);
+        await this.preflightGeminiLiveCall(campaign, call, userId);
         const response =
           provider === 'plivo'
             ? await this.createPlivoCall(
@@ -980,7 +1002,11 @@ export class CallingCampaignsService {
     );
   }
 
-  private async preflightGeminiLiveCall(campaign: any, call: any) {
+  private async preflightGeminiLiveCall(
+    campaign: any,
+    call: any,
+    userId: string | null | undefined,
+  ) {
     if (!this.geminiAuthService) {
       throw new Error('Gemini Live service is not configured.');
     }
@@ -1002,6 +1028,7 @@ export class CallingCampaignsService {
       process.env.GEMINI_LIVE_MODEL ||
       DEFAULT_GEMINI_LIVE_MODEL;
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
+      userId,
       model,
       voiceName,
       languageCode,

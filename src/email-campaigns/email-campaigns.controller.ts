@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Req,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -72,8 +73,8 @@ export class EmailCampaignsController {
 
   @Post(':id/launch')
   @ApiOperation({ summary: 'Launch the email campaign' })
-  async launchCampaign(@Param('id') id: string) {
-    return this.emailCampaignsService.launchCampaign(id);
+  async launchCampaign(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.launchCampaign(id, request.user.id);
   }
 
   @Post(':id/relaunch')
@@ -81,17 +82,22 @@ export class EmailCampaignsController {
     summary:
       'Re-send the campaign to every recipient, including those already sent',
   })
-  async relaunchCampaign(@Param('id') id: string) {
-    return this.emailCampaignsService.relaunchCampaign(id);
+  async relaunchCampaign(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.relaunchCampaign(id, request.user.id);
   }
 
   @Post(':id/schedule')
   @ApiOperation({ summary: 'Schedule the email campaign for a future time' })
   async schedule(
+    @Req() request: any,
     @Param('id') id: string,
     @Body() body: { scheduledAt: string },
   ) {
-    return this.emailCampaignsService.scheduleCampaign(id, body.scheduledAt);
+    return this.emailCampaignsService.scheduleCampaign(
+      id,
+      String(body?.scheduledAt ?? ''),
+      request.user.id,
+    );
   }
 
   @Post(':id/unschedule')

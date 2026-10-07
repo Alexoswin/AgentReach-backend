@@ -344,6 +344,7 @@ export class RealtimeCallingGateway {
       `Starting Gemini Live call callId=${state.callId} campaignId=${state.campaign.id || call?.campaignId} streamSid=${state.streamSid || 'none'} providerCallSid=${state.providerCallSid || 'none'} model=${model} voice=${voiceName} selectedVoice=${selectedVoice} requestedLanguage=${languageCode} campaignLanguage=${state.campaign.selectedLanguage || state.campaign.language || 'none'} callLanguage=${call?.selectedLanguage || 'none'} campaignVoice=${state.campaign.selectedVoice || state.campaign.voice || 'none'} callVoice=${call?.selectedVoice || 'none'} spokenLanguage=${languageProfile.spokenLanguage} responseSpeed=${preset.responseSpeed} activityDetection=${preset.activityDetection} vadSilenceMs=${preset.silenceDurationMs} noiseGateDbfs=${preset.noiseGateDbfs} aiSpeaksFirst=${state.campaign.aiSpeaksFirst !== false} preventInterruption=${state.preventInterruption} tools=${tools.map((tool: any) => tool.name).join(',') || 'none'}`,
     );
     return {
+      userId: state.campaign.launchedBy,
       model,
       voiceName,
       languageCode,

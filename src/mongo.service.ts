@@ -1,8 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { DEFAULT_GEMINI_TEXT_MODEL } from './config/gemini-text';
-import { encryptSystemSettingsData } from './settings/credential-encryption';
 import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
 import { SystemSettings } from './schemas/system-settings.schema';
@@ -145,40 +143,10 @@ export class MongoService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    const existingSettings = await this.systemSettings.findUnique({
-      where: { id: 'default' },
-    });
-    await this.systemSettings.upsert({
-      where: { id: 'default' },
-      update: encryptSystemSettingsData({
-        awsAccessKeyId:
-          process.env.AWS_KEY_ID || existingSettings?.awsAccessKeyId || '',
-        awsSecretAccessKey:
-          process.env.AWS_KEY || existingSettings?.awsSecretAccessKey || '',
-        awsRegion:
-          process.env.AWS_REGION || existingSettings?.awsRegion || 'us-east-1',
-        awsSenderEmail:
-          process.env.AWS_SENDER_EMAIL ||
-          existingSettings?.awsSenderEmail ||
-          '',
-        geminiApiKey:
-          existingSettings?.geminiApiKey || process.env.GEMINI_API_KEY || '',
-        twilioAccountSid: existingSettings?.twilioAccountSid || '',
-        twilioAuthToken: existingSettings?.twilioAuthToken || '',
-        twilioPhoneNumber: existingSettings?.twilioPhoneNumber || '',
-        geminiTextModel:
-          existingSettings?.geminiTextModel || DEFAULT_GEMINI_TEXT_MODEL,
-      }),
-      create: encryptSystemSettingsData({
-        id: 'default',
-        awsAccessKeyId: process.env.AWS_KEY_ID || '',
-        awsSecretAccessKey: process.env.AWS_KEY || '',
-        awsRegion: 'us-east-1',
-        awsSenderEmail: process.env.AWS_SENDER_EMAIL || '',
-        geminiApiKey: process.env.GEMINI_API_KEY || '',
-        geminiTextModel: DEFAULT_GEMINI_TEXT_MODEL,
-      }),
-    });
+    // Provider credentials live in each user's own settings document (see
+    // SettingsService); nothing is copied from the environment into them. The
+    // platform's own SES keys (AWS_KEY_ID, ...) are read directly where the
+    // app sends its account emails.
 
     // Optional first-run account, so a fresh deployment (where sign-up is
     // closed by default) has a way in. Never overwrites an existing user.
@@ -193,6 +161,8 @@ export class MongoService implements OnModuleInit {
           data: {
             email: adminEmail,
             passwordHash: await hashPassword(adminPassword),
+            // The operator chose this address, so it needs no email code.
+            emailVerified: true,
             name: adminEmail.split('@')[0],
             initials: adminEmail.slice(0, 2).toUpperCase(),
           },

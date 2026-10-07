@@ -2,7 +2,8 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
 @Schema({ collection: 'SystemSettings', timestamps: true })
 export class SystemSettings {
-  @Prop({ default: 'default' })
+  // The owning user's id: provider credentials are per user.
+  @Prop({ required: true })
   _id: string;
 
   @Prop({ default: '' })

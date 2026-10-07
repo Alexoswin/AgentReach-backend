@@ -109,6 +109,12 @@ export class CallingCampaign {
   @Prop()
   lastLaunchedAt?: Date;
 
+  // User whose telephony and Gemini credentials place and run this
+  // campaign's calls: whoever last launched or scheduled it. Webhooks, the
+  // live call socket and recording downloads read credentials through it.
+  @Prop({ type: String, default: null })
+  launchedBy?: string | null;
+
   @Prop()
   stoppedAt?: Date;
 }

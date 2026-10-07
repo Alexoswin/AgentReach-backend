@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Req,
   UploadedFile,
   UseInterceptors,
   UsePipes,
@@ -42,21 +43,33 @@ export class TemplatesController {
   @ApiOperation({
     summary: 'Generate a personalized template using Gemini AI',
   })
-  async generateTemplate(@Body() dto: GenerateTemplateDto) {
-    return this.templatesService.generateAiTemplate(dto);
+  async generateTemplate(@Req() request: any, @Body() dto: GenerateTemplateDto) {
+    return this.templatesService.generateAiTemplate(dto, request.user.id);
   }
 
   @Post('generate-jobs')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Start AI template generation as a pollable job' })
-  async startGenerateTemplate(@Body() dto: GenerateTemplateDto) {
-    return this.templatesService.startAiTemplateGeneration(dto);
+  async startGenerateTemplate(
+    @Req() request: any,
+    @Body() dto: GenerateTemplateDto,
+  ) {
+    return this.templatesService.startAiTemplateGeneration(
+      dto,
+      request.user.id,
+    );
   }
 
   @Get('generate-jobs/:id')
   @ApiOperation({ summary: 'Get AI template generation job status' })
-  async getGenerateTemplateStatus(@Param('id') id: string) {
-    return this.templatesService.getAiTemplateGenerationStatus(id);
+  async getGenerateTemplateStatus(
+    @Req() request: any,
+    @Param('id') id: string,
+  ) {
+    return this.templatesService.getAiTemplateGenerationStatus(
+      id,
+      request.user.id,
+    );
   }
 
   @Post('reference-pdf')
