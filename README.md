@@ -271,3 +271,12 @@ oswin.alex@oswinalex.site
 ```
 
 > Verify the domain and sender in AWS SES before sending real email campaigns.
+
+---
+
+## Contributing & license
+
+Contributions are welcome — see the frontend's `/contribute` page for local setup
+and the pull request workflow.
+
+ReachConvert is licensed under the [GNU Affero General Public License v3.0](LICENSE).
