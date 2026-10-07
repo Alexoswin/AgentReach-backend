@@ -7,7 +7,6 @@ import { IncomingMessage, Server } from 'http';
 import { Duplex } from 'stream';
 import { Server as WsServer } from 'ws';
 import { RealtimeCallingGateway } from './realtime-calling/realtime-calling.gateway';
-import { TokenService } from './auth/token.service';
 import { getJwtSecret, isProduction } from './auth/secrets';
 
 const REQUEST_BODY_LIMIT = '50mb';
@@ -16,7 +15,7 @@ const REQUEST_BODY_LIMIT = '50mb';
 // so the same instance can either call app.listen() (Render/local, a
 // persistent process) or be driven per-request by a serverless handler
 // (Vercel, which invokes this module's export directly and never calls
-// listen()). The Twilio/Plivo/webpilot raw WS upgrade dispatch below only
+// listen()). The Twilio/Plivo raw WS upgrade dispatch below only
 // receives real traffic under the persistent-process path.
 async function createApp() {
   // Refuse to boot in production without a signing secret rather than
@@ -57,15 +56,6 @@ async function createApp() {
   const httpServer = app.getHttpServer() as Server;
   const wsServer = new WsServer({ noServer: true });
   const realtimeGateway = app.get(RealtimeCallingGateway);
-  const tokenService = app.get(TokenService);
-
-  const { createProxyMiddleware } = await import('http-proxy-middleware');
-  const webpilotProxy = createProxyMiddleware({
-    target:
-      configService.get<string>('WEBPILOT_URL') || 'http://localhost:8001',
-    changeOrigin: true,
-    ws: true,
-  }) as any;
 
   httpServer.on(
     'upgrade',
@@ -81,23 +71,6 @@ async function createApp() {
         wsServer.handleUpgrade(req, socket, head, (ws) => {
           realtimeGateway.registerPlivoSocket(ws, req);
         });
-        return;
-      }
-      if (pathname.startsWith('/ws/webpilot')) {
-        // Browsers cannot set headers on a WebSocket, so the access token
-        // travels as ?token=.
-        const token = new URL(
-          req.url || '',
-          'http://localhost',
-        ).searchParams.get('token');
-        try {
-          tokenService.verifyToken(token || '', 'access');
-        } catch {
-          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-          socket.destroy();
-          return;
-        }
-        webpilotProxy.upgrade(req, socket, head);
         return;
       }
       socket.destroy();

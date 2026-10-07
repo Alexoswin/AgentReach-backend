@@ -16,7 +16,6 @@ import { AuthModule } from './auth/auth.module';
 import { BotModule } from './bot/bot.module';
 import { SignalsModule } from './signals/signals.module';
 import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
-import { WebPilotModule } from './webpilot/webpilot.module';
 
 @Module({
   imports: [
@@ -42,7 +41,6 @@ import { WebPilotModule } from './webpilot/webpilot.module';
     AnalyticsModule,
     SignalsModule,
     CampaignSchedulerModule,
-    WebPilotModule,
   ],
   controllers: [AppController],
   providers: [AppService],
