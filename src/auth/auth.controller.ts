@@ -16,7 +16,9 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { Public } from './public.decorator';
 import { IdentityPlatformDto } from './dto/identity-platform.dto';
 import {
@@ -35,11 +37,8 @@ export class AuthController {
   @Post('register')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Register a new account' })
-  register(
-    @Body() dto: RegisterDto,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.writeSession(response, this.authService.register(dto));
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
   }
 
   @Public()
@@ -96,6 +95,25 @@ export class AuthController {
   @ApiOperation({ summary: 'Set a new password using a reset link token' })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @Public()
+  @Post('verify-email')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Verify an email address with a one-time code' })
+  verifyEmail(
+    @Body() dto: VerifyEmailDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.writeSession(response, this.authService.verifyEmail(dto));
+  }
+
+  @Public()
+  @Post('resend-verification')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({ summary: 'Resend an email verification code' })
+  resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto.email);
   }
 
   @Get('me')

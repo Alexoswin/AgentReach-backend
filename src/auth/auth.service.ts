@@ -8,10 +8,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
-import { isProduction } from './secrets';
+import { isProduction, safeEqual } from './secrets';
 import { hashPassword, verifyPassword } from './password';
 import { TokenService } from './token.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -20,6 +20,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { RegisterDto } from './dto/register.dto';
 import { IdentityPlatformService } from './identity-platform.service';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 
 const THEME_VALUES = [
   'system',
@@ -36,6 +37,9 @@ const THEME_VALUES = [
 const ACCENT_VALUES = ['indigo', 'emerald', 'sky', 'rose', 'amber', 'violet'];
 
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+const EMAIL_VERIFICATION_TTL_MS = 10 * 60 * 1000;
+const EMAIL_VERIFICATION_RESEND_DELAY_MS = 60 * 1000;
+const MAX_EMAIL_VERIFICATION_ATTEMPTS = 5;
 const FORGOT_PASSWORD_RESPONSE = {
   success: true,
   message: 'If an account exists for that email, a reset link has been sent.',
@@ -54,10 +58,11 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    this.assertRegistrationAllowed(dto.email.toLowerCase());
+    const email = dto.email.toLowerCase();
+    this.assertRegistrationAllowed(email);
 
     const existing = await this.db.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+      where: { email },
     });
 
     if (existing) {
@@ -65,6 +70,9 @@ export class AuthService {
     }
 
     const passwordHash = await hashPassword(dto.password);
+    const verificationCode = this.createEmailVerificationCode();
+    await this.sendEmailVerificationCode(email, verificationCode);
+    const now = new Date();
 
     // Auto-generate initials from name
     const parts = dto.name.trim().split(' ');
@@ -75,16 +83,27 @@ export class AuthService {
 
     const user = await this.db.user.create({
       data: {
-        email: dto.email.toLowerCase(),
+        email,
         passwordHash,
         authProvider: 'password',
         emailVerified: false,
+        emailVerificationCodeHash:
+          this.tokenService.hashToken(verificationCode),
+        emailVerificationExpiresAt: new Date(
+          now.getTime() + EMAIL_VERIFICATION_TTL_MS,
+        ),
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: now,
         name: dto.name.trim(),
         initials,
       },
     });
 
-    return this.issueSession(user);
+    return {
+      requiresEmailVerification: true,
+      email: user.email,
+      message: 'We sent a verification code to your email address.',
+    };
   }
 
   async login(dto: LoginDto) {
@@ -98,6 +117,12 @@ export class AuthService {
       !(await verifyPassword(dto.password, user.passwordHash))
     ) {
       throw new UnauthorizedException('Invalid email or password');
+    }
+
+    if (!user.emailVerified && user.emailVerificationCodeHash) {
+      throw new ForbiddenException(
+        'Please verify your email before signing in. Enter the code we sent to your email.',
+      );
     }
 
     await this.db.user.update({
@@ -325,6 +350,93 @@ export class AuthService {
     return { success: true, message: 'Password reset successfully' };
   }
 
+  async verifyEmail(dto: VerifyEmailDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.db.user.findUnique({ where: { email } });
+    const expiresAt = user?.emailVerificationExpiresAt
+      ? new Date(user.emailVerificationExpiresAt).getTime()
+      : 0;
+    const attempts = user?.emailVerificationAttempts || 0;
+
+    if (
+      !user ||
+      !user.passwordHash ||
+      user.emailVerified ||
+      !user.emailVerificationCodeHash ||
+      !expiresAt ||
+      expiresAt < Date.now() ||
+      attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS
+    ) {
+      throw new BadRequestException(
+        'This verification code is invalid or has expired. Request a new code.',
+      );
+    }
+
+    const codeHash = this.tokenService.hashToken(dto.code);
+    if (!safeEqual(codeHash, user.emailVerificationCodeHash)) {
+      await this.db.user.update({
+        where: { id: user.id },
+        data: { emailVerificationAttempts: attempts + 1 },
+      });
+      throw new BadRequestException('The verification code is incorrect.');
+    }
+
+    const verifiedUser = await this.db.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        emailVerificationCodeHash: null,
+        emailVerificationExpiresAt: null,
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: null,
+        lastLoginAt: new Date(),
+      },
+    });
+
+    return this.issueSession(verifiedUser);
+  }
+
+  async resendVerification(emailInput: string) {
+    const email = emailInput.trim().toLowerCase();
+    const user = await this.db.user.findUnique({ where: { email } });
+    const genericResponse = {
+      success: true,
+      message:
+        'If this account needs verification, a new code has been sent to its email address.',
+    };
+
+    if (!user || !user.passwordHash || user.emailVerified) {
+      return genericResponse;
+    }
+
+    const sentAt = user.emailVerificationSentAt
+      ? new Date(user.emailVerificationSentAt).getTime()
+      : 0;
+    if (sentAt && Date.now() - sentAt < EMAIL_VERIFICATION_RESEND_DELAY_MS) {
+      throw new BadRequestException(
+        'Please wait one minute before requesting another verification code.',
+      );
+    }
+
+    const verificationCode = this.createEmailVerificationCode();
+    await this.sendEmailVerificationCode(email, verificationCode);
+    const now = new Date();
+    await this.db.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerificationCodeHash:
+          this.tokenService.hashToken(verificationCode),
+        emailVerificationExpiresAt: new Date(
+          now.getTime() + EMAIL_VERIFICATION_TTL_MS,
+        ),
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: now,
+      },
+    });
+
+    return genericResponse;
+  }
+
   // Data is not partitioned per user — every account sees the whole
   // workspace — so self-service sign-up is closed in production unless
   // ALLOW_REGISTRATION=true or the email is on ALLOWED_SIGNUP_EMAILS.
@@ -394,6 +506,55 @@ export class AuthService {
     );
   }
 
+  private createEmailVerificationCode() {
+    return randomInt(100000, 1000000).toString();
+  }
+
+  private async sendEmailVerificationCode(email: string, code: string) {
+    const settings = await this.settingsService.getRawSettings();
+    const accessKeyId =
+      settings?.awsAccessKeyId?.trim() || process.env.AWS_KEY_ID?.trim();
+    const secretAccessKey =
+      settings?.awsSecretAccessKey?.trim() || process.env.AWS_KEY?.trim();
+    const senderEmail =
+      settings?.awsSenderEmail?.trim() || process.env.AWS_SENDER_EMAIL?.trim();
+
+    if (!accessKeyId || !secretAccessKey || !senderEmail) {
+      throw new BadRequestException(
+        'Email verification is not configured. Ask an administrator to configure the global SES credentials.',
+      );
+    }
+
+    try {
+      const client = new SESClient({
+        region:
+          settings?.awsRegion?.trim() || process.env.AWS_REGION || 'us-east-1',
+        credentials: { accessKeyId, secretAccessKey },
+      });
+      await client.send(
+        new SendEmailCommand({
+          Source: `<${senderEmail}>`,
+          Destination: { ToAddresses: [email] },
+          Message: {
+            Subject: { Data: 'Verify your ReachConvert email' },
+            Body: {
+              Text: {
+                Data: `Your ReachConvert verification code is ${code}.\n\nThis code expires in 10 minutes. If you did not create this account, you can ignore this email.`,
+              },
+            },
+          },
+        }),
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Could not send email verification code: ${error?.message || error}`,
+      );
+      throw new BadRequestException(
+        'We could not send the verification email. Please try again later.',
+      );
+    }
+  }
+
   private async issueSession(user: UserProfile) {
     const accessToken = this.tokenService.signAccessToken(user);
     const refreshToken = this.tokenService.signRefreshToken(user);
@@ -456,4 +617,8 @@ type UserProfile = {
   authProvider?: string;
   disabled?: boolean;
   emailVerified?: boolean;
+  emailVerificationCodeHash?: string | null;
+  emailVerificationExpiresAt?: Date | null;
+  emailVerificationAttempts?: number;
+  emailVerificationSentAt?: Date | null;
 };

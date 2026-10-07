@@ -61,14 +61,60 @@ describe('AuthService', () => {
     const allowlisted = createService([], {
       ALLOWED_SIGNUP_EMAILS: 'Jane@x.com',
     });
+    jest
+      .spyOn(allowlisted.service as any, 'sendEmailVerificationCode')
+      .mockResolvedValue(undefined);
     await expect(allowlisted.service.register(dto)).resolves.toHaveProperty(
-      'accessToken',
+      'requiresEmailVerification',
+      true,
     );
 
     const open = createService([], { ALLOW_REGISTRATION: 'true' });
+    jest
+      .spyOn(open.service as any, 'sendEmailVerificationCode')
+      .mockResolvedValue(undefined);
     await expect(open.service.register(dto)).resolves.toHaveProperty(
-      'accessToken',
+      'requiresEmailVerification',
+      true,
     );
+    delete process.env.JWT_SECRET;
+  });
+
+  it('verifies a new email before issuing a password session', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'test-secret';
+    const { service, user } = createService([], {
+      ALLOW_REGISTRATION: 'true',
+    });
+    let sentCode = '';
+    jest
+      .spyOn(service as any, 'sendEmailVerificationCode')
+      .mockImplementation(async (_email: string, code: string) => {
+        sentCode = code;
+      });
+
+    const registration = await service.register({
+      name: 'Jane Doe',
+      email: 'jane@x.com',
+      password: 'secret123',
+    });
+    expect(registration).toMatchObject({
+      requiresEmailVerification: true,
+      email: 'jane@x.com',
+    });
+    expect(user.records[0].emailVerified).toBe(false);
+
+    await expect(
+      service.login({ email: 'jane@x.com', password: 'secret123' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    const session = await service.verifyEmail({
+      email: 'jane@x.com',
+      code: sentCode,
+    });
+    expect(session).toHaveProperty('accessToken');
+    expect(user.records[0].emailVerified).toBe(true);
+    expect(user.records[0].emailVerificationCodeHash).toBeNull();
     delete process.env.JWT_SECRET;
   });
 

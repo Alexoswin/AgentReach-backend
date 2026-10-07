@@ -24,6 +24,18 @@ export class User {
   @Prop({ default: false })
   emailVerified: boolean;
 
+  @Prop({ type: String, default: null })
+  emailVerificationCodeHash?: string | null;
+
+  @Prop({ type: Date, default: null })
+  emailVerificationExpiresAt?: Date | null;
+
+  @Prop({ type: Number, default: 0 })
+  emailVerificationAttempts: number;
+
+  @Prop({ type: Date, default: null })
+  emailVerificationSentAt?: Date | null;
+
   @Prop({ type: Date, default: null })
   lastLoginAt?: Date | null;
 

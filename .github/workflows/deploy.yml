@@ -67,11 +67,12 @@ jobs:
           PUBLIC_APP_URL: ${{ secrets.PUBLIC_APP_URL }}
           PUBLIC_API_URL: ${{ secrets.PUBLIC_API_URL }}
           PUBLIC_WS_URL: ${{ secrets.PUBLIC_WS_URL }}
+          ALLOW_REGISTRATION: ${{ secrets.ALLOW_REGISTRATION }}
           ALLOWED_SIGNUP_EMAILS: ${{ secrets.ALLOWED_SIGNUP_EMAILS }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
-          for name in JWT_SECRET CORS_ORIGINS COOKIE_SECURE COOKIE_SAME_SITE PUBLIC_APP_URL PUBLIC_API_URL PUBLIC_WS_URL ALLOWED_SIGNUP_EMAILS FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
+          for name in JWT_SECRET CORS_ORIGINS COOKIE_SECURE COOKIE_SAME_SITE PUBLIC_APP_URL PUBLIC_API_URL PUBLIC_WS_URL ALLOW_REGISTRATION ALLOWED_SIGNUP_EMAILS FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
             [ -n "${!name}" ] || { echo "::error::secrets.$name is not set"; exit 1; }
           done
           env_flag=()
@@ -107,6 +108,7 @@ jobs:
               "PUBLIC_APP_URL",
               "PUBLIC_API_URL",
               "PUBLIC_WS_URL",
+              "ALLOW_REGISTRATION",
               "ALLOWED_SIGNUP_EMAILS",
               "FIREBASE_PROJECT_ID",
               "GOOGLE_CLOUD_PROJECT",
