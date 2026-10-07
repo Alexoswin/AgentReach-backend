@@ -61,10 +61,17 @@ jobs:
           # on the service are left untouched.
           CLOUD_RUN_ENV: ${{ secrets.CLOUD_RUN_ENV }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          COOKIE_SECURE: ${{ secrets.COOKIE_SECURE }}
+          COOKIE_SAME_SITE: ${{ secrets.COOKIE_SAME_SITE }}
+          PUBLIC_APP_URL: ${{ secrets.PUBLIC_APP_URL }}
+          PUBLIC_API_URL: ${{ secrets.PUBLIC_API_URL }}
+          PUBLIC_WS_URL: ${{ secrets.PUBLIC_WS_URL }}
+          ALLOWED_SIGNUP_EMAILS: ${{ secrets.ALLOWED_SIGNUP_EMAILS }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
-          for name in JWT_SECRET FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
+          for name in JWT_SECRET CORS_ORIGINS COOKIE_SECURE COOKIE_SAME_SITE PUBLIC_APP_URL PUBLIC_API_URL PUBLIC_WS_URL ALLOWED_SIGNUP_EMAILS FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
             [ -n "${!name}" ] || { echo "::error::secrets.$name is not set"; exit 1; }
           done
           env_flag=()
@@ -92,7 +99,18 @@ jobs:
 
           # Keep Identity Platform project settings in the deployment even
           # when CLOUD_RUN_ENV is managed as one consolidated secret.
-          for key in ("JWT_SECRET", "FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
+          for key in (
+              "JWT_SECRET",
+              "CORS_ORIGINS",
+              "COOKIE_SECURE",
+              "COOKIE_SAME_SITE",
+              "PUBLIC_APP_URL",
+              "PUBLIC_API_URL",
+              "PUBLIC_WS_URL",
+              "ALLOWED_SIGNUP_EMAILS",
+              "FIREBASE_PROJECT_ID",
+              "GOOGLE_CLOUD_PROJECT",
+          ):
               value = os.environ.get(key, "").strip()
               if value:
                   env[key] = value
