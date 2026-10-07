@@ -62,6 +62,8 @@ async function createApp() {
       '/api/auth/refresh',
       '/api/auth/forgot-password',
       '/api/auth/reset-password',
+      '/api/auth/verify-email',
+      '/api/auth/resend-verification',
     ].includes(request.path);
 
     if (

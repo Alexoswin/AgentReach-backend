@@ -1,4 +1,8 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
 import { hashPassword, verifyPassword } from './password';
@@ -160,6 +164,34 @@ describe('AuthService', () => {
     delete process.env.JWT_SECRET;
   });
 
+  it('allows a pending account to restart signup when registration is closed', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'test-secret';
+    const { service } = createService([
+      {
+        id: 'pending-1',
+        email: 'jane@x.com',
+        passwordHash: 'previous-password-hash',
+        authProvider: 'password',
+        emailVerified: false,
+        identityPlatformUid: null,
+        emailVerificationSentAt: new Date(Date.now() - 61_000),
+      },
+    ]);
+    jest
+      .spyOn(service as any, 'sendEmailVerificationCode')
+      .mockResolvedValue(undefined);
+
+    await expect(
+      service.register({
+        name: 'Jane Doe',
+        email: 'jane@x.com',
+        password: 'newsecret123',
+      }),
+    ).resolves.toMatchObject({ requiresEmailVerification: true });
+    delete process.env.JWT_SECRET;
+  });
+
   it('does not reuse an SSO account during password signup', async () => {
     process.env.NODE_ENV = 'production';
     const { service } = createService(
@@ -183,6 +215,68 @@ describe('AuthService', () => {
         password: 'newsecret123',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('verifies and links an existing account on Google SSO login', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'test-secret';
+    const { service, user } = createService([
+      {
+        id: 'password-1',
+        email: 'jane@x.com',
+        passwordHash: 'password-hash',
+        authProvider: 'password',
+        emailVerified: false,
+        identityPlatformUid: null,
+        emailVerificationCodeHash: 'code-hash',
+        emailVerificationExpiresAt: new Date(Date.now() + 60_000),
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: new Date(),
+      },
+    ]);
+    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+      .fn()
+      .mockResolvedValue({
+        uid: 'google-uid',
+        email: 'jane@x.com',
+        email_verified: true,
+        name: 'Jane Doe',
+      });
+
+    const session = await service.loginWithGoogle('google-token');
+
+    expect(session).toHaveProperty('accessToken');
+    expect(user.records[0]).toMatchObject({
+      identityPlatformUid: 'google-uid',
+      authProvider: 'password+google',
+      emailVerified: true,
+      emailVerificationCodeHash: null,
+    });
+    delete process.env.JWT_SECRET;
+  });
+
+  it('rejects SSO when the email is linked to another Google identity', async () => {
+    const { service } = createService([
+      {
+        id: 'google-1',
+        email: 'jane@x.com',
+        passwordHash: null,
+        authProvider: 'google',
+        identityPlatformUid: 'different-google-uid',
+        emailVerified: true,
+      },
+    ]);
+    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+      .fn()
+      .mockResolvedValue({
+        uid: 'google-uid',
+        email: 'jane@x.com',
+        email_verified: true,
+      });
+
+    await expect(
+      service.loginWithGoogle('google-token'),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('answers forgot-password the same way for unknown emails', async () => {

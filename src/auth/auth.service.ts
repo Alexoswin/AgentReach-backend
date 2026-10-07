@@ -59,8 +59,6 @@ export class AuthService {
 
   async register(dto: RegisterDto) {
     const email = dto.email.toLowerCase();
-    this.assertRegistrationAllowed(email);
-
     const existing = await this.db.user.findUnique({
       where: { email },
     });
@@ -75,6 +73,9 @@ export class AuthService {
       if (!isPendingPasswordUser) {
         throw new BadRequestException('User with that email already exists');
       }
+
+      // A pending account already started registration. Let the user restart
+      // verification even when new account creation is closed.
 
       const sentAt = existing.emailVerificationSentAt
         ? new Date(existing.emailVerificationSentAt).getTime()
@@ -123,6 +124,8 @@ export class AuthService {
         message: 'We sent a new verification code to your email address.',
       };
     }
+
+    this.assertRegistrationAllowed(email);
 
     const passwordHash = await hashPassword(dto.password);
     const verificationCode = this.createEmailVerificationCode();
@@ -213,9 +216,36 @@ export class AuthService {
       where: { email },
     });
     if (existingEmailUser) {
-      throw new ConflictException(
-        'An account with this email already exists. Sign in with your password before linking Google.',
-      );
+      if (existingEmailUser.disabled) {
+        throw new ForbiddenException('This account is disabled.');
+      }
+      if (
+        existingEmailUser.identityPlatformUid &&
+        existingEmailUser.identityPlatformUid !== decoded.uid
+      ) {
+        throw new ConflictException(
+          'This email is already linked to a different Google account.',
+        );
+      }
+
+      // Google has already verified this email. Attach the identity to the
+      // existing account and allow SSO to complete its first login.
+      user = await this.db.user.update({
+        where: { id: existingEmailUser.id },
+        data: {
+          identityPlatformUid: decoded.uid,
+          authProvider: existingEmailUser.passwordHash
+            ? 'password+google'
+            : 'google',
+          emailVerified: true,
+          emailVerificationCodeHash: null,
+          emailVerificationExpiresAt: null,
+          emailVerificationAttempts: 0,
+          emailVerificationSentAt: null,
+          lastLoginAt: new Date(),
+        },
+      });
+      return this.issueSession(user);
     }
 
     this.assertRegistrationAllowed(email, 'google');
