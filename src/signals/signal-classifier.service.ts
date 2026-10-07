@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { resolveGeminiTextModel } from '../config/gemini-text';
-import { SettingsService } from '../settings/settings.service';
 import {
   Confidence,
   RawSignal,
@@ -26,18 +25,14 @@ export interface Classification {
 export class SignalClassifierService {
   private readonly logger = new Logger(SignalClassifierService.name);
 
-  constructor(private readonly settingsService: SettingsService) {}
-
-  // Same key and model the rest of the app uses for Gemini text, so a retired
-  // model id is mapped to the current default instead of failing every call.
+  // Classification is a platform background job that belongs to no user, so
+  // it never spends a user's own Gemini key from Settings. It uses the
+  // operator's GEMINI_API_KEY when set; a retired model id is mapped to the
+  // current default instead of failing every call.
   private async getGeminiConfig(): Promise<{ apiKey: string; model: string }> {
-    const settings = await this.settingsService.getRawSettings();
     return {
-      apiKey:
-        settings?.geminiApiKey?.trim() ||
-        process.env.GEMINI_API_KEY?.trim() ||
-        '',
-      model: resolveGeminiTextModel(settings?.geminiTextModel),
+      apiKey: process.env.GEMINI_API_KEY?.trim() || '',
+      model: resolveGeminiTextModel(process.env.GEMINI_TEXT_MODEL),
     };
   }
 

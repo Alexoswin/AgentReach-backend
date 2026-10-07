@@ -119,7 +119,7 @@ export class SignalsService {
     return results;
   }
 
-  async reviewMatch(matchId: string, dto: ReviewMatchDto) {
+  async reviewMatch(matchId: string, dto: ReviewMatchDto, userId: string) {
     const match = await this.db.signalMatch.findUnique({
       where: { id: matchId },
     });
@@ -146,11 +146,13 @@ export class SignalsService {
     const playbook = await this.playbooks.findOne(match.playbookId);
     if (!signal) throw new BadRequestException('Signal not found');
 
+    // The approving user sends it, with their own SES credentials.
     const result = await this.trigger.trigger(
       signal,
       match.contactId,
       playbook,
       matchId,
+      userId,
     );
     return { success: result.outcome === 'triggered', ...result };
   }

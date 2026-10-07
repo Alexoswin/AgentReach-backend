@@ -1,5 +1,4 @@
 import { DEFAULT_GEMINI_TEXT_MODEL } from '../config/gemini-text';
-import { SettingsService } from '../settings/settings.service';
 import { SignalClassifierService } from './signal-classifier.service';
 
 const generateContent = jest.fn();
@@ -19,14 +18,20 @@ const RAW = {
   url: 'https://example.com/acme',
 } as any;
 
-function classifierWith(settings: Record<string, unknown> | null) {
-  const settingsService = {
-    getRawSettings: jest.fn().mockResolvedValue(settings),
-  } as unknown as SettingsService;
-  return new SignalClassifierService(settingsService);
+function classifierWith(env: { geminiApiKey?: string; geminiTextModel?: string }) {
+  if (env.geminiApiKey) process.env.GEMINI_API_KEY = env.geminiApiKey;
+  else delete process.env.GEMINI_API_KEY;
+  if (env.geminiTextModel) process.env.GEMINI_TEXT_MODEL = env.geminiTextModel;
+  else delete process.env.GEMINI_TEXT_MODEL;
+  return new SignalClassifierService();
 }
 
 describe('SignalClassifierService', () => {
+  afterEach(() => {
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_TEXT_MODEL;
+  });
+
   beforeEach(() => {
     generateContent.mockReset();
     generateContent.mockResolvedValue({
@@ -39,7 +44,7 @@ describe('SignalClassifierService', () => {
     });
   });
 
-  it('uses the Gemini text model saved in Settings', async () => {
+  it('uses the platform Gemini text model', async () => {
     const classifier = classifierWith({
       geminiApiKey: 'key',
       geminiTextModel: 'gemini-2.5-flash',
@@ -65,7 +70,7 @@ describe('SignalClassifierService', () => {
     );
   });
 
-  it('uses the default model when Settings has none', async () => {
+  it('uses the default model when none is configured', async () => {
     const classifier = classifierWith({ geminiApiKey: 'key' });
 
     await classifier.classify(RAW);

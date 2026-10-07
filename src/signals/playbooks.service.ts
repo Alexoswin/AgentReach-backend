@@ -13,6 +13,8 @@ export interface PlaybookLike {
   cooldownDays: number;
   dailyCap: number;
   active: boolean;
+  // Whose SES credentials send this playbook's automatic outreach.
+  createdBy?: string | null;
 }
 
 @Injectable()
@@ -29,26 +31,38 @@ export class PlaybooksService {
     return playbook;
   }
 
-  async create(dto: CreatePlaybookDto): Promise<PlaybookLike> {
+  async create(dto: CreatePlaybookDto, userId: string): Promise<PlaybookLike> {
     const template = await this.db.template.findUnique({
       where: { id: dto.templateId },
     });
     if (!template) {
       throw new BadRequestException('Referenced template does not exist');
     }
-    return this.db.playbook.create({ data: { ...dto } });
+    return this.db.playbook.create({ data: { ...dto, createdBy: userId } });
   }
 
-  async update(id: string, dto: UpdatePlaybookDto): Promise<PlaybookLike> {
-    await this.findOne(id);
-    return this.db.playbook.update({ where: { id }, data: { ...dto } });
-  }
-
-  async toggle(id: string): Promise<PlaybookLike> {
+  // Playbooks saved before credentials were per-user have no owner, so their
+  // automatic sends cannot run; the next user to edit one adopts it.
+  async update(
+    id: string,
+    dto: UpdatePlaybookDto,
+    userId: string,
+  ): Promise<PlaybookLike> {
     const playbook = await this.findOne(id);
     return this.db.playbook.update({
       where: { id },
-      data: { active: !playbook.active },
+      data: { ...dto, ...(playbook.createdBy ? {} : { createdBy: userId }) },
+    });
+  }
+
+  async toggle(id: string, userId: string): Promise<PlaybookLike> {
+    const playbook = await this.findOne(id);
+    return this.db.playbook.update({
+      where: { id },
+      data: {
+        active: !playbook.active,
+        ...(playbook.createdBy ? {} : { createdBy: userId }),
+      },
     });
   }
 

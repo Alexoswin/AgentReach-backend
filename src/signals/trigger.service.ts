@@ -41,12 +41,24 @@ export class TriggerService {
     private readonly emailCampaigns: EmailCampaignsService,
   ) {}
 
+  /**
+   * senderId is the user whose SES credentials send the outreach: the
+   * reviewer for an approved match, otherwise the playbook's creator.
+   */
   async trigger(
     signal: SignalLike,
     contactId: string,
     playbook: PlaybookLike,
     matchId?: string,
+    senderId?: string | null,
   ): Promise<TriggerResult> {
+    const sender = senderId || playbook.createdBy;
+    if (!sender) {
+      throw new Error(
+        'This playbook has no owner to send from. Edit or toggle it once to adopt it.',
+      );
+    }
+
     // Guardrail: never trigger the same signal for the same contact twice.
     const dupe = await this.db.triggeredOutreach.findFirst({
       where: { signalId: signal.id, contactId },
@@ -112,7 +124,7 @@ export class TriggerService {
     await this.emailCampaigns.addContacts(campaign.id, {
       contactIds: [contactId],
     });
-    await this.emailCampaigns.launchCampaign(campaign.id);
+    await this.emailCampaigns.launchCampaign(campaign.id, sender);
 
     const record = await this.db.triggeredOutreach.create({
       data: {

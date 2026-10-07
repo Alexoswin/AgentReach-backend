@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -54,8 +55,12 @@ export class SignalsController {
   @Post('review/:matchId')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Approve (launch) or reject a pending match' })
-  review(@Param('matchId') matchId: string, @Body() dto: ReviewMatchDto) {
-    return this.signals.reviewMatch(matchId, dto);
+  review(
+    @Req() request: any,
+    @Param('matchId') matchId: string,
+    @Body() dto: ReviewMatchDto,
+  ) {
+    return this.signals.reviewMatch(matchId, dto, request.user.id);
   }
 
   @Post('manual')
@@ -90,21 +95,25 @@ export class SignalsController {
   @Post('playbooks')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Create a playbook' })
-  createPlaybook(@Body() dto: CreatePlaybookDto) {
-    return this.playbooks.create(dto);
+  createPlaybook(@Req() request: any, @Body() dto: CreatePlaybookDto) {
+    return this.playbooks.create(dto, request.user.id);
   }
 
   @Patch('playbooks/:id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a playbook' })
-  updatePlaybook(@Param('id') id: string, @Body() dto: UpdatePlaybookDto) {
-    return this.playbooks.update(id, dto);
+  updatePlaybook(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: UpdatePlaybookDto,
+  ) {
+    return this.playbooks.update(id, dto, request.user.id);
   }
 
   @Post('playbooks/:id/toggle')
   @ApiOperation({ summary: 'Toggle a playbook active/paused' })
-  togglePlaybook(@Param('id') id: string) {
-    return this.playbooks.toggle(id);
+  togglePlaybook(@Req() request: any, @Param('id') id: string) {
+    return this.playbooks.toggle(id, request.user.id);
   }
 
   @Delete('playbooks/:id')
