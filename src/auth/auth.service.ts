@@ -226,15 +226,24 @@ export class AuthService {
         );
       }
 
+      // A password signup still awaiting its email code never proved it owns
+      // this mailbox, so anyone could have chosen that password. Drop it now
+      // that Google has proved ownership, or the person who started the
+      // signup could sign in to the owner's account with it.
+      const unprovenPassword =
+        !existingEmailUser.emailVerified &&
+        Boolean(existingEmailUser.emailVerificationCodeHash);
+      const keepsPassword =
+        Boolean(existingEmailUser.passwordHash) && !unprovenPassword;
+
       // Google has already verified this email. Attach the identity to the
       // existing account and allow SSO to complete its first login.
       user = await this.db.user.update({
         where: { id: existingEmailUser.id },
         data: {
           identityPlatformUid: decoded.uid,
-          authProvider: existingEmailUser.passwordHash
-            ? 'password+google'
-            : 'google',
+          ...(unprovenPassword ? { passwordHash: null } : {}),
+          authProvider: keepsPassword ? 'password+google' : 'google',
           emailVerified: true,
           emailVerificationCodeHash: null,
           emailVerificationExpiresAt: null,
@@ -315,7 +324,7 @@ export class AuthService {
     const payload = this.tokenService.verifyToken(refreshToken, 'refresh');
     const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
-    if (!user?.refreshTokenHash) {
+    if (!user?.refreshTokenHash || user.disabled) {
       throw new UnauthorizedException('Refresh token has been revoked');
     }
 

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
@@ -246,12 +247,18 @@ describe('AuthService', () => {
     const session = await service.loginWithGoogle('google-token');
 
     expect(session).toHaveProperty('accessToken');
+    // The pending signup's password was never proven to belong to the
+    // mailbox owner, so linking Google must not keep it usable.
     expect(user.records[0]).toMatchObject({
       identityPlatformUid: 'google-uid',
-      authProvider: 'password+google',
+      authProvider: 'google',
+      passwordHash: null,
       emailVerified: true,
       emailVerificationCodeHash: null,
     });
+    await expect(
+      service.login({ email: 'jane@x.com', password: 'anything' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     delete process.env.JWT_SECRET;
   });
 
@@ -308,6 +315,26 @@ describe('AuthService', () => {
     await expect(
       service.loginWithGoogle('google-token'),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('does not refresh a session for a disabled account', async () => {
+    const tokens = new TokenService();
+    const refreshToken = tokens.signRefreshToken({
+      id: '1',
+      email: 'a@x.com',
+    });
+    const { service } = createService([
+      {
+        id: '1',
+        email: 'a@x.com',
+        disabled: true,
+        refreshTokenHash: tokens.hashToken(refreshToken),
+      },
+    ]);
+
+    await expect(service.refresh(refreshToken)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
   });
 
   it('answers forgot-password the same way for unknown emails', async () => {
