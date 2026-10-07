@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { isEmail } from 'class-validator';
 import { MongoService } from '../mongo.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
@@ -12,6 +13,18 @@ import {
 } from './credential-encryption';
 
 const MAX_VOICE_PREVIEW_TEXT_LENGTH = 300;
+
+const CREDENTIAL_LABELS: Record<string, string> = {
+  awsAccessKeyId: 'AWS Access Key ID',
+  awsSecretAccessKey: 'AWS Secret Access Key',
+  geminiApiKey: 'Gemini API key',
+  twilioAccountSid: 'Twilio Account SID',
+  twilioAuthToken: 'Twilio Auth Token',
+  twilioPhoneNumber: 'Twilio phone number',
+  plivoAuthId: 'Plivo Auth ID',
+  plivoAuthToken: 'Plivo Auth Token',
+  plivoPhoneNumber: 'Plivo phone number',
+};
 
 /**
  * Provider credentials (SES, Gemini, Twilio, Plivo) belong to one user. Each
@@ -40,26 +53,34 @@ export class SettingsService {
   }
 
   async updateSettings(userId: string, dto: UpdateSettingsDto) {
-    const current = await this.db.systemSettings.findUnique({
-      where: { id: userId },
-    });
     const data: any = {};
 
-    for (const [key, val] of Object.entries(dto)) {
-      if (
-        SYSTEM_CREDENTIAL_FIELDS.includes(key as any) &&
-        val === MASKED_CREDENTIAL
-      ) {
-        if (current && current[key]) {
-          data[key] = current[key];
+    // Only the fields sent change. Values are trimmed (a pasted key with a
+    // trailing space fails provider auth), an empty string clears a field,
+    // and the mask the page shows for a saved secret leaves it unchanged.
+    for (const [key, raw] of Object.entries(dto)) {
+      if (raw === undefined) continue;
+      const val = typeof raw === 'string' ? raw.trim() : raw;
+
+      if (SYSTEM_CREDENTIAL_FIELDS.includes(key as any)) {
+        if (val === MASKED_CREDENTIAL) continue;
+        if (typeof val === 'string' && val.includes(MASKED_CREDENTIAL[0])) {
+          throw new BadRequestException(
+            `Clear the ${CREDENTIAL_LABELS[key] || key} field and paste the full value; the hidden value cannot be edited.`,
+          );
         }
-      } else {
-        data[key] = val;
       }
+      data[key] = val;
     }
 
-    if (dto.geminiTextModel !== undefined) {
-      data.geminiTextModel = resolveGeminiTextModel(dto.geminiTextModel);
+    if (data.awsSenderEmail && !isEmail(data.awsSenderEmail)) {
+      throw new BadRequestException(
+        'Sender email must be a valid email address, or leave it blank.',
+      );
+    }
+
+    if (data.geminiTextModel !== undefined) {
+      data.geminiTextModel = resolveGeminiTextModel(data.geminiTextModel);
     }
 
     const encryptedData = encryptSystemSettingsData(data);

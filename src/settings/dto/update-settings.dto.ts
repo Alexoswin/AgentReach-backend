@@ -1,6 +1,9 @@
-import { IsString, IsOptional, IsEmail, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
+// Every field is optional and may be an empty string (which clears it); the
+// Settings page sends all fields on each save. Connection statuses are not
+// accepted here: only the Test endpoints set them.
 export class UpdateSettingsDto {
   @ApiProperty({ required: false })
   @IsString()
@@ -17,8 +20,11 @@ export class UpdateSettingsDto {
   @IsOptional()
   awsRegion?: string;
 
+  // Format is checked in SettingsService only when non-empty: @IsOptional
+  // does not skip '', so @IsEmail here rejected every save that left the
+  // sender blank.
   @ApiProperty({ required: false })
-  @IsEmail()
+  @IsString()
   @IsOptional()
   awsSenderEmail?: string;
 
@@ -47,11 +53,6 @@ export class UpdateSettingsDto {
   @IsOptional()
   twilioPhoneNumber?: string;
 
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  twilioStatus?: string;
-
   @ApiProperty({ required: false, enum: ['twilio', 'plivo'] })
   @IsIn(['twilio', 'plivo'])
   @IsOptional()
@@ -71,14 +72,4 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   plivoPhoneNumber?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  plivoStatus?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  geminiStatus?: string;
 }
