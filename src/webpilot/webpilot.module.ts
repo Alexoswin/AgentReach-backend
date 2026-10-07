@@ -16,7 +16,8 @@ export class WebPilotModule {
   async configure(consumer: MiddlewareConsumer) {
     const targetUrl =
       this.configService.get<string>('WEBPILOT_URL') || 'http://localhost:8001';
-    const { createProxyMiddleware } = await import('http-proxy-middleware');
+    const { createProxyMiddleware, fixRequestBody } =
+      await import('http-proxy-middleware');
 
     // Middleware runs before the global AuthGuard, so the proxy has to check
     // the access token itself or it would forward anonymous requests.
@@ -42,8 +43,14 @@ export class WebPilotModule {
           target: targetUrl,
           changeOrigin: true,
           ws: false, // WS handled in main.ts
+          // Nest's body parser has already read the request stream, so the
+          // parsed body has to be written back onto the proxied request.
+          on: { proxyReq: fixRequestBody },
         }),
       )
-      .forRoutes({ path: 'api/webpilot/*path', method: RequestMethod.ALL });
+      // Nest prepends the global /api prefix to middleware routes, so this
+      // matches /api/webpilot/*. Writing 'api/webpilot/*path' here would
+      // register /api/api/webpilot/* and never match.
+      .forRoutes({ path: 'webpilot/*path', method: RequestMethod.ALL });
   }
 }

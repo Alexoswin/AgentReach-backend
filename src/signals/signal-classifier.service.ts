@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
+import { resolveGeminiTextModel } from '../config/gemini-text';
 import { SettingsService } from '../settings/settings.service';
 import {
   Confidence,
@@ -27,18 +28,24 @@ export class SignalClassifierService {
 
   constructor(private readonly settingsService: SettingsService) {}
 
-  private async getApiKey(): Promise<string> {
+  // Same key and model the rest of the app uses for Gemini text, so a retired
+  // model id is mapped to the current default instead of failing every call.
+  private async getGeminiConfig(): Promise<{ apiKey: string; model: string }> {
     const settings = await this.settingsService.getRawSettings();
-    return (
-      settings?.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || ''
-    );
+    return {
+      apiKey:
+        settings?.geminiApiKey?.trim() ||
+        process.env.GEMINI_API_KEY?.trim() ||
+        '',
+      model: resolveGeminiTextModel(settings?.geminiTextModel),
+    };
   }
 
   async classify(raw: RawSignal): Promise<Classification> {
-    const apiKey = await this.getApiKey();
+    const { apiKey, model } = await this.getGeminiConfig();
     if (apiKey) {
       try {
-        return await this.classifyWithGemini(raw, apiKey);
+        return await this.classifyWithGemini(raw, apiKey, model);
       } catch (err) {
         this.logger.warn(
           `Gemini classification failed, using heuristic: ${(err as Error).message}`,
@@ -51,6 +58,7 @@ export class SignalClassifierService {
   private async classifyWithGemini(
     raw: RawSignal,
     apiKey: string,
+    model: string,
   ): Promise<Classification> {
     const ai = new GoogleGenAI({ apiKey });
     const prompt = [
@@ -67,7 +75,7 @@ export class SignalClassifierService {
     ].join('\n');
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model,
       contents: prompt,
     });
 
