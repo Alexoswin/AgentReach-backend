@@ -3,11 +3,18 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, urlencoded } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { IncomingMessage, Server } from 'http';
 import { Duplex } from 'stream';
 import { Server as WsServer } from 'ws';
 import { RealtimeCallingGateway } from './realtime-calling/realtime-calling.gateway';
 import { getJwtSecret, isProduction } from './auth/secrets';
+import {
+  csrfTokensMatch,
+  ensureCsrfCookie,
+  readCookie,
+  CSRF_COOKIE_NAME,
+} from './auth/session.cookies';
 
 const REQUEST_BODY_LIMIT = '50mb';
 
@@ -27,13 +34,50 @@ async function createApp() {
   app.use(json({ limit: REQUEST_BODY_LIMIT }));
   app.use(urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
-  // CORS_ORIGINS (comma-separated) restricts which sites may call the API;
-  // unset keeps the previous allow-all behaviour.
+  // CORS_ORIGINS (comma-separated) restricts which sites may call the API.
   const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter(Boolean);
-  app.enableCors(corsOrigins.length ? { origin: corsOrigins } : undefined);
+  if (isProduction() && corsOrigins.length === 0) {
+    throw new Error('CORS_ORIGINS must be configured in production.');
+  }
+  app.enableCors({
+    origin: corsOrigins.length ? corsOrigins : true,
+    credentials: true,
+    exposedHeaders: ['X-CSRF-Token'],
+  });
+
+  // Cookies are used for the application session. A rotating, non-HttpOnly
+  // CSRF token is returned in a response header so the frontend can send it
+  // back in X-CSRF-Token without ever storing an auth token in JavaScript.
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    ensureCsrfCookie(response, request);
+
+    const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
+    const publicAuthPath = [
+      '/api/auth/register',
+      '/api/auth/login',
+      '/api/auth/identity-platform',
+      '/api/auth/refresh',
+      '/api/auth/forgot-password',
+      '/api/auth/reset-password',
+    ].includes(request.path);
+
+    if (
+      unsafe &&
+      !publicAuthPath &&
+      !csrfTokensMatch(
+        readCookie(request, CSRF_COOKIE_NAME),
+        request.headers['x-csrf-token'] as string | undefined,
+      )
+    ) {
+      response.status(403).json({ message: 'Invalid CSRF token' });
+      return;
+    }
+
+    next();
+  });
 
   // Set global API prefix
   app.setGlobalPrefix('api');

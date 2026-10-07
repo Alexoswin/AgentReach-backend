@@ -10,7 +10,11 @@ export async function hashPassword(password: string) {
   return `scrypt:${salt}:${derivedKey.toString('hex')}`;
 }
 
-export async function verifyPassword(password: string, storedHash: string) {
+export async function verifyPassword(
+  password: string,
+  storedHash?: string | null,
+) {
+  if (!storedHash) return false;
   const [algorithm, salt, key] = storedHash.split(':');
   if (algorithm !== 'scrypt' || !salt || !key) return false;
 

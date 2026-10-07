@@ -34,6 +34,7 @@ function createService(users: any[] = [], env: Record<string, string> = {}) {
     new TokenService(),
     settingsService as any,
     configService as any,
+    { verifyGoogleIdToken: jest.fn() } as any,
   );
   return { service, user };
 }

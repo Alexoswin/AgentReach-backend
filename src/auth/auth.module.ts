@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
+import { IdentityPlatformService } from './identity-platform.service';
 
 @Module({
   imports: [SettingsModule],
@@ -12,6 +13,7 @@ import { TokenService } from './token.service';
   providers: [
     AuthService,
     TokenService,
+    IdentityPlatformService,
     {
       provide: APP_GUARD,
       useClass: AuthGuard,

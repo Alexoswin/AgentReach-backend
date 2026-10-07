@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -18,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { RegisterDto } from './dto/register.dto';
+import { IdentityPlatformService } from './identity-platform.service';
 
 const THEME_VALUES = [
   'system',
@@ -48,6 +50,7 @@ export class AuthService {
     private tokenService: TokenService,
     private settingsService: SettingsService,
     private configService: ConfigService,
+    private identityPlatformService: IdentityPlatformService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -74,6 +77,8 @@ export class AuthService {
       data: {
         email: dto.email.toLowerCase(),
         passwordHash,
+        authProvider: 'password',
+        emailVerified: false,
         name: dto.name.trim(),
         initials,
       },
@@ -87,11 +92,115 @@ export class AuthService {
       where: { email: dto.email.toLowerCase() },
     });
 
-    if (!user || !(await verifyPassword(dto.password, user.passwordHash))) {
+    if (
+      !user ||
+      user.disabled ||
+      !(await verifyPassword(dto.password, user.passwordHash))
+    ) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    await this.db.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
     return this.issueSession(user);
+  }
+
+  async loginWithGoogle(idToken: string) {
+    const decoded =
+      await this.identityPlatformService.verifyGoogleIdToken(idToken);
+    const email = decoded.email!.trim().toLowerCase();
+
+    let user = await this.db.user.findUnique({
+      where: { identityPlatformUid: decoded.uid },
+    });
+
+    if (user) {
+      if (user.disabled)
+        throw new ForbiddenException('This account is disabled.');
+      user = await this.db.user.update({
+        where: { id: user.id },
+        data: {
+          emailVerified: true,
+          lastLoginAt: new Date(),
+        },
+      });
+      return this.issueSession(user);
+    }
+
+    const existingEmailUser = await this.db.user.findUnique({
+      where: { email },
+    });
+    if (existingEmailUser) {
+      throw new ConflictException(
+        'An account with this email already exists. Sign in with your password before linking Google.',
+      );
+    }
+
+    this.assertRegistrationAllowed(email, 'google');
+
+    const name = decoded.name?.trim() || email.split('@')[0];
+    const parts = name.split(/\s+/).filter(Boolean);
+    const initials =
+      parts.length > 1
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : name.slice(0, 2).toUpperCase();
+
+    user = await this.db.user.create({
+      data: {
+        email,
+        passwordHash: null,
+        identityPlatformUid: decoded.uid,
+        authProvider: 'google',
+        emailVerified: true,
+        lastLoginAt: new Date(),
+        name,
+        initials,
+      },
+    });
+
+    return this.issueSession(user);
+  }
+
+  async linkGoogle(userId: string, idToken: string) {
+    const decoded =
+      await this.identityPlatformService.verifyGoogleIdToken(idToken);
+    const email = decoded.email!.trim().toLowerCase();
+    const user = await this.db.user.findUnique({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+    if (user.disabled)
+      throw new ForbiddenException('This account is disabled.');
+    if (user.email.toLowerCase() !== email) {
+      throw new ForbiddenException(
+        'The Google email must match your ReachConvert email.',
+      );
+    }
+    if (user.identityPlatformUid && user.identityPlatformUid !== decoded.uid) {
+      throw new ConflictException(
+        'A different Google account is already linked.',
+      );
+    }
+
+    const linkedUser = await this.db.user.findUnique({
+      where: { identityPlatformUid: decoded.uid },
+    });
+    if (linkedUser && linkedUser.id !== userId) {
+      throw new ConflictException(
+        'This Google account is linked to another user.',
+      );
+    }
+
+    const updated = await this.db.user.update({
+      where: { id: userId },
+      data: {
+        identityPlatformUid: decoded.uid,
+        authProvider: user.passwordHash ? 'password+google' : 'google',
+        emailVerified: true,
+        lastLoginAt: new Date(),
+      },
+    });
+    return this.issueSession(updated);
   }
 
   async refresh(refreshToken: string) {
@@ -219,7 +328,10 @@ export class AuthService {
   // Data is not partitioned per user — every account sees the whole
   // workspace — so self-service sign-up is closed in production unless
   // ALLOW_REGISTRATION=true or the email is on ALLOWED_SIGNUP_EMAILS.
-  private assertRegistrationAllowed(email: string) {
+  private assertRegistrationAllowed(
+    email: string,
+    provider: 'password' | 'google' = 'password',
+  ) {
     const allowlist = (
       this.configService.get<string>('ALLOWED_SIGNUP_EMAILS') || ''
     )
@@ -228,7 +340,9 @@ export class AuthService {
       .filter(Boolean);
     if (allowlist.includes(email)) return;
 
-    const flag = this.configService.get<string>('ALLOW_REGISTRATION')?.trim();
+    const flagName =
+      provider === 'google' ? 'ALLOW_SSO_REGISTRATION' : 'ALLOW_REGISTRATION';
+    const flag = this.configService.get<string>(flagName)?.trim();
     const open = flag ? flag === 'true' : !isProduction();
     if (!open) {
       throw new ForbiddenException(
@@ -309,6 +423,8 @@ export class AuthService {
       phone: user.phone,
       theme: this.normalizeTheme(user.theme),
       accentColor: this.normalizeAccent(user.accentColor),
+      authProvider: user.authProvider || 'password',
+      emailVerified: user.emailVerified === true,
     };
   }
 
@@ -335,4 +451,9 @@ type UserProfile = {
   phone: string;
   theme: string;
   accentColor?: string;
+  passwordHash?: string | null;
+  identityPlatformUid?: string | null;
+  authProvider?: string;
+  disabled?: boolean;
+  emailVerified?: boolean;
 };

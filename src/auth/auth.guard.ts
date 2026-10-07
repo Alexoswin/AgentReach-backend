@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core';
 import { MongoService } from '../mongo.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
 import { TokenService } from './token.service';
+import { ACCESS_COOKIE_NAME, readCookie } from './session.cookies';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -29,16 +30,20 @@ export class AuthGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization || '';
-    const [scheme, token] = authHeader.split(' ');
+    const [scheme, headerToken] = authHeader.split(' ');
+    const token =
+      scheme === 'Bearer' && headerToken
+        ? headerToken
+        : readCookie(request, ACCESS_COOKIE_NAME);
 
-    if (scheme !== 'Bearer' || !token) {
+    if (!token) {
       throw new UnauthorizedException('Missing access token');
     }
 
     const payload = this.tokenService.verifyToken(token, 'access');
     const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
-    if (!user) {
+    if (!user || user.disabled) {
       throw new UnauthorizedException('User not found');
     }
 

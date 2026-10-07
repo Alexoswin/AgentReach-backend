@@ -60,7 +60,12 @@ jobs:
           # replaces all env vars on the service; when empty, existing env vars
           # on the service are left untouched.
           CLOUD_RUN_ENV: ${{ secrets.CLOUD_RUN_ENV }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
+          for name in FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
+            [ -n "${!name}" ] || { echo "::error::secrets.$name is not set"; exit 1; }
+          done
           env_flag=()
           if [ -n "$CLOUD_RUN_ENV" ]; then
             python3 - "$RUNNER_TEMP/cloud-run-env.json" <<'PY'
@@ -83,6 +88,13 @@ jobs:
               if key == "PORT":
                   continue
               env[key] = value
+
+          # Keep Identity Platform project settings in the deployment even
+          # when CLOUD_RUN_ENV is managed as one consolidated secret.
+          for key in ("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
+              value = os.environ.get(key, "").strip()
+              if value:
+                  env[key] = value
 
           with open(sys.argv[1], "w") as f:
               json.dump(env, f)

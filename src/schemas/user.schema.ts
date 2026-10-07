@@ -9,8 +9,23 @@ export class User {
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email: string;
 
-  @Prop({ required: true })
-  passwordHash: string;
+  @Prop({ type: String, default: null })
+  passwordHash?: string | null;
+
+  @Prop({ type: String, unique: true, sparse: true, index: true })
+  identityPlatformUid?: string | null;
+
+  @Prop({ type: String, default: 'password' })
+  authProvider: string;
+
+  @Prop({ default: false })
+  disabled: boolean;
+
+  @Prop({ default: false })
+  emailVerified: boolean;
+
+  @Prop({ type: Date, default: null })
+  lastLoginAt?: Date | null;
 
   @Prop({ type: String, default: null })
   refreshTokenHash?: string | null;
