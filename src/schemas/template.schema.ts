@@ -24,10 +24,13 @@ export class Template {
   @Prop({ required: true })
   subject: string;
 
-  @Prop({ required: true })
+  // A template may be HTML-only or text-only (TemplatesService requires at
+  // least one body). `required` would reject the empty string Mongoose sees
+  // for the missing one, failing every plain-text save with a 500.
+  @Prop({ type: String, default: '' })
   bodyHtml: string;
 
-  @Prop({ required: true })
+  @Prop({ type: String, default: '' })
   bodyText: string;
 
   // 'AI', 'PREDEFINED', 'CUSTOM'
