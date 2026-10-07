@@ -34,7 +34,9 @@ export class SettingsService {
 
   async getSettings(userId: string) {
     const settings = await this.getRawSettings(userId);
-    return maskSystemSettings(settings);
+    // A user who has not saved anything yet gets an empty object: a null
+    // return is sent as an empty body, which the client cannot parse.
+    return maskSystemSettings(settings) ?? {};
   }
 
   async updateSettings(userId: string, dto: UpdateSettingsDto) {
