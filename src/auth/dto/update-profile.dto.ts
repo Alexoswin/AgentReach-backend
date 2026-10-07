@@ -8,6 +8,7 @@ import {
 import { ApiProperty } from '@nestjs/swagger';
 
 const THEME_VALUES = [
+  'system',
   'dark-midnight',
   'dark-slate',
   'dark-graphite',

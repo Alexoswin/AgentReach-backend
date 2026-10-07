@@ -20,6 +20,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { RegisterDto } from './dto/register.dto';
 
 const THEME_VALUES = [
+  'system',
   'dark-midnight',
   'dark-slate',
   'dark-graphite',
@@ -314,7 +315,7 @@ export class AuthService {
   private normalizeTheme(theme?: string) {
     if (theme === 'dark') return 'dark-midnight';
     if (theme === 'light') return 'light-cloud';
-    return theme && THEME_VALUES.includes(theme) ? theme : 'dark-midnight';
+    return theme && THEME_VALUES.includes(theme) ? theme : 'system';
   }
 
   private normalizeAccent(accentColor?: string) {

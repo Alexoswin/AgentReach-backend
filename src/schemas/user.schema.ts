@@ -36,7 +36,7 @@ export class User {
   @Prop({ default: '' })
   phone: string;
 
-  @Prop({ default: 'dark-midnight' })
+  @Prop({ default: 'system' })
   theme: string;
 
   @Prop({ default: 'indigo' })
