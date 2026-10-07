@@ -155,6 +155,12 @@ export class MongoService implements OnModuleInit {
           process.env.AWS_KEY_ID || existingSettings?.awsAccessKeyId || '',
         awsSecretAccessKey:
           process.env.AWS_KEY || existingSettings?.awsSecretAccessKey || '',
+        awsRegion:
+          process.env.AWS_REGION || existingSettings?.awsRegion || 'us-east-1',
+        awsSenderEmail:
+          process.env.AWS_SENDER_EMAIL ||
+          existingSettings?.awsSenderEmail ||
+          '',
         geminiApiKey:
           existingSettings?.geminiApiKey || process.env.GEMINI_API_KEY || '',
         twilioAccountSid: existingSettings?.twilioAccountSid || '',
