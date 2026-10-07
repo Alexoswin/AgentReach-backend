@@ -14,6 +14,7 @@ import {
   csrfTokensMatch,
   ensureCsrfCookie,
   readCookie,
+  requiresCsrfToken,
   CSRF_COOKIE_NAME,
 } from './auth/session.cookies';
 import { TokenService } from './auth/token.service';
@@ -91,21 +92,8 @@ async function createApp() {
   app.use((request: Request, response: Response, next: NextFunction) => {
     ensureCsrfCookie(response, request);
 
-    const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
-    const publicAuthPath = [
-      '/api/auth/register',
-      '/api/auth/login',
-      '/api/auth/identity-platform',
-      '/api/auth/refresh',
-      '/api/auth/forgot-password',
-      '/api/auth/reset-password',
-      '/api/auth/verify-email',
-      '/api/auth/resend-verification',
-    ].includes(request.path);
-
     if (
-      unsafe &&
-      !publicAuthPath &&
+      requiresCsrfToken(request.method, request.path) &&
       !csrfTokensMatch(
         readCookie(request, CSRF_COOKIE_NAME),
         request.headers['x-csrf-token'] as string | undefined,

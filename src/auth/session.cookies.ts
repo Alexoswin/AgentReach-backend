@@ -84,6 +84,31 @@ export function ensureCsrfCookie(response: Response, request?: Request) {
   return token;
 }
 
+// Sign-in and sign-up run before the browser has a session to protect.
+const CSRF_EXEMPT_AUTH_PATHS = new Set([
+  '/api/auth/register',
+  '/api/auth/login',
+  '/api/auth/identity-platform',
+  '/api/auth/refresh',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
+  '/api/auth/verify-email',
+  '/api/auth/resend-verification',
+]);
+
+// Twilio and Plivo call these webhooks server-to-server. They carry no
+// session cookie, so there is nothing for a forged request to ride on, and
+// each proves itself with the signed per-call token instead. Requiring a
+// CSRF token rejected the answer callback with 403, so the provider hung up
+// the moment the callee picked up.
+const PROVIDER_WEBHOOK_PATH = /^\/api\/calling-campaigns\/(twilio|plivo)\//;
+
+export function requiresCsrfToken(method: string, path: string) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return false;
+  if (CSRF_EXEMPT_AUTH_PATHS.has(path)) return false;
+  return !PROVIDER_WEBHOOK_PATH.test(path);
+}
+
 export function csrfTokensMatch(
   expected: string | undefined,
   received: string | undefined,
