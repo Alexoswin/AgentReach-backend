@@ -14,6 +14,12 @@ import {
 
 const MAX_VOICE_PREVIEW_TEXT_LENGTH = 300;
 
+const PROVIDER_STATUS_FIELDS: Record<string, string[]> = {
+  geminiStatus: ['geminiApiKey'],
+  twilioStatus: ['twilioAccountSid', 'twilioAuthToken', 'twilioPhoneNumber'],
+  plivoStatus: ['plivoAuthId', 'plivoAuthToken', 'plivoPhoneNumber'],
+};
+
 const CREDENTIAL_LABELS: Record<string, string> = {
   awsAccessKeyId: 'AWS Access Key ID',
   awsSecretAccessKey: 'AWS Secret Access Key',
@@ -71,6 +77,15 @@ export class SettingsService {
         }
       }
       data[key] = val;
+    }
+
+    // New credentials have not been tested yet, so a "Connected" badge from
+    // the previous ones would be stale. (Unchanged secrets arrive masked and
+    // are skipped above, so they keep their status.)
+    for (const [status, fields] of Object.entries(PROVIDER_STATUS_FIELDS)) {
+      if (fields.some((field) => data[field] !== undefined)) {
+        data[status] = 'DISCONNECTED';
+      }
     }
 
     if (data.awsSenderEmail && !isEmail(data.awsSenderEmail)) {

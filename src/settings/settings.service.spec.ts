@@ -139,6 +139,31 @@ describe('SettingsService', () => {
   });
 });
 
+describe('SettingsService connection status', () => {
+  it('resets a provider status when its credentials change, not when they are re-sent masked', async () => {
+    const service = createSettingsService();
+    await service.updateSettings('user-a', { geminiApiKey: 'key-1' });
+    // Simulate a passed Test.
+    await (service as any).db.systemSettings.upsert({
+      where: { id: 'user-a' },
+      update: { geminiStatus: 'CONNECTED' },
+      create: {},
+    });
+
+    await service.updateSettings('user-a', {
+      geminiApiKey: MASKED_CREDENTIAL,
+    });
+    expect((await service.getRawSettings('user-a'))?.geminiStatus).toBe(
+      'CONNECTED',
+    );
+
+    await service.updateSettings('user-a', { geminiApiKey: 'key-2' });
+    expect((await service.getRawSettings('user-a'))?.geminiStatus).toBe(
+      'DISCONNECTED',
+    );
+  });
+});
+
 describe('UpdateSettingsDto', () => {
   it('accepts a save with every field blank', async () => {
     const dto = plainToInstance(UpdateSettingsDto, {
