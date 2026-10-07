@@ -8,12 +8,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { randomBytes, randomInt } from 'crypto';
+import { randomBytes, randomInt, randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
-import { SettingsService } from '../settings/settings.service';
 import { isProduction, safeEqual } from './secrets';
 import { hashPassword, verifyPassword } from './password';
-import { TokenService } from './token.service';
+import { REFRESH_TOKEN_TTL_SECONDS, TokenService } from './token.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -40,6 +39,11 @@ const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const EMAIL_VERIFICATION_TTL_MS = 10 * 60 * 1000;
 const EMAIL_VERIFICATION_RESEND_DELAY_MS = 60 * 1000;
 const MAX_EMAIL_VERIFICATION_ATTEMPTS = 5;
+// Signed-in devices kept per account; signing in on another drops the oldest.
+const MAX_SESSIONS_PER_USER = 10;
+// Two tabs share one refresh cookie and can refresh at the same moment; the
+// one that loses the race may still use the token that was just replaced.
+const REFRESH_REUSE_GRACE_MS = 60 * 1000;
 const FORGOT_PASSWORD_RESPONSE = {
   success: true,
   message: 'If an account exists for that email, a reset link has been sent.',
@@ -52,7 +56,6 @@ export class AuthService {
   constructor(
     private db: MongoService,
     private tokenService: TokenService,
-    private settingsService: SettingsService,
     private configService: ConfigService,
     private identityPlatformService: IdentityPlatformService,
   ) {}
@@ -324,22 +327,95 @@ export class AuthService {
     const payload = this.tokenService.verifyToken(refreshToken, 'refresh');
     const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
-    if (!user?.refreshTokenHash || user.disabled) {
+    if (!user || user.disabled) {
       throw new UnauthorizedException('Refresh token has been revoked');
     }
 
-    if (this.tokenService.hashToken(refreshToken) !== user.refreshTokenHash) {
-      throw new UnauthorizedException('Invalid refresh token');
+    const tokenHash = this.tokenService.hashToken(refreshToken);
+
+    if (!payload.sid) {
+      // Issued before per-device sessions existed: accept it once and move
+      // it onto its own session.
+      if (
+        !user.refreshTokenHash ||
+        !safeEqual(tokenHash, user.refreshTokenHash)
+      ) {
+        throw new UnauthorizedException('Refresh token has been revoked');
+      }
+      await this.db.user.update({
+        where: { id: user.id },
+        data: { refreshTokenHash: null },
+      });
+      return this.issueSession(user);
     }
 
-    return this.issueSession(user);
+    const session = await this.db.authSession.findUnique({
+      where: { id: payload.sid, userId: user.id },
+    });
+    if (!session) {
+      throw new UnauthorizedException('Refresh token has been revoked');
+    }
+
+    // Compare-and-swap on the current hash, so two refreshes of one session
+    // cannot both rotate it.
+    const nextRefreshToken = this.tokenService.signRefreshToken(
+      user,
+      session.id,
+    );
+    const rotated = await this.db.authSession.update({
+      where: { id: session.id, refreshTokenHash: tokenHash },
+      data: {
+        refreshTokenHash: this.tokenService.hashToken(nextRefreshToken),
+        previousRefreshTokenHash: tokenHash,
+        rotatedAt: new Date(),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000),
+      },
+    });
+    if (rotated) {
+      return {
+        accessToken: this.tokenService.signAccessToken(user, session.id),
+        refreshToken: nextRefreshToken,
+        user: this.sanitizeUser(user),
+      };
+    }
+
+    // Another tab rotated this session a moment ago and the browser already
+    // holds that new refresh cookie: issue an access token and leave the
+    // refresh cookie alone.
+    const latest = await this.db.authSession.findUnique({
+      where: { id: session.id },
+    });
+    const rotatedAt = latest?.rotatedAt
+      ? new Date(latest.rotatedAt).getTime()
+      : 0;
+    if (
+      latest?.previousRefreshTokenHash &&
+      safeEqual(tokenHash, latest.previousRefreshTokenHash) &&
+      Date.now() - rotatedAt < REFRESH_REUSE_GRACE_MS
+    ) {
+      return {
+        accessToken: this.tokenService.signAccessToken(user, session.id),
+        user: this.sanitizeUser(user),
+      };
+    }
+
+    // An already-replaced refresh token came back after the grace window:
+    // assume it was stolen and end that session.
+    await this.db.authSession.delete({ where: { id: session.id } });
+    throw new UnauthorizedException('Refresh token has been revoked');
   }
 
-  async logout(userId: string) {
-    await this.db.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash: null },
-    });
+  async logout(userId: string, sessionId?: string) {
+    if (sessionId) {
+      await this.db.authSession.deleteMany({
+        where: { id: sessionId, userId },
+      });
+    } else {
+      await this.db.user.update({
+        where: { id: userId },
+        data: { refreshTokenHash: null },
+      });
+    }
 
     return { success: true };
   }
@@ -350,12 +426,39 @@ export class AuthService {
     return this.sanitizeUser(user);
   }
 
-  async updateProfile(userId: string, dto: UpdateProfileDto) {
+  async updateProfile(
+    userId: string,
+    dto: UpdateProfileDto,
+    sessionId?: string,
+  ) {
+    const user = await this.db.user.findUnique({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const nextEmail = dto.email?.trim().toLowerCase();
+    const emailChanged = nextEmail !== undefined && nextEmail !== user.email;
+
+    // A new password or sign-in email is what someone holding a stolen
+    // session would set to keep the account, so both need the current one.
+    if (dto.password || emailChanged) {
+      if (!user.passwordHash) {
+        throw new BadRequestException(
+          emailChanged
+            ? 'This account signs in with Google, so its email follows your Google account.'
+            : 'Use "Forgot password?" on the sign-in page to add a password to this account.',
+        );
+      }
+      if (
+        !dto.currentPassword ||
+        !(await verifyPassword(dto.currentPassword, user.passwordHash))
+      ) {
+        throw new BadRequestException(
+          'Enter your current password correctly to change your password or email.',
+        );
+      }
+    }
+
     const data: any = {
       ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-      ...(dto.email !== undefined
-        ? { email: dto.email.trim().toLowerCase() }
-        : {}),
       ...(dto.initials !== undefined
         ? { initials: dto.initials.trim().slice(0, 3).toUpperCase() }
         : {}),
@@ -373,18 +476,48 @@ export class AuthService {
       data.refreshTokenHash = null;
     }
 
-    try {
-      const user = await this.db.user.update({
-        where: { id: userId },
-        data,
+    if (emailChanged) {
+      const taken = await this.db.user.findUnique({
+        where: { email: nextEmail },
       });
-
-      return this.sanitizeUser(user);
-    } catch {
-      throw new BadRequestException(
-        'Could not update profile. The email may already be in use.',
-      );
+      if (taken) {
+        throw new BadRequestException('That email is already in use.');
+      }
+      // The new address is unproven until its code is entered (asked for at
+      // the next sign-in), and the Google link belonged to the old address.
+      const verificationCode = this.createEmailVerificationCode();
+      await this.sendEmailVerificationCode(nextEmail, verificationCode);
+      const now = new Date();
+      Object.assign(data, {
+        email: nextEmail,
+        emailVerified: false,
+        emailVerificationCodeHash: this.tokenService.hashToken(verificationCode),
+        emailVerificationExpiresAt: new Date(
+          now.getTime() + EMAIL_VERIFICATION_TTL_MS,
+        ),
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: now,
+        identityPlatformUid: null,
+        authProvider: 'password',
+      });
     }
+
+    let updated: UserProfile;
+    try {
+      updated = await this.db.user.update({ where: { id: userId }, data });
+    } catch (error: any) {
+      if (error?.code === 11000) {
+        throw new BadRequestException('That email is already in use.');
+      }
+      throw error;
+    }
+
+    if (dto.password || emailChanged) {
+      // Sign out every other device; this one stays signed in.
+      await this.endSessions(userId, sessionId);
+    }
+
+    return this.sanitizeUser(updated);
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
@@ -436,8 +569,16 @@ export class AuthService {
         refreshTokenHash: null,
         passwordResetTokenHash: null,
         passwordResetExpiresAt: null,
+        // The link was opened from this mailbox, which proves the address,
+        // so a sign-up still waiting for its code is now verified too.
+        emailVerified: true,
+        emailVerificationCodeHash: null,
+        emailVerificationExpiresAt: null,
+        emailVerificationAttempts: 0,
+        emailVerificationSentAt: null,
       },
     });
+    await this.endSessions(user.id);
 
     return { success: true, message: 'Password reset successfully' };
   }
@@ -564,24 +705,15 @@ export class AuthService {
       throw new Error('PUBLIC_APP_URL is not configured.');
     }
 
-    const settings = await this.settingsService.getRawSettings();
-    const senderEmail = settings?.awsSenderEmail?.trim();
-    if (
-      !settings?.awsAccessKeyId ||
-      !settings?.awsSecretAccessKey ||
-      !senderEmail
-    ) {
-      throw new Error('AWS SES is not configured in Settings.');
+    const ses = this.platformSes();
+    if (!ses) {
+      throw new Error(
+        'Platform SES is not configured (AWS_KEY_ID, AWS_KEY, AWS_SENDER_EMAIL).',
+      );
     }
+    const { client, senderEmail } = ses;
 
     const link = `${appUrl}/login?resetToken=${encodeURIComponent(token)}`;
-    const client = new SESClient({
-      region: settings.awsRegion || 'us-east-1',
-      credentials: {
-        accessKeyId: settings.awsAccessKeyId,
-        secretAccessKey: settings.awsSecretAccessKey,
-      },
-    });
     await client.send(
       new SendEmailCommand({
         Source: `<${senderEmail}>`,
@@ -602,27 +734,35 @@ export class AuthService {
     return randomInt(100000, 1000000).toString();
   }
 
-  private async sendEmailVerificationCode(email: string, code: string) {
-    const settings = await this.settingsService.getRawSettings();
-    const accessKeyId =
-      settings?.awsAccessKeyId?.trim() || process.env.AWS_KEY_ID?.trim();
-    const secretAccessKey =
-      settings?.awsSecretAccessKey?.trim() || process.env.AWS_KEY?.trim();
-    const senderEmail =
-      settings?.awsSenderEmail?.trim() || process.env.AWS_SENDER_EMAIL?.trim();
+  // Account emails (verification codes, password resets) are sent from the
+  // platform's own SES identity, never with a user's Settings credentials.
+  private platformSes() {
+    const accessKeyId = this.configService.get<string>('AWS_KEY_ID')?.trim();
+    const secretAccessKey = this.configService.get<string>('AWS_KEY')?.trim();
+    const senderEmail = this.configService
+      .get<string>('AWS_SENDER_EMAIL')
+      ?.trim();
+    if (!accessKeyId || !secretAccessKey || !senderEmail) return null;
 
-    if (!accessKeyId || !secretAccessKey || !senderEmail) {
+    return {
+      client: new SESClient({
+        region: this.configService.get<string>('AWS_REGION')?.trim() || 'us-east-1',
+        credentials: { accessKeyId, secretAccessKey },
+      }),
+      senderEmail,
+    };
+  }
+
+  private async sendEmailVerificationCode(email: string, code: string) {
+    const ses = this.platformSes();
+    if (!ses) {
       throw new BadRequestException(
-        'Email verification is not configured. Ask an administrator to configure the global SES credentials.',
+        'Email verification is not configured. Ask an administrator to configure the platform SES credentials.',
       );
     }
+    const { client, senderEmail } = ses;
 
     try {
-      const client = new SESClient({
-        region:
-          settings?.awsRegion?.trim() || process.env.AWS_REGION || 'us-east-1',
-        credentials: { accessKeyId, secretAccessKey },
-      });
       await client.send(
         new SendEmailCommand({
           Source: `<${senderEmail}>`,
@@ -647,22 +787,50 @@ export class AuthService {
     }
   }
 
+  // Every sign-in gets its own session, so signing in or out on one device
+  // leaves the others alone.
   private async issueSession(user: UserProfile) {
-    const accessToken = this.tokenService.signAccessToken(user);
-    const refreshToken = this.tokenService.signRefreshToken(user);
+    const sessionId = randomUUID();
+    const refreshToken = this.tokenService.signRefreshToken(user, sessionId);
 
-    const updatedUser = await this.db.user.update({
-      where: { id: user.id },
+    await this.db.authSession.create({
       data: {
+        id: sessionId,
+        userId: user.id,
         refreshTokenHash: this.tokenService.hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000),
       },
     });
+    await this.pruneSessions(user.id);
 
     return {
-      accessToken,
+      accessToken: this.tokenService.signAccessToken(user, sessionId),
       refreshToken,
-      user: this.sanitizeUser(updatedUser),
+      user: this.sanitizeUser(user),
     };
+  }
+
+  private async pruneSessions(userId: string) {
+    const sessions = await this.db.authSession.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+    for (const stale of sessions.slice(MAX_SESSIONS_PER_USER)) {
+      await this.db.authSession.delete({ where: { id: stale.id } });
+    }
+  }
+
+  private async endSessions(userId: string, keepSessionId?: string) {
+    const sessions = await this.db.authSession.findMany({ where: { userId } });
+    for (const session of sessions) {
+      if (session.id !== keepSessionId) {
+        await this.db.authSession.delete({ where: { id: session.id } });
+      }
+    }
+    await this.db.user.update({
+      where: { id: userId },
+      data: { refreshTokenHash: null },
+    });
   }
 
   private sanitizeUser(user: UserProfile) {
@@ -705,6 +873,7 @@ type UserProfile = {
   theme: string;
   accentColor?: string;
   passwordHash?: string | null;
+  refreshTokenHash?: string | null;
   identityPlatformUid?: string | null;
   authProvider?: string;
   disabled?: boolean;

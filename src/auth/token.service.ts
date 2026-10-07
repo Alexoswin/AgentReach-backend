@@ -4,22 +4,32 @@ import { getJwtSecret, safeEqual } from './secrets';
 
 export type TokenType = 'access' | 'refresh';
 
+export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+
 interface TokenPayload {
   sub: string;
   email: string;
   type: TokenType;
   exp: number;
   jti?: string;
+  // AuthSession id; absent on tokens issued before per-device sessions.
+  sid?: string;
 }
 
 @Injectable()
 export class TokenService {
-  signAccessToken(user: { id: string; email: string }) {
-    return this.signToken(user, 'access', 15 * 60);
+  signAccessToken(user: { id: string; email: string }, sessionId: string) {
+    return this.signToken(user, 'access', ACCESS_TOKEN_TTL_SECONDS, sessionId);
   }
 
-  signRefreshToken(user: { id: string; email: string }) {
-    return this.signToken(user, 'refresh', 7 * 24 * 60 * 60);
+  signRefreshToken(user: { id: string; email: string }, sessionId: string) {
+    return this.signToken(
+      user,
+      'refresh',
+      REFRESH_TOKEN_TTL_SECONDS,
+      sessionId,
+    );
   }
 
   verifyToken(token: string, type: TokenType) {
@@ -60,6 +70,7 @@ export class TokenService {
     user: { id: string; email: string },
     type: TokenType,
     ttlSeconds: number,
+    sessionId: string,
   ) {
     const header = this.encode({ alg: 'HS256', typ: 'JWT' });
     const payload = this.encode({
@@ -68,6 +79,7 @@ export class TokenService {
       type,
       exp: Math.floor(Date.now() / 1000) + ttlSeconds,
       jti: randomBytes(16).toString('hex'),
+      sid: sessionId,
     });
 
     return `${header}.${payload}.${this.sign(`${header}.${payload}`)}`;

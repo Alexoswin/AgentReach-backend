@@ -1,6 +1,10 @@
 import { Global, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MongoService } from './mongo.service';
+import {
+  AuthSession,
+  AuthSessionSchema,
+} from './schemas/auth-session.schema';
 import { User, UserSchema } from './schemas/user.schema';
 import {
   SystemSettings,
@@ -50,6 +54,7 @@ import {
   imports: [
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
+      { name: AuthSession.name, schema: AuthSessionSchema },
       { name: SystemSettings.name, schema: SystemSettingsSchema },
       { name: Contact.name, schema: ContactSchema },
       { name: ContactDirectory.name, schema: ContactDirectorySchema },

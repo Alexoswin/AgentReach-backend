@@ -47,9 +47,21 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('User not found');
     }
 
+    // Signing out or resetting the password ends the session at once
+    // instead of when its access token expires.
+    if (payload.sid) {
+      const session = await this.db.authSession.findUnique({
+        where: { id: payload.sid, userId: user.id },
+      });
+      if (!session) {
+        throw new UnauthorizedException('Session has ended');
+      }
+    }
+
     request.user = {
       id: user.id,
       email: user.email,
+      sessionId: payload.sid,
     };
 
     return true;

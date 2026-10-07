@@ -126,14 +126,18 @@ export class AuthController {
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update current user profile' })
   updateProfile(@Req() request: any, @Body() dto: UpdateProfileDto) {
-    return this.authService.updateProfile(request.user.id, dto);
+    return this.authService.updateProfile(
+      request.user.id,
+      dto,
+      request.user.sessionId,
+    );
   }
 
   @Post('logout')
   @ApiOperation({ summary: 'Revoke current refresh token' })
   logout(@Req() request: any, @Res({ passthrough: true }) response: Response) {
     clearSessionCookies(response);
-    return this.authService.logout(request.user.id);
+    return this.authService.logout(request.user.id, request.user.sessionId);
   }
 
   @Post('link-google')
@@ -156,7 +160,7 @@ export class AuthController {
     response: Response,
     sessionPromise: Promise<{
       accessToken: string;
-      refreshToken: string;
+      refreshToken?: string;
       user: Record<string, unknown>;
     }>,
   ) {

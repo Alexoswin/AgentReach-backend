@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { hashPassword } from './auth/password';
 import { User } from './schemas/user.schema';
+import { AuthSession } from './schemas/auth-session.schema';
 import { SystemSettings } from './schemas/system-settings.schema';
 import { Contact } from './schemas/contact.schema';
 import { ContactDirectory } from './schemas/contact-directory.schema';
@@ -24,6 +25,7 @@ type AnyModel = Model<any>;
 @Injectable()
 export class MongoService implements OnModuleInit {
   user: MongoDelegate;
+  authSession: MongoDelegate;
   systemSettings: MongoDelegate;
   contact: MongoDelegate;
   contactDirectory: MongoDelegate;
@@ -42,6 +44,7 @@ export class MongoService implements OnModuleInit {
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
+    @InjectModel(AuthSession.name) private authSessionModel: AnyModel,
     @InjectModel(SystemSettings.name) private systemSettingsModel: AnyModel,
     @InjectModel(Contact.name) private contactModel: AnyModel,
     @InjectModel(ContactDirectory.name) private contactDirectoryModel: AnyModel,
@@ -81,6 +84,11 @@ export class MongoService implements OnModuleInit {
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
+    this.authSession = new MongoDelegate(
+      'authSession',
+      this.authSessionModel,
+      models,
+    );
     this.systemSettings = new MongoDelegate(
       'systemSettings',
       this.systemSettingsModel,

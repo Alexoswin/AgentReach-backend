@@ -11,7 +11,8 @@ const CSRF_COOKIE_PATH = '/api';
 
 export type AuthSession = {
   accessToken: string;
-  refreshToken: string;
+  // Omitted when the browser already holds the current refresh token.
+  refreshToken?: string;
   user: Record<string, unknown>;
 };
 
@@ -39,10 +40,12 @@ export function setSessionCookies(response: Response, session: AuthSession) {
     ...cookieSettings(true, ACCESS_COOKIE_PATH),
     maxAge: 15 * 60 * 1000,
   });
-  response.cookie(REFRESH_COOKIE_NAME, session.refreshToken, {
-    ...cookieSettings(true, REFRESH_COOKIE_PATH),
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  if (session.refreshToken) {
+    response.cookie(REFRESH_COOKIE_NAME, session.refreshToken, {
+      ...cookieSettings(true, REFRESH_COOKIE_PATH),
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+  }
 
   ensureCsrfCookie(response);
   return { user: session.user };

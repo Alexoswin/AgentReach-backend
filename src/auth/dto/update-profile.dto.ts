@@ -76,4 +76,10 @@ export class UpdateProfileDto {
   @MinLength(8)
   @IsOptional()
   password?: string;
+
+  // Required to change the password or the sign-in email.
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  currentPassword?: string;
 }
