@@ -232,8 +232,8 @@ describe('CallingCampaignsService', () => {
       calls: campaign.calls,
     });
 
-    const launched = await service.launchCampaign('campaign-1');
-    const relaunched = await service.relaunchCampaign('campaign-1');
+    const launched = await service.launchCampaign('campaign-1', 'user-1');
+    const relaunched = await service.relaunchCampaign('campaign-1', 'user-1');
 
     expect(launched.twilio.placed).toBe(1);
     expect(relaunched.twilio.placed).toBe(1);
@@ -276,12 +276,14 @@ describe('CallingCampaignsService', () => {
       .mockImplementation(async () => {
         order.push('gemini');
       });
-    jest.spyOn(service as any, 'createTwilioCall').mockImplementation(async () => {
-      order.push('twilio');
-      return { sid: 'CA123', status: 'queued' };
-    });
+    jest
+      .spyOn(service as any, 'createTwilioCall')
+      .mockImplementation(async () => {
+        order.push('twilio');
+        return { sid: 'CA123', status: 'queued' };
+      });
 
-    const launched = await service.launchCampaign('campaign-1');
+    const launched = await service.launchCampaign('campaign-1', 'user-1');
 
     expect(order).toEqual(['gemini', 'twilio']);
     expect(launched.twilio.placed).toBe(1);

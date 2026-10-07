@@ -1,5 +1,23 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
+
+// Query values arrive as strings (or arrays when a key repeats). An unparsable
+// date used to reach MongoDB as Invalid Date and fail the request with 500.
+function parseDateFilter(value: unknown, name: string) {
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException(`${name} must be a valid date.`);
+  }
+  return date;
+}
+
+function dateRange(startDate?: string, endDate?: string) {
+  if (!startDate && !endDate) return undefined;
+  return {
+    ...(startDate ? { gte: parseDateFilter(startDate, 'startDate') } : {}),
+    ...(endDate ? { lte: parseDateFilter(endDate, 'endDate') } : {}),
+  };
+}
 
 @Injectable()
 export class HistoryService {
@@ -14,22 +32,15 @@ export class HistoryService {
     const where: any = {};
 
     if (filters.campaignId) {
-      where.campaignId = filters.campaignId;
+      where.campaignId = String(filters.campaignId);
     }
 
     if (filters.status) {
-      where.deliveryStatus = filters.status;
+      where.deliveryStatus = String(filters.status);
     }
 
-    if (filters.startDate || filters.endDate) {
-      where.sentTime = {};
-      if (filters.startDate) {
-        where.sentTime.gte = new Date(filters.startDate);
-      }
-      if (filters.endDate) {
-        where.sentTime.lte = new Date(filters.endDate);
-      }
-    }
+    const range = dateRange(filters.startDate, filters.endDate);
+    if (range) where.sentTime = range;
 
     return this.db.emailCampaignContact.findMany({
       where,
@@ -50,22 +61,15 @@ export class HistoryService {
     const where: any = {};
 
     if (filters.campaignId) {
-      where.campaignId = filters.campaignId;
+      where.campaignId = String(filters.campaignId);
     }
 
     if (filters.outcome) {
-      where.outcome = filters.outcome;
+      where.outcome = String(filters.outcome);
     }
 
-    if (filters.startDate || filters.endDate) {
-      where.timestamp = {};
-      if (filters.startDate) {
-        where.timestamp.gte = new Date(filters.startDate);
-      }
-      if (filters.endDate) {
-        where.timestamp.lte = new Date(filters.endDate);
-      }
-    }
+    const range = dateRange(filters.startDate, filters.endDate);
+    if (range) where.timestamp = range;
 
     return this.db.callHistory.findMany({
       where,

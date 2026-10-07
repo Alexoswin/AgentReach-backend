@@ -79,6 +79,6 @@ describe('BotService', () => {
     );
 
     expect(results).toHaveLength(1);
-    expect(results[0].metadata.sourceName).toBe('legacy');
+    expect(results[0].metadata?.sourceName).toBe('legacy');
   });
 });

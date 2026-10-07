@@ -9,39 +9,67 @@ import { TokenService } from './token.service';
 import { hashPassword, verifyPassword } from './password';
 import { signCallToken, verifyCallToken } from './secrets';
 
-function createUserDelegate(records: any[] = []) {
-  const matches = (item: any, where: any) =>
+function createDelegate(records: any[] = []) {
+  const matches = (item: any, where: any = {}) =>
     Object.entries(where).every(([key, value]) => item[key] === value);
   return {
     records,
     findUnique: jest.fn(
       async ({ where }) => records.find((item) => matches(item, where)) || null,
     ),
+    findMany: jest.fn(async ({ where }: any = {}) =>
+      records.filter((item) => matches(item, where)),
+    ),
     create: jest.fn(async ({ data }) => {
-      const item = { id: `${records.length + 1}`, ...data };
+      const item = {
+        id: `${records.length + 1}`,
+        createdAt: new Date(),
+        ...data,
+      };
       records.push(item);
       return item;
     }),
     update: jest.fn(async ({ where, data }) => {
-      const index = records.findIndex((item) => item.id === where.id);
+      const index = records.findIndex((item) => matches(item, where));
+      if (index < 0) return null;
       records[index] = { ...records[index], ...data };
       return records[index];
+    }),
+    delete: jest.fn(async ({ where }) => {
+      const index = records.findIndex((item) => matches(item, where));
+      return index < 0 ? null : records.splice(index, 1)[0];
+    }),
+    deleteMany: jest.fn(async ({ where }) => {
+      const before = records.length;
+      for (let i = records.length - 1; i >= 0; i--) {
+        if (matches(records[i], where)) records.splice(i, 1);
+      }
+      return { count: before - records.length };
     }),
   };
 }
 
 function createService(users: any[] = [], env: Record<string, string> = {}) {
-  const user = createUserDelegate(users);
-  const settingsService = { getRawSettings: jest.fn(async () => null) };
+  const user = createDelegate(users);
+  const authSession = createDelegate();
   const configService = { get: jest.fn((key: string) => env[key]) };
   const service = new AuthService(
-    { user } as any,
+    { user, authSession } as any,
     new TokenService(),
-    settingsService as any,
     configService as any,
     { verifyGoogleIdToken: jest.fn() } as any,
   );
-  return { service, user };
+  return { service, user, authSession };
+}
+
+function sendCodesTo(service: AuthService) {
+  const sent: { email: string; code: string }[] = [];
+  jest
+    .spyOn(service as any, 'sendEmailVerificationCode')
+    .mockImplementation(async (...args: unknown[]) => {
+      sent.push({ email: String(args[0]), code: String(args[1]) });
+    });
+  return sent;
 }
 
 describe('AuthService', () => {
@@ -91,12 +119,7 @@ describe('AuthService', () => {
     const { service, user } = createService([], {
       ALLOW_REGISTRATION: 'true',
     });
-    let sentCode = '';
-    jest
-      .spyOn(service as any, 'sendEmailVerificationCode')
-      .mockImplementation(async (_email: string, code: string) => {
-        sentCode = code;
-      });
+    const sent = sendCodesTo(service);
 
     const registration = await service.register({
       name: 'Jane Doe',
@@ -115,7 +138,7 @@ describe('AuthService', () => {
 
     const session = await service.verifyEmail({
       email: 'jane@x.com',
-      code: sentCode,
+      code: sent[0].code,
     });
     expect(session).toHaveProperty('accessToken');
     expect(user.records[0].emailVerified).toBe(true);
@@ -140,12 +163,7 @@ describe('AuthService', () => {
       ],
       { ALLOW_REGISTRATION: 'true' },
     );
-    let sentCode = '';
-    jest
-      .spyOn(service as any, 'sendEmailVerificationCode')
-      .mockImplementation(async (_email: string, code: string) => {
-        sentCode = code;
-      });
+    const sent = sendCodesTo(service);
 
     const result = await service.register({
       name: 'Updated Jane',
@@ -157,7 +175,7 @@ describe('AuthService', () => {
       requiresEmailVerification: true,
       email: 'jane@x.com',
     });
-    expect(sentCode).toMatch(/^\d{6}$/);
+    expect(sent[0].code).toMatch(/^\d{6}$/);
     expect(user.records[0].name).toBe('Updated Jane');
     expect(user.records[0].emailVerified).toBe(false);
     expect(user.records[0].emailVerificationAttempts).toBe(0);
@@ -318,23 +336,164 @@ describe('AuthService', () => {
   });
 
   it('does not refresh a session for a disabled account', async () => {
-    const tokens = new TokenService();
-    const refreshToken = tokens.signRefreshToken({
-      id: '1',
-      email: 'a@x.com',
-    });
-    const { service } = createService([
+    const { service, user } = createService([
       {
         id: '1',
         email: 'a@x.com',
-        disabled: true,
-        refreshTokenHash: tokens.hashToken(refreshToken),
+        passwordHash: await hashPassword('pw-12345'),
+      },
+    ]);
+    const session = await service.login({
+      email: 'a@x.com',
+      password: 'pw-12345',
+    });
+    user.records[0].disabled = true;
+
+    await expect(service.refresh(session.refreshToken)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('keeps each device signed in on its own session', async () => {
+    const { service, authSession } = createService([
+      {
+        id: '1',
+        email: 'a@x.com',
+        passwordHash: await hashPassword('pw-12345'),
+      },
+    ]);
+    const laptop = await service.login({
+      email: 'a@x.com',
+      password: 'pw-12345',
+    });
+    const phone = await service.login({
+      email: 'a@x.com',
+      password: 'pw-12345',
+    });
+    expect(authSession.records).toHaveLength(2);
+
+    // Signing in on the phone did not sign the laptop out.
+    const laptopNext = await service.refresh(laptop.refreshToken);
+    expect(laptopNext.refreshToken).toEqual(expect.any(String));
+    await expect(service.refresh(phone.refreshToken)).resolves.toHaveProperty(
+      'accessToken',
+    );
+
+    // Logging out on the laptop ends only the laptop's session.
+    const laptopSid = authSession.records.find(
+      (record) =>
+        record.refreshTokenHash ===
+        new TokenService().hashToken(laptopNext.refreshToken!),
+    )!.id;
+    await service.logout('1', laptopSid);
+    expect(authSession.records).toHaveLength(1);
+    await expect(
+      service.refresh(laptopNext.refreshToken!),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('lets a second tab reuse a just-rotated token, then treats replay as theft', async () => {
+    const { service, authSession } = createService([
+      {
+        id: '1',
+        email: 'a@x.com',
+        passwordHash: await hashPassword('pw-12345'),
+      },
+    ]);
+    const first = await service.login({
+      email: 'a@x.com',
+      password: 'pw-12345',
+    });
+    await service.refresh(first.refreshToken);
+
+    // The other tab sent the old token at the same moment.
+    const sameMoment = await service.refresh(first.refreshToken);
+    expect(sameMoment).toHaveProperty('accessToken');
+    expect(sameMoment.refreshToken).toBeUndefined();
+
+    // The old token showing up after the grace window ends the session.
+    authSession.records[0].rotatedAt = new Date(Date.now() - 5 * 60 * 1000);
+    await expect(service.refresh(first.refreshToken)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(authSession.records).toHaveLength(0);
+  });
+
+  it('needs the current password to change the password or email', async () => {
+    const { service, user, authSession } = createService([
+      {
+        id: '1',
+        email: 'a@x.com',
+        passwordHash: await hashPassword('pw-12345'),
+        emailVerified: true,
+        identityPlatformUid: 'google-uid',
+        authProvider: 'password+google',
+      },
+    ]);
+    const sent = sendCodesTo(service);
+    const current = await service.login({
+      email: 'a@x.com',
+      password: 'pw-12345',
+    });
+    await service.login({ email: 'a@x.com', password: 'pw-12345' });
+    const currentSid = authSession.records[0].id;
+
+    await expect(
+      service.updateProfile('1', { password: 'new-password' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.updateProfile('1', {
+        email: 'b@x.com',
+        currentPassword: 'wrong',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    await service.updateProfile(
+      '1',
+      { email: 'b@x.com', currentPassword: 'pw-12345' },
+      currentSid,
+    );
+    // The new address must be proven, and Google proved the old one.
+    expect(sent).toEqual([{ email: 'b@x.com', code: expect.any(String) }]);
+    expect(user.records[0]).toMatchObject({
+      email: 'b@x.com',
+      emailVerified: false,
+      identityPlatformUid: null,
+      authProvider: 'password',
+    });
+    // Other devices are signed out; this one stays.
+    expect(authSession.records.map((record) => record.id)).toEqual([
+      currentSid,
+    ]);
+    expect(current).toHaveProperty('accessToken');
+  });
+
+  it('marks a pending sign-up verified when its password is reset', async () => {
+    const tokens = new TokenService();
+    const { service, user } = createService([
+      {
+        id: '1',
+        email: 'a@x.com',
+        passwordHash: await hashPassword('someone-elses'),
+        emailVerified: false,
+        emailVerificationCodeHash: 'pending-code',
+        passwordResetTokenHash: tokens.hashToken('reset-token-0123456789'),
+        passwordResetExpiresAt: new Date(Date.now() + 60_000),
       },
     ]);
 
-    await expect(service.refresh(refreshToken)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await service.resetPassword({
+      token: 'reset-token-0123456789',
+      newPassword: 'new-password',
+    });
+
+    expect(user.records[0]).toMatchObject({
+      emailVerified: true,
+      emailVerificationCodeHash: null,
+    });
+    await expect(
+      service.login({ email: 'a@x.com', password: 'new-password' }),
+    ).resolves.toHaveProperty('accessToken');
   });
 
   it('answers forgot-password the same way for unknown emails', async () => {

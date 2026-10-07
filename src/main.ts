@@ -10,13 +10,33 @@ import { Server as WsServer } from 'ws';
 import { RealtimeCallingGateway } from './realtime-calling/realtime-calling.gateway';
 import { getJwtSecret, isProduction } from './auth/secrets';
 import {
+  ACCESS_COOKIE_NAME,
   csrfTokensMatch,
   ensureCsrfCookie,
   readCookie,
   CSRF_COOKIE_NAME,
 } from './auth/session.cookies';
+import { TokenService } from './auth/token.service';
 
 const REQUEST_BODY_LIMIT = '50mb';
+// Sign-in, sign-up and telephony webhooks never send large bodies. Only a
+// signed-in user uploads contacts, templates and attachments, so anonymous
+// requests cannot make the server buffer 50 MB before the auth check.
+const ANONYMOUS_BODY_LIMIT = '1mb';
+
+// An access token this backend signed, even an expired one: the request then
+// gets the large limit and reaches the guard, which answers 401 so the
+// client refreshes, instead of failing as 413 Payload Too Large.
+function carriesSignedAccessToken(request: Request, tokens: TokenService) {
+  const [scheme, headerToken] = (request.headers.authorization || '').split(
+    ' ',
+  );
+  const token =
+    scheme === 'Bearer' && headerToken
+      ? headerToken
+      : readCookie(request, ACCESS_COOKIE_NAME);
+  return Boolean(token && tokens.isAuthentic(token));
+}
 
 // Builds the Nest app and wires up everything except the actual port bind,
 // so the same instance can either call app.listen() (Render/local, a
@@ -31,8 +51,25 @@ async function createApp() {
 
   const app = await NestFactory.create(AppModule);
 
-  app.use(json({ limit: REQUEST_BODY_LIMIT }));
-  app.use(urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
+  const tokens = new TokenService();
+  const parsers = {
+    large: [
+      json({ limit: REQUEST_BODY_LIMIT }),
+      urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }),
+    ],
+    small: [
+      json({ limit: ANONYMOUS_BODY_LIMIT }),
+      urlencoded({ extended: true, limit: ANONYMOUS_BODY_LIMIT }),
+    ],
+  };
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    const [parseJson, parseForm] = carriesSignedAccessToken(request, tokens)
+      ? parsers.large
+      : parsers.small;
+    parseJson(request, response, (error?: unknown) =>
+      error ? next(error) : parseForm(request, response, next),
+    );
+  });
 
   // CORS_ORIGINS (comma-separated) restricts which sites may call the API.
   const corsOrigins = (process.env.CORS_ORIGINS || '')

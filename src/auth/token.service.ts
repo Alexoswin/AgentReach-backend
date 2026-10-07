@@ -62,6 +62,16 @@ export class TokenService {
     return payload;
   }
 
+  // True when this backend signed the token, even if it has since expired.
+  isAuthentic(token: string) {
+    const [encodedHeader, encodedPayload, signature] = token.split('.');
+    if (!encodedHeader || !encodedPayload || !signature) return false;
+    return safeEqual(
+      signature,
+      this.sign(`${encodedHeader}.${encodedPayload}`),
+    );
+  }
+
   hashToken(token: string) {
     return createHmac('sha256', this.getSecret()).update(token).digest('hex');
   }

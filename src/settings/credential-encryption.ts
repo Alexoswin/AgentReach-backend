@@ -4,7 +4,11 @@ import {
   createHash,
   randomBytes,
 } from 'crypto';
+import { Logger } from '@nestjs/common';
 import { isProduction } from '../auth/secrets';
+
+const logger = new Logger('CredentialEncryption');
+let warnedAboutSharedKey = false;
 
 export const MASKED_CREDENTIAL = '••••••••••••••••';
 export const ENCRYPTED_CREDENTIAL_PREFIX = 'enc:v1:';
@@ -23,20 +27,40 @@ export const SYSTEM_CREDENTIAL_FIELDS = [
 
 type SystemCredentialField = (typeof SYSTEM_CREDENTIAL_FIELDS)[number];
 
-function getEncryptionKey() {
-  // Same precedence as before so credentials already stored keep decrypting;
-  // the DATABASE_URL / built-in fallbacks are only allowed outside production.
-  const secret =
-    process.env.CREDENTIAL_ENCRYPTION_KEY ||
-    process.env.JWT_SECRET ||
-    (isProduction() ? '' : process.env.DATABASE_URL) ||
-    (isProduction() ? '' : 'reachconvert-local-credential-key');
-  if (!secret) {
+// Keys for credentials, newest first. CREDENTIAL_ENCRYPTION_KEY encrypts new
+// values. JWT_SECRET (plus, outside production, DATABASE_URL and a built-in
+// value) encrypted them before it existed, so they stay as decryption
+// fallbacks: adding the dedicated key never strands a saved credential, and
+// once values are re-saved under it, rotating JWT_SECRET no longer wipes them.
+function credentialKeys() {
+  const secrets = [
+    process.env.CREDENTIAL_ENCRYPTION_KEY,
+    process.env.JWT_SECRET,
+    isProduction() ? undefined : process.env.DATABASE_URL,
+    isProduction() ? undefined : 'reachconvert-local-credential-key',
+  ].filter((secret): secret is string => Boolean(secret));
+  if (secrets.length === 0) {
     throw new Error(
       'CREDENTIAL_ENCRYPTION_KEY (or JWT_SECRET) must be set in production.',
     );
   }
-  return createHash('sha256').update(secret).digest();
+  if (
+    isProduction() &&
+    !process.env.CREDENTIAL_ENCRYPTION_KEY &&
+    !warnedAboutSharedKey
+  ) {
+    warnedAboutSharedKey = true;
+    logger.warn(
+      'CREDENTIAL_ENCRYPTION_KEY is not set; credentials are encrypted with JWT_SECRET, so rotating JWT_SECRET would make them unreadable.',
+    );
+  }
+  return [...new Set(secrets)].map((secret) =>
+    createHash('sha256').update(secret).digest(),
+  );
+}
+
+function getEncryptionKey() {
+  return credentialKeys()[0];
 }
 
 function isSystemCredentialField(key: string): key is SystemCredentialField {
@@ -76,23 +100,32 @@ export function encryptCredential(value: unknown) {
 export function decryptCredential(value: unknown) {
   if (!isEncryptedCredential(value)) return value;
 
-  try {
-    const payload = Buffer.from(
-      value.slice(ENCRYPTED_CREDENTIAL_PREFIX.length),
-      'base64',
-    );
-    const iv = payload.subarray(0, 12);
-    const tag = payload.subarray(12, 28);
-    const encrypted = payload.subarray(28);
-    const decipher = createDecipheriv('aes-256-gcm', getEncryptionKey(), iv);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([
-      decipher.update(encrypted),
-      decipher.final(),
-    ]).toString('utf8');
-  } catch {
-    return '';
+  const payload = Buffer.from(
+    value.slice(ENCRYPTED_CREDENTIAL_PREFIX.length),
+    'base64',
+  );
+  const iv = payload.subarray(0, 12);
+  const tag = payload.subarray(12, 28);
+  const encrypted = payload.subarray(28);
+
+  for (const key of credentialKeys()) {
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([
+        decipher.update(encrypted),
+        decipher.final(),
+      ]).toString('utf8');
+    } catch {
+      // Try the next key.
+    }
   }
+
+  // Previously this failed silently and the credential just looked unset.
+  logger.error(
+    'A stored credential could not be decrypted with any configured key; re-enter it in Settings.',
+  );
+  return '';
 }
 
 export function encryptSystemSettingsData<T extends Record<string, any>>(

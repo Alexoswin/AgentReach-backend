@@ -323,7 +323,7 @@ export class AuthService {
     return this.issueSession(updated);
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(refreshToken: string): Promise<RefreshedSession> {
     const payload = this.tokenService.verifyToken(refreshToken, 'refresh');
     const user = await this.db.user.findUnique({ where: { id: payload.sub } });
 
@@ -491,7 +491,8 @@ export class AuthService {
       Object.assign(data, {
         email: nextEmail,
         emailVerified: false,
-        emailVerificationCodeHash: this.tokenService.hashToken(verificationCode),
+        emailVerificationCodeHash:
+          this.tokenService.hashToken(verificationCode),
         emailVerificationExpiresAt: new Date(
           now.getTime() + EMAIL_VERIFICATION_TTL_MS,
         ),
@@ -746,7 +747,8 @@ export class AuthService {
 
     return {
       client: new SESClient({
-        region: this.configService.get<string>('AWS_REGION')?.trim() || 'us-east-1',
+        region:
+          this.configService.get<string>('AWS_REGION')?.trim() || 'us-east-1',
         credentials: { accessKeyId, secretAccessKey },
       }),
       senderEmail,
@@ -861,6 +863,13 @@ export class AuthService {
       : 'indigo';
   }
 }
+
+// refreshToken is omitted when the browser already holds the current one.
+type RefreshedSession = {
+  accessToken: string;
+  refreshToken?: string;
+  user: Record<string, unknown>;
+};
 
 type UserProfile = {
   id: string;

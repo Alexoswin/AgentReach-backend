@@ -20,6 +20,7 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { Public } from './public.decorator';
+import { enforceAuthRateLimit } from './rate-limit';
 import { IdentityPlatformDto } from './dto/identity-platform.dto';
 import {
   clearSessionCookies,
@@ -37,7 +38,8 @@ export class AuthController {
   @Post('register')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Register a new account' })
-  register(@Body() dto: RegisterDto) {
+  register(@Req() request: Request, @Body() dto: RegisterDto) {
+    enforceAuthRateLimit('register', request, dto.email);
     return this.authService.register(dto);
   }
 
@@ -45,7 +47,12 @@ export class AuthController {
   @Post('login')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Login and receive a secure session cookie' })
-  login(@Body() dto: LoginDto, @Res({ passthrough: true }) response: Response) {
+  login(
+    @Req() request: Request,
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    enforceAuthRateLimit('login', request, dto.email);
     return this.writeSession(response, this.authService.login(dto));
   }
 
@@ -56,9 +63,11 @@ export class AuthController {
     summary: 'Exchange a verified Google Identity Platform token for a session',
   })
   identityPlatform(
+    @Req() request: Request,
     @Body() dto: IdentityPlatformDto,
     @Res({ passthrough: true }) response: Response,
   ) {
+    enforceAuthRateLimit('identity-platform', request);
     return this.writeSession(
       response,
       this.authService.loginWithGoogle(dto.idToken),
@@ -85,7 +94,8 @@ export class AuthController {
   @Post('forgot-password')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Email a one-time password reset link' })
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
+  forgotPassword(@Req() request: Request, @Body() dto: ForgotPasswordDto) {
+    enforceAuthRateLimit('forgot-password', request, dto.email);
     return this.authService.forgotPassword(dto);
   }
 
@@ -93,7 +103,8 @@ export class AuthController {
   @Post('reset-password')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Set a new password using a reset link token' })
-  resetPassword(@Body() dto: ResetPasswordDto) {
+  resetPassword(@Req() request: Request, @Body() dto: ResetPasswordDto) {
+    enforceAuthRateLimit('reset-password', request);
     return this.authService.resetPassword(dto);
   }
 
@@ -102,9 +113,11 @@ export class AuthController {
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Verify an email address with a one-time code' })
   verifyEmail(
+    @Req() request: Request,
     @Body() dto: VerifyEmailDto,
     @Res({ passthrough: true }) response: Response,
   ) {
+    enforceAuthRateLimit('verify-email', request, dto.email);
     return this.writeSession(response, this.authService.verifyEmail(dto));
   }
 
@@ -112,7 +125,11 @@ export class AuthController {
   @Post('resend-verification')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Resend an email verification code' })
-  resendVerification(@Body() dto: ResendVerificationDto) {
+  resendVerification(
+    @Req() request: Request,
+    @Body() dto: ResendVerificationDto,
+  ) {
+    enforceAuthRateLimit('resend-verification', request, dto.email);
     return this.authService.resendVerification(dto.email);
   }
 

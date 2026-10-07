@@ -91,7 +91,10 @@ export class ContactsController {
   }
 
   @Post('parse-file')
-  @UseInterceptors(FileInterceptor('file'))
+  // Stop oversized uploads while streaming instead of buffering them first.
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Upload and parse CSV or XLSX contacts file for column mapping',

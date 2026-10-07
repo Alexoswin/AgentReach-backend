@@ -43,7 +43,10 @@ export class TemplatesController {
   @ApiOperation({
     summary: 'Generate a personalized template using Gemini AI',
   })
-  async generateTemplate(@Req() request: any, @Body() dto: GenerateTemplateDto) {
+  async generateTemplate(
+    @Req() request: any,
+    @Body() dto: GenerateTemplateDto,
+  ) {
     return this.templatesService.generateAiTemplate(dto, request.user.id);
   }
 
@@ -73,7 +76,10 @@ export class TemplatesController {
   }
 
   @Post('reference-pdf')
-  @UseInterceptors(FileInterceptor('file'))
+  // Stop oversized uploads while streaming instead of buffering them first.
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 8 * 1024 * 1024 } }),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary:
@@ -110,10 +116,7 @@ export class TemplatesController {
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a template' })
-  async update(
-    @Param('id') id: string,
-    @Body() dto: UpdateTemplateDto,
-  ) {
+  async update(@Param('id') id: string, @Body() dto: UpdateTemplateDto) {
     return this.templatesService.update(id, dto);
   }
 

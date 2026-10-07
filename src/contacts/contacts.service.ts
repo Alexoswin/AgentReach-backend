@@ -224,7 +224,18 @@ export class ContactsService {
     return new Promise((resolve, reject) => {
       parse(
         buffer,
-        { columns: true, skip_empty_lines: true, trim: true },
+        {
+          // A "__proto__" (or similar) header must stay an ordinary column
+          // name instead of reaching an object's prototype.
+          columns: (header: string[]) =>
+            header.map((name) =>
+              ['__proto__', 'constructor', 'prototype'].includes(name)
+                ? `_${name}`
+                : name,
+            ),
+          skip_empty_lines: true,
+          trim: true,
+        },
         (err, records: any) => {
           if (err)
             return reject(

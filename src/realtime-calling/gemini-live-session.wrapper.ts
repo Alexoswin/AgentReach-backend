@@ -14,7 +14,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
 export type GeminiLiveConfig = {
   // User whose Gemini key runs this session (the campaign's launcher).
-  userId: string | null | undefined;
+  userId?: string | null;
   systemInstruction: string;
   model: string;
   voiceName: string;
@@ -297,7 +297,8 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
         this.usage.totalTokenCount += usage.totalTokenCount || 0;
       }
 
-      if (message?.serverContent) this.handleServerContent(message.serverContent);
+      if (message?.serverContent)
+        this.handleServerContent(message.serverContent);
       if (message?.toolCall) await this.handleToolCall(message.toolCall);
     } catch (error) {
       this.emit('error', error);
@@ -310,7 +311,9 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
       const data = part?.inlineData?.data;
       if (!data) continue;
       if (this.firstAudioPacket) {
-        this.logger.log(`Gemini Live first audio packet bytes=${Buffer.byteLength(data, 'base64')}`);
+        this.logger.log(
+          `Gemini Live first audio packet bytes=${Buffer.byteLength(data, 'base64')}`,
+        );
         this.emit('audio_start');
         this.firstAudioPacket = false;
       }
