@@ -66,7 +66,62 @@ export class AuthService {
     });
 
     if (existing) {
-      throw new BadRequestException('User with that email already exists');
+      const isPendingPasswordUser =
+        !existing.emailVerified &&
+        Boolean(existing.passwordHash) &&
+        !existing.identityPlatformUid &&
+        existing.authProvider !== 'google';
+
+      if (!isPendingPasswordUser) {
+        throw new BadRequestException('User with that email already exists');
+      }
+
+      const sentAt = existing.emailVerificationSentAt
+        ? new Date(existing.emailVerificationSentAt).getTime()
+        : 0;
+      if (sentAt && Date.now() - sentAt < EMAIL_VERIFICATION_RESEND_DELAY_MS) {
+        return {
+          requiresEmailVerification: true,
+          email,
+          message:
+            'This account is awaiting email verification. Enter the code we already sent to your email.',
+        };
+      }
+
+      const passwordHash = await hashPassword(dto.password);
+      const verificationCode = this.createEmailVerificationCode();
+      await this.sendEmailVerificationCode(email, verificationCode);
+      const now = new Date();
+
+      const parts = dto.name.trim().split(' ');
+      const initials =
+        parts.length > 1
+          ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+          : dto.name.slice(0, 2).toUpperCase();
+
+      await this.db.user.update({
+        where: { id: existing.id },
+        data: {
+          passwordHash,
+          authProvider: 'password',
+          emailVerified: false,
+          emailVerificationCodeHash:
+            this.tokenService.hashToken(verificationCode),
+          emailVerificationExpiresAt: new Date(
+            now.getTime() + EMAIL_VERIFICATION_TTL_MS,
+          ),
+          emailVerificationAttempts: 0,
+          emailVerificationSentAt: now,
+          name: dto.name.trim(),
+          initials,
+        },
+      });
+
+      return {
+        requiresEmailVerification: true,
+        email,
+        message: 'We sent a new verification code to your email address.',
+      };
     }
 
     const passwordHash = await hashPassword(dto.password);

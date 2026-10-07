@@ -118,6 +118,73 @@ describe('AuthService', () => {
     delete process.env.JWT_SECRET;
   });
 
+  it('reuses an unverified password account during signup', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'test-secret';
+    const { service, user } = createService(
+      [
+        {
+          id: 'pending-1',
+          email: 'jane@x.com',
+          passwordHash: 'previous-password-hash',
+          authProvider: 'password',
+          emailVerified: false,
+          identityPlatformUid: null,
+          emailVerificationSentAt: new Date(Date.now() - 61_000),
+        },
+      ],
+      { ALLOW_REGISTRATION: 'true' },
+    );
+    let sentCode = '';
+    jest
+      .spyOn(service as any, 'sendEmailVerificationCode')
+      .mockImplementation(async (_email: string, code: string) => {
+        sentCode = code;
+      });
+
+    const result = await service.register({
+      name: 'Updated Jane',
+      email: 'jane@x.com',
+      password: 'newsecret123',
+    });
+
+    expect(result).toMatchObject({
+      requiresEmailVerification: true,
+      email: 'jane@x.com',
+    });
+    expect(sentCode).toMatch(/^\d{6}$/);
+    expect(user.records[0].name).toBe('Updated Jane');
+    expect(user.records[0].emailVerified).toBe(false);
+    expect(user.records[0].emailVerificationAttempts).toBe(0);
+    expect(user.records[0].emailVerificationCodeHash).not.toBeNull();
+    delete process.env.JWT_SECRET;
+  });
+
+  it('does not reuse an SSO account during password signup', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service } = createService(
+      [
+        {
+          id: 'google-1',
+          email: 'jane@x.com',
+          passwordHash: null,
+          authProvider: 'google',
+          identityPlatformUid: 'google-uid',
+          emailVerified: false,
+        },
+      ],
+      { ALLOW_REGISTRATION: 'true' },
+    );
+
+    await expect(
+      service.register({
+        name: 'Jane Doe',
+        email: 'jane@x.com',
+        password: 'newsecret123',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('answers forgot-password the same way for unknown emails', async () => {
     const { service, user } = createService([
       { id: '1', email: 'a@x.com', passwordHash: 'x' },
