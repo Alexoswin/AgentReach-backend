@@ -60,10 +60,11 @@ jobs:
           # replaces all env vars on the service; when empty, existing env vars
           # on the service are left untouched.
           CLOUD_RUN_ENV: ${{ secrets.CLOUD_RUN_ENV }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
-          for name in FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
+          for name in JWT_SECRET FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
             [ -n "${!name}" ] || { echo "::error::secrets.$name is not set"; exit 1; }
           done
           env_flag=()
@@ -91,7 +92,7 @@ jobs:
 
           # Keep Identity Platform project settings in the deployment even
           # when CLOUD_RUN_ENV is managed as one consolidated secret.
-          for key in ("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
+          for key in ("JWT_SECRET", "FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
               value = os.environ.get(key, "").strip()
               if value:
                   env[key] = value
