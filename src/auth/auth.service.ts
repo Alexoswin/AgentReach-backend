@@ -219,10 +219,8 @@ export class AuthService {
       if (existingEmailUser.disabled) {
         throw new ForbiddenException('This account is disabled.');
       }
-      if (
-        existingEmailUser.identityPlatformUid &&
-        existingEmailUser.identityPlatformUid !== decoded.uid
-      ) {
+      const linkedIdentityUid = existingEmailUser.identityPlatformUid?.trim();
+      if (linkedIdentityUid && linkedIdentityUid !== decoded.uid) {
         throw new ConflictException(
           'This email is already linked to a different Google account.',
         );

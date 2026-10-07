@@ -255,6 +255,37 @@ describe('AuthService', () => {
     delete process.env.JWT_SECRET;
   });
 
+  it('links Google SSO to an already-verified password account', async () => {
+    process.env.JWT_SECRET = 'test-secret';
+    const { service, user } = createService([
+      {
+        id: 'password-verified-1',
+        email: 'jane@x.com',
+        passwordHash: 'password-hash',
+        authProvider: 'password',
+        emailVerified: true,
+        identityPlatformUid: null,
+      },
+    ]);
+    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+      .fn()
+      .mockResolvedValue({
+        uid: 'google-uid',
+        email: 'jane@x.com',
+        email_verified: true,
+      });
+
+    await expect(
+      service.loginWithGoogle('google-token'),
+    ).resolves.toHaveProperty('accessToken');
+    expect(user.records[0]).toMatchObject({
+      identityPlatformUid: 'google-uid',
+      authProvider: 'password+google',
+      emailVerified: true,
+    });
+    delete process.env.JWT_SECRET;
+  });
+
   it('rejects SSO when the email is linked to another Google identity', async () => {
     const { service } = createService([
       {
