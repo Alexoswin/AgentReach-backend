@@ -311,6 +311,33 @@ describe('AuthService', () => {
     delete process.env.JWT_SECRET;
   });
 
+  it('always lets new Google users sign up, even with registration closed', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'test-secret';
+    const { service, user } = createService([], {
+      ALLOW_REGISTRATION: 'false',
+    });
+    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+      .fn()
+      .mockResolvedValue({
+        uid: 'google-uid',
+        email: 'new@x.com',
+        email_verified: true,
+        name: 'New User',
+      });
+
+    await expect(
+      service.loginWithGoogle('google-token'),
+    ).resolves.toHaveProperty('accessToken');
+    expect(user.records[0]).toMatchObject({
+      email: 'new@x.com',
+      identityPlatformUid: 'google-uid',
+      authProvider: 'google',
+      emailVerified: true,
+    });
+    delete process.env.JWT_SECRET;
+  });
+
   it('rejects SSO when the email is linked to another Google identity', async () => {
     const { service } = createService([
       {

@@ -258,8 +258,7 @@ export class AuthService {
       return this.issueSession(user);
     }
 
-    this.assertRegistrationAllowed(email, 'google');
-
+    // Google sign-up is always open: Google has already verified the email.
     const name = decoded.name?.trim() || email.split('@')[0];
     const parts = name.split(/\s+/).filter(Boolean);
     const initials =
@@ -674,10 +673,7 @@ export class AuthService {
   // Data is not partitioned per user — every account sees the whole
   // workspace — so self-service sign-up is closed in production unless
   // ALLOW_REGISTRATION=true or the email is on ALLOWED_SIGNUP_EMAILS.
-  private assertRegistrationAllowed(
-    email: string,
-    provider: 'password' | 'google' = 'password',
-  ) {
+  private assertRegistrationAllowed(email: string) {
     const allowlist = (
       this.configService.get<string>('ALLOWED_SIGNUP_EMAILS') || ''
     )
@@ -686,9 +682,7 @@ export class AuthService {
       .filter(Boolean);
     if (allowlist.includes(email)) return;
 
-    const flagName =
-      provider === 'google' ? 'ALLOW_SSO_REGISTRATION' : 'ALLOW_REGISTRATION';
-    const flag = this.configService.get<string>(flagName)?.trim();
+    const flag = this.configService.get<string>('ALLOW_REGISTRATION')?.trim();
     const open = flag ? flag === 'true' : !isProduction();
     if (!open) {
       throw new ForbiddenException(
