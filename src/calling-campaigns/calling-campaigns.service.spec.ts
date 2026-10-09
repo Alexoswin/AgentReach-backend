@@ -1,13 +1,13 @@
 import { CallingCampaignsService } from './calling-campaigns.service';
 
 function createDelegate(records: any[] = []) {
+  const matches = (item: any, where: any) =>
+    Object.entries(where).every(([key, value]) => item[key] === value);
   return {
     records,
-    findUnique: jest.fn(async ({ where }) => {
-      const found = records.find((item) => item.id === where.id);
-      if (!found) return null;
-      return found;
-    }),
+    findUnique: jest.fn(
+      async ({ where }) => records.find((item) => matches(item, where)) || null,
+    ),
     findMany: jest.fn(async ({ where } = {}) => {
       if (!where) return records;
       return records.filter((item) =>
@@ -214,6 +214,7 @@ describe('CallingCampaignsService', () => {
   it('launches and relaunches mock Twilio campaigns without external calls', async () => {
     const campaign = {
       id: 'campaign-1',
+      ownerId: 'user-1',
       name: 'Follow up',
       status: 'DRAFT',
       selectedLanguage: 'en-IN',
@@ -248,6 +249,7 @@ describe('CallingCampaignsService', () => {
   it('initializes Gemini Live before placing real Twilio calls', async () => {
     const campaign = {
       id: 'campaign-1',
+      ownerId: 'user-1',
       name: 'Follow up',
       status: 'DRAFT',
       selectedLanguage: 'en-IN',
@@ -293,6 +295,7 @@ describe('CallingCampaignsService', () => {
   it('stops active campaign calls', async () => {
     const campaign = {
       id: 'campaign-1',
+      ownerId: 'user-1',
       status: 'RUNNING',
       calls: [{ id: 'call-1', outcome: 'QUEUED' }],
     };
@@ -301,14 +304,43 @@ describe('CallingCampaignsService', () => {
       calls: campaign.calls,
     });
 
-    const result = await service.stopCampaign('campaign-1');
+    const result = await service.stopCampaign('campaign-1', 'user-1');
 
     expect(result).toEqual({ status: 'STOPPED', cancelledCalls: 1 });
     expect(db.callingCampaign.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'campaign-1' },
+        where: { id: 'campaign-1', ownerId: 'user-1' },
         data: expect.objectContaining({ status: 'STOPPED' }),
       }),
     );
+  });
+
+  it("hides a campaign and its calls from users who don't own it", async () => {
+    const campaign = {
+      id: 'campaign-1',
+      ownerId: 'user-1',
+      status: 'RUNNING',
+      calls: [{ id: 'call-1', outcome: 'QUEUED' }],
+    };
+    const { service, db } = createService({
+      campaigns: [campaign],
+      calls: [{ id: 'call-1', campaignId: 'campaign-1', ownerId: 'user-1' }],
+    });
+
+    await expect(service.findOne('campaign-1', 'user-2')).rejects.toThrow(
+      'Calling campaign not found.',
+    );
+    await expect(service.stopCampaign('campaign-1', 'user-2')).rejects.toThrow(
+      'Calling campaign not found.',
+    );
+    await expect(service.findAll('user-2')).resolves.toEqual([]);
+    await expect(service.getDashboardMetrics('user-2')).resolves.toMatchObject({
+      totalCampaigns: 0,
+      totalCalls: 0,
+    });
+    await expect(
+      service.getCallRecordingAudio('call-1', 'user-2'),
+    ).rejects.toThrow('Call recording not found.');
+    expect(db.callingCampaign.update).not.toHaveBeenCalled();
   });
 });

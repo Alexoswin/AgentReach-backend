@@ -15,17 +15,22 @@ export class ContactsService {
     private readonly watches: WatchService,
   ) {}
 
-  async findAll() {
+  async findAll(userId: string) {
     return this.db.contact.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async findDirectories() {
+  async findDirectories(userId: string) {
     const directories = await this.db.contactDirectory.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'asc' },
     });
-    const contacts = await this.db.contact.findMany();
+    const contacts = await this.db.contact.findMany({
+      where: { ownerId: userId },
+      select: { directoryId: true },
+    });
     const counts = contacts.reduce(
       (acc: Record<string, number>, contact: any) => {
         if (contact.directoryId) {
@@ -42,14 +47,14 @@ export class ContactsService {
     }));
   }
 
-  async createDirectory(dto: CreateContactDirectoryDto) {
+  async createDirectory(dto: CreateContactDirectoryDto, userId: string) {
     const name = dto.name.trim();
     if (!name) {
       throw new BadRequestException('Directory name is required');
     }
 
     const existing = await this.db.contactDirectory.findFirst({
-      where: { name },
+      where: { name, ownerId: userId },
     });
     if (existing) {
       throw new BadRequestException(
@@ -61,12 +66,17 @@ export class ContactsService {
       data: {
         name,
         description: dto.description?.trim() || null,
+        ownerId: userId,
       },
     });
   }
 
-  async updateDirectory(id: string, dto: UpdateContactDirectoryDto) {
-    await this.findDirectory(id);
+  async updateDirectory(
+    id: string,
+    dto: UpdateContactDirectoryDto,
+    userId: string,
+  ) {
+    await this.findDirectory(id, userId);
     const data: Record<string, any> = {};
 
     if (dto.name !== undefined) {
@@ -76,7 +86,7 @@ export class ContactsService {
       }
 
       const existing = await this.db.contactDirectory.findFirst({
-        where: { name },
+        where: { name, ownerId: userId },
       });
       if (existing && existing.id !== id) {
         throw new BadRequestException(
@@ -91,25 +101,25 @@ export class ContactsService {
     }
 
     return this.db.contactDirectory.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data,
     });
   }
 
-  async removeDirectory(id: string) {
-    await this.findDirectory(id);
+  async removeDirectory(id: string, userId: string) {
+    await this.findDirectory(id, userId);
     await this.db.contact.updateMany({
-      where: { directoryId: id },
+      where: { directoryId: id, ownerId: userId },
       data: { directoryId: null },
     });
     return this.db.contactDirectory.delete({
-      where: { id },
+      where: { id, ownerId: userId },
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string) {
     const contact = await this.db.contact.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
     });
     if (!contact) {
       throw new BadRequestException('Contact not found');
@@ -117,21 +127,22 @@ export class ContactsService {
     return contact;
   }
 
-  async create(dto: CreateContactDto) {
+  async create(dto: CreateContactDto, userId: string) {
     const email = dto.email.trim().toLowerCase();
     const existing = await this.db.contact.findUnique({
-      where: { email },
+      where: { email, ownerId: userId },
     });
     if (existing) {
       throw new BadRequestException('A contact with this email already exists');
     }
 
-    await this.ensureDirectoryExists(dto.directoryId);
+    await this.ensureDirectoryExists(dto.directoryId, userId);
     const { customFields, ...rest } = dto;
     const contact = await this.db.contact.create({
       data: {
         ...rest,
         email,
+        ownerId: userId,
         phoneNumber: this.normalizePhoneNumber(rest.phoneNumber),
         directoryId: rest.directoryId || null,
         customFields: customFields ? JSON.stringify(customFields) : null,
@@ -140,17 +151,17 @@ export class ContactsService {
 
     // Best-effort: start watching this contact's company for buying signals.
     void this.watches
-      .ensureWatchesForEmails([{ email, company: rest.company }])
+      .ensureWatchesForEmails([{ email, company: rest.company }], userId)
       .catch(() => undefined);
 
     return contact;
   }
 
-  async update(id: string, dto: Partial<CreateContactDto>) {
-    await this.findOne(id); // Check existence
+  async update(id: string, dto: Partial<CreateContactDto>, userId: string) {
+    await this.findOne(id, userId); // Check existence
     if (dto.email) {
       const existing = await this.db.contact.findUnique({
-        where: { email: dto.email },
+        where: { email: dto.email.trim().toLowerCase(), ownerId: userId },
       });
       if (existing && existing.id !== id) {
         throw new BadRequestException(
@@ -159,8 +170,11 @@ export class ContactsService {
       }
     }
 
-    await this.ensureDirectoryExists(dto.directoryId);
+    await this.ensureDirectoryExists(dto.directoryId, userId);
     const { customFields, ...rest } = dto;
+    // Partial<> has no runtime type, so this body is not whitelisted; it must
+    // not be able to hand the contact to another owner.
+    delete (rest as Record<string, unknown>).ownerId;
     const data = {
       ...rest,
       ...(rest.email ? { email: rest.email.trim().toLowerCase() } : {}),
@@ -173,15 +187,15 @@ export class ContactsService {
     };
 
     return this.db.contact.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data,
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, userId: string) {
+    await this.findOne(id, userId);
     return this.db.contact.delete({
-      where: { id },
+      where: { id, ownerId: userId },
     });
   }
 
@@ -276,9 +290,9 @@ export class ContactsService {
     }
   }
 
-  async importContacts(dto: ImportContactsDto) {
+  async importContacts(dto: ImportContactsDto, userId: string) {
     const { rows, mapping, duplicateStrategy = 'SKIP', directoryId } = dto;
-    await this.ensureDirectoryExists(directoryId);
+    await this.ensureDirectoryExists(directoryId, userId);
     let importedCount = 0;
     let skippedCount = 0;
     let updatedCount = 0;
@@ -349,7 +363,7 @@ export class ContactsService {
         }
 
         const existing = await this.db.contact.findUnique({
-          where: { email },
+          where: { email, ownerId: userId },
         });
 
         const contactData = {
@@ -374,7 +388,7 @@ export class ContactsService {
           } else {
             // OVERWRITE
             await this.db.contact.update({
-              where: { id: existing.id },
+              where: { id: existing.id, ownerId: userId },
               data: contactData,
             });
             updatedCount++;
@@ -384,6 +398,7 @@ export class ContactsService {
             data: {
               email,
               ...contactData,
+              ownerId: userId,
             },
           });
           importedCount++;
@@ -402,7 +417,7 @@ export class ContactsService {
       }))
       .filter((e) => e.email);
     void this.watches
-      .ensureWatchesForEmails(watchEntries)
+      .ensureWatchesForEmails(watchEntries, userId)
       .catch(() => undefined);
 
     return {
@@ -414,9 +429,9 @@ export class ContactsService {
     };
   }
 
-  private async findDirectory(id: string) {
+  private async findDirectory(id: string, userId: string) {
     const directory = await this.db.contactDirectory.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
     });
     if (!directory) {
       throw new BadRequestException('Directory not found');
@@ -424,9 +439,12 @@ export class ContactsService {
     return directory;
   }
 
-  private async ensureDirectoryExists(directoryId?: string | null) {
+  private async ensureDirectoryExists(
+    directoryId: string | null | undefined,
+    userId: string,
+  ) {
     if (!directoryId) return;
-    await this.findDirectory(directoryId);
+    await this.findDirectory(directoryId, userId);
   }
 
   private normalizePhoneNumber(phoneNumber?: string | null) {

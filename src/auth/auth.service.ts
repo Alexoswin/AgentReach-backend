@@ -670,9 +670,8 @@ export class AuthService {
     return genericResponse;
   }
 
-  // Data is not partitioned per user — every account sees the whole
-  // workspace — so self-service sign-up is closed in production unless
-  // ALLOW_REGISTRATION=true or the email is on ALLOWED_SIGNUP_EMAILS.
+  // Password sign-up is closed in production unless ALLOW_REGISTRATION=true
+  // or the email is on ALLOWED_SIGNUP_EMAILS.
   private assertRegistrationAllowed(email: string) {
     const allowlist = (
       this.configService.get<string>('ALLOWED_SIGNUP_EMAILS') || ''

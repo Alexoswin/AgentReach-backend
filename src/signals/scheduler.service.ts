@@ -38,8 +38,12 @@ export class SchedulerService {
     await this.runPoll();
   }
 
-  /** Manually trigger a full poll (used by the "Run now" control). */
-  async runPoll(): Promise<{ processed: number; created: number }> {
+  /**
+   * Poll every owner's watches, or only ownerId's (the "Run now" control).
+   */
+  async runPoll(
+    ownerId?: string,
+  ): Promise<{ processed: number; created: number }> {
     if (this.running) {
       return { processed: 0, created: 0 };
     }
@@ -48,7 +52,7 @@ export class SchedulerService {
     let created = 0;
 
     try {
-      const watches = await this.watches.findActive();
+      const watches = await this.watches.findActive(ownerId);
       for (const watch of watches) {
         for (const source of watch.sourcesEnabled) {
           const collector = this.collectors[source];
@@ -76,7 +80,7 @@ export class SchedulerService {
     try {
       const rawSignals = await collector.collect(watch);
       for (const raw of rawSignals) {
-        const id = await this.ingestion.ingest(raw, watch.id);
+        const id = await this.ingestion.ingest(raw, watch.ownerId, watch.id);
         if (id) created++;
       }
       await this.watches.markPolled(watch.id, collector.source);

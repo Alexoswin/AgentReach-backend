@@ -42,14 +42,14 @@ export class SignalsController {
   @ApiOperation({
     summary: 'Signal-triggered vs manual performance comparison',
   })
-  getStats() {
-    return this.signals.getStats();
+  getStats(@Req() request: any) {
+    return this.signals.getStats(request.user.id);
   }
 
   @Get('review-queue')
   @ApiOperation({ summary: 'Pending matches awaiting review' })
-  getReviewQueue() {
-    return this.signals.getReviewQueue();
+  getReviewQueue(@Req() request: any) {
+    return this.signals.getReviewQueue(request.user.id);
   }
 
   @Post('review/:matchId')
@@ -66,8 +66,8 @@ export class SignalsController {
   @Post('manual')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Create a manual signal' })
-  createManual(@Body() dto: CreateManualSignalDto) {
-    return this.signals.createManualSignal(dto);
+  createManual(@Req() request: any, @Body() dto: CreateManualSignalDto) {
+    return this.signals.createManualSignal(dto, request.user.id);
   }
 
   @Post('bounce')
@@ -75,21 +75,21 @@ export class SignalsController {
   @ApiOperation({
     summary: 'Ingest an SES bounce/complaint (job-change signal)',
   })
-  bounce(@Body() dto: IngestBounceDto) {
-    return this.signals.ingestBounce(dto);
+  bounce(@Req() request: any, @Body() dto: IngestBounceDto) {
+    return this.signals.ingestBounce(dto, request.user.id);
   }
 
   @Post('poll')
   @ApiOperation({ summary: 'Run a collection poll immediately' })
-  poll() {
-    return this.signals.runPollNow();
+  poll(@Req() request: any) {
+    return this.signals.runPollNow(request.user.id);
   }
 
   // ---- Playbooks ----
   @Get('playbooks')
   @ApiOperation({ summary: 'List playbooks' })
-  listPlaybooks() {
-    return this.playbooks.findAll();
+  listPlaybooks(@Req() request: any) {
+    return this.playbooks.findAll(request.user.id);
   }
 
   @Post('playbooks')
@@ -118,43 +118,49 @@ export class SignalsController {
 
   @Delete('playbooks/:id')
   @ApiOperation({ summary: 'Delete a playbook' })
-  removePlaybook(@Param('id') id: string) {
-    return this.playbooks.remove(id);
+  removePlaybook(@Req() request: any, @Param('id') id: string) {
+    return this.playbooks.remove(id, request.user.id);
   }
 
   // ---- Company watches ----
   @Get('watches')
   @ApiOperation({ summary: 'List watched companies' })
-  listWatches() {
-    return this.watches.findAll();
+  listWatches(@Req() request: any) {
+    return this.watches.findAll(request.user.id);
   }
 
   @Post('watches')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Add a watched company' })
-  createWatch(@Body() dto: CreateWatchDto) {
-    return this.watches.create(dto.companyName, dto.domain, dto.sourcesEnabled);
+  createWatch(@Req() request: any, @Body() dto: CreateWatchDto) {
+    return this.watches.create(
+      dto.companyName,
+      dto.domain,
+      request.user.id,
+      dto.sourcesEnabled,
+    );
   }
 
   @Post('watches/:id/toggle')
   @ApiOperation({ summary: 'Pause/resume a watch' })
-  async toggleWatch(@Param('id') id: string) {
-    const all = await this.watches.findAll();
-    const current = all.find((w) => w.id === id);
-    const next = current?.status === 'active' ? 'paused' : 'active';
-    return this.watches.setStatus(id, next);
+  toggleWatch(@Req() request: any, @Param('id') id: string) {
+    return this.watches.toggle(id, request.user.id);
   }
 
   @Delete('watches/:id')
   @ApiOperation({ summary: 'Remove a watch' })
-  removeWatch(@Param('id') id: string) {
-    return this.watches.remove(id);
+  removeWatch(@Req() request: any, @Param('id') id: string) {
+    return this.watches.remove(id, request.user.id);
   }
 
   // ---- Feed (kept last so it doesn't shadow the static routes above) ----
   @Get()
   @ApiOperation({ summary: 'Signal feed' })
-  getFeed(@Query('type') type?: string, @Query('status') status?: string) {
-    return this.signals.getFeed({ type, status });
+  getFeed(
+    @Req() request: any,
+    @Query('type') type?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.signals.getFeed(request.user.id, { type, status });
   }
 }

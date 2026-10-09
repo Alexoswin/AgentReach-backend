@@ -23,13 +23,16 @@ function dateRange(startDate?: string, endDate?: string) {
 export class HistoryService {
   constructor(private db: MongoService) {}
 
-  async getEmailHistory(filters: {
-    startDate?: string;
-    endDate?: string;
-    campaignId?: string;
-    status?: string;
-  }) {
-    const where: any = {};
+  async getEmailHistory(
+    userId: string,
+    filters: {
+      startDate?: string;
+      endDate?: string;
+      campaignId?: string;
+      status?: string;
+    },
+  ) {
+    const where: any = { ownerId: userId };
 
     if (filters.campaignId) {
       where.campaignId = String(filters.campaignId);
@@ -52,13 +55,16 @@ export class HistoryService {
     });
   }
 
-  async getCallHistory(filters: {
-    startDate?: string;
-    endDate?: string;
-    campaignId?: string;
-    outcome?: string;
-  }) {
-    const where: any = {};
+  async getCallHistory(
+    userId: string,
+    filters: {
+      startDate?: string;
+      endDate?: string;
+      campaignId?: string;
+      outcome?: string;
+    },
+  ) {
+    const where: any = { ownerId: userId };
 
     if (filters.campaignId) {
       where.campaignId = String(filters.campaignId);

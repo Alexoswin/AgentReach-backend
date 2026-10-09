@@ -32,8 +32,8 @@ export class CallingCampaignsController {
 
   @Get('dashboard')
   @ApiOperation({ summary: 'Get AI calling dashboard metrics' })
-  getDashboardMetrics() {
-    return this.service.getDashboardMetrics();
+  getDashboardMetrics(@Req() request: any) {
+    return this.service.getDashboardMetrics(request.user.id);
   }
 
   @Post('generate')
@@ -46,20 +46,20 @@ export class CallingCampaignsController {
   @Post('generate-jobs')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Start AI calling campaign generation' })
-  startGenerate(@Body() dto: GenerateCallingCampaignDto) {
-    return this.service.startGenerate(dto);
+  startGenerate(@Req() request: any, @Body() dto: GenerateCallingCampaignDto) {
+    return this.service.startGenerate(dto, request.user.id);
   }
 
   @Get('generate-jobs/:id')
   @ApiOperation({ summary: 'Get AI calling campaign generation status' })
-  generationStatus(@Param('id') id: string) {
-    return this.service.generationStatus(id);
+  generationStatus(@Req() request: any, @Param('id') id: string) {
+    return this.service.generationStatus(id, request.user.id);
   }
 
   @Get()
   @ApiOperation({ summary: 'Get all AI calling campaigns' })
-  findAll() {
-    return this.service.findAll();
+  findAll(@Req() request: any) {
+    return this.service.findAll(request.user.id);
   }
 
   @Post('twilio/answer/:callId')
@@ -197,10 +197,14 @@ export class CallingCampaignsController {
   @Get('recordings/:callId/audio')
   @ApiOperation({ summary: 'Get proxied AI call recording audio' })
   async recordingAudio(
+    @Req() request: any,
     @Param('callId') callId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const recording = await this.service.getCallRecordingAudio(callId);
+    const recording = await this.service.getCallRecordingAudio(
+      callId,
+      request.user.id,
+    );
     res.setHeader('Content-Type', recording.contentType);
     res.setHeader(
       'Content-Disposition',
@@ -212,31 +216,32 @@ export class CallingCampaignsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get an AI calling campaign' })
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  findOne(@Req() request: any, @Param('id') id: string) {
+    return this.service.findOne(id, request.user.id);
   }
 
   @Post()
   @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
   @ApiOperation({ summary: 'Create a new AI calling campaign' })
-  create(@Body() dto: CreateCallingCampaignDto) {
-    return this.service.create(dto);
+  create(@Req() request: any, @Body() dto: CreateCallingCampaignDto) {
+    return this.service.create(dto, request.user.id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
   @ApiOperation({ summary: 'Update an AI calling campaign' })
   update(
+    @Req() request: any,
     @Param('id') id: string,
     @Body() dto: UpdateCallingCampaignDto,
   ) {
-    return this.service.update(id, dto);
+    return this.service.update(id, dto, request.user.id);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete an AI calling campaign' })
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@Req() request: any, @Param('id') id: string) {
+    return this.service.remove(id, request.user.id);
   }
 
   @Post(':id/launch')
@@ -267,14 +272,14 @@ export class CallingCampaignsController {
 
   @Post(':id/unschedule')
   @ApiOperation({ summary: 'Cancel a scheduled AI calling campaign' })
-  unschedule(@Param('id') id: string) {
-    return this.service.unscheduleCampaign(id);
+  unschedule(@Req() request: any, @Param('id') id: string) {
+    return this.service.unscheduleCampaign(id, request.user.id);
   }
 
   @Post(':id/stop')
   @ApiOperation({ summary: 'Stop AI calling campaign' })
-  stop(@Param('id') id: string) {
-    return this.service.stopCampaign(id);
+  stop(@Req() request: any, @Param('id') id: string) {
+    return this.service.stopCampaign(id, request.user.id);
   }
 }
 

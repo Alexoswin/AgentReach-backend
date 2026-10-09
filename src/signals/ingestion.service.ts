@@ -36,25 +36,33 @@ export class IngestionService {
   /**
    * Full pipeline for one raw signal: classify → dedup → persist → corroborate
    * → match → evaluate playbooks (auto-trigger or queue for review).
-   * Returns the persisted signal id, or null if it was a duplicate.
+   * Returns the persisted signal id, or null if it was a duplicate. The
+   * signal belongs to ownerId and only reaches their contacts and playbooks.
    */
-  async ingest(raw: RawSignal, watchId?: string): Promise<string | null> {
+  async ingest(
+    raw: RawSignal,
+    ownerId: string,
+    watchId?: string,
+  ): Promise<string | null> {
     const hash = this.hash(raw);
 
     // Dedup within the rolling window.
     const cutoff = new Date(
       Date.now() - DEDUP_WINDOW_DAYS * 24 * 60 * 60 * 1000,
     );
-    const existing = await this.db.signal.findFirst({ where: { hash } });
+    const existing = await this.db.signal.findFirst({
+      where: { hash, ownerId },
+    });
     if (existing && new Date(existing.createdAt) >= cutoff) {
       return null;
     }
 
     const classification = await this.classifier.classify(raw);
-    const corroboration = await this.findCorroboration(raw);
+    const corroboration = await this.findCorroboration(raw, ownerId);
 
     const signal = await this.db.signal.create({
       data: {
+        ownerId,
         watchId,
         companyDomain: raw.companyDomain,
         companyName: raw.companyName,
@@ -88,13 +96,20 @@ export class IngestionService {
    * Independent recent signals for the same company from a *different* source
    * — cross-source agreement is a stronger buy indicator than either alone.
    */
-  private async findCorroboration(raw: RawSignal): Promise<any[]> {
+  private async findCorroboration(
+    raw: RawSignal,
+    ownerId: string,
+  ): Promise<any[]> {
     if (!raw.companyDomain) return [];
     const cutoff = new Date(
       Date.now() - CORROBORATION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
     );
     const recent = await this.db.signal.findMany({
-      where: { companyDomain: raw.companyDomain, occurredAt: { gte: cutoff } },
+      where: {
+        ownerId,
+        companyDomain: raw.companyDomain,
+        occurredAt: { gte: cutoff },
+      },
     });
     return recent.filter(
       (s: any) => s.source !== raw.source && s.type !== 'news-other',
@@ -129,13 +144,19 @@ export class IngestionService {
     // 'news-other' / low-value noise is stored but never matched/triggered.
     if (signal.type === 'news-other') return;
 
-    const contactMatches = await this.matching.matchSignalToContacts(signal);
+    const ownerId: string = signal.ownerId;
+    const contactMatches = await this.matching.matchSignalToContacts(
+      signal,
+      ownerId,
+    );
     if (contactMatches.length === 0) return;
 
     const contactIds = contactMatches.map((cm) => cm.contactId);
     const [contacts, suppressed] = await Promise.all([
-      this.db.contact.findMany({ where: { id: { $in: contactIds } } }),
-      this.findSuppressedContacts(signal.companyDomain, contactIds),
+      this.db.contact.findMany({
+        where: { id: { $in: contactIds }, ownerId },
+      }),
+      this.findSuppressedContacts(signal.companyDomain, contactIds, ownerId),
     ]);
     const contactById = new Map(contacts.map((c: any) => [c.id, c]));
 
@@ -153,6 +174,7 @@ export class IngestionService {
       const playbooks = await this.playbooks.findMatchingPlaybooks(
         signal.type,
         contact,
+        ownerId,
       );
 
       // No playbook: still record the match so it surfaces in the feed.
@@ -194,10 +216,12 @@ export class IngestionService {
   private async findSuppressedContacts(
     companyDomain: string | undefined,
     contactIds: string[],
+    ownerId: string,
   ): Promise<Set<string>> {
     if (!companyDomain || contactIds.length === 0) return new Set();
     const rejected = await this.db.signalMatch.findMany({
       where: {
+        ownerId,
         companyDomain,
         status: 'rejected',
         contactId: { $in: contactIds },
@@ -227,6 +251,7 @@ export class IngestionService {
 
     return this.db.signalMatch.create({
       data: {
+        ownerId: signal.ownerId,
         signalId: signal.id,
         contactId: cm.contactId,
         confidence: cm.confidence,

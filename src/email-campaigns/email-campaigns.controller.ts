@@ -23,52 +23,65 @@ export class EmailCampaignsController {
 
   @Get()
   @ApiOperation({ summary: 'Get all email campaigns' })
-  async findAll() {
-    return this.emailCampaignsService.findAll();
+  async findAll(@Req() request: any) {
+    return this.emailCampaignsService.findAll(request.user.id);
   }
 
   @Get(':id')
   @ApiOperation({
     summary: 'Get details of a campaign (including contacts and templates)',
   })
-  async findOne(@Param('id') id: string) {
-    return this.emailCampaignsService.findOne(id);
+  async findOne(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.findOne(id, request.user.id);
   }
 
   @Post()
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Create a new campaign' })
-  async create(@Body() dto: CreateCampaignDto) {
-    return this.emailCampaignsService.create(dto);
+  async create(@Req() request: any, @Body() dto: CreateCampaignDto) {
+    return this.emailCampaignsService.create(dto, request.user.id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update campaign properties' })
-  async update(@Param('id') id: string, @Body() dto: UpdateCampaignDto) {
-    return this.emailCampaignsService.update(id, dto);
+  async update(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateCampaignDto,
+  ) {
+    return this.emailCampaignsService.update(id, dto, request.user.id);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a campaign' })
-  async remove(@Param('id') id: string) {
-    return this.emailCampaignsService.remove(id);
+  async remove(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.remove(id, request.user.id);
   }
 
   @Post(':id/contacts')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Add a list of contacts to a campaign' })
-  async addContacts(@Param('id') id: string, @Body() dto: AddContactsDto) {
-    return this.emailCampaignsService.addContacts(id, dto);
+  async addContacts(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: AddContactsDto,
+  ) {
+    return this.emailCampaignsService.addContacts(id, dto, request.user.id);
   }
 
   @Delete(':id/contacts/:contactId')
   @ApiOperation({ summary: 'Remove a contact from a campaign' })
   async removeContact(
+    @Req() request: any,
     @Param('id') id: string,
     @Param('contactId') contactId: string,
   ) {
-    return this.emailCampaignsService.removeContact(id, contactId);
+    return this.emailCampaignsService.removeContact(
+      id,
+      contactId,
+      request.user.id,
+    );
   }
 
   @Post(':id/launch')
@@ -102,7 +115,7 @@ export class EmailCampaignsController {
 
   @Post(':id/unschedule')
   @ApiOperation({ summary: 'Cancel a scheduled email campaign' })
-  async unschedule(@Param('id') id: string) {
-    return this.emailCampaignsService.unscheduleCampaign(id);
+  async unschedule(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.unscheduleCampaign(id, request.user.id);
   }
 }

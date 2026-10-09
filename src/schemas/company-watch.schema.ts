@@ -10,17 +10,16 @@ export class CompanyWatch {
   @Prop({ default: () => randomUUID() })
   _id: string;
 
+  // The user who owns this record; only they can see or change it.
+  @Prop({ type: String, required: true, index: true })
+  ownerId: string;
+
   @Prop({ required: true, trim: true })
   companyName: string;
 
   // Normalized lowercase domain (e.g. "acme.com"); the primary matching key.
-  @Prop({
-    required: true,
-    unique: true,
-    lowercase: true,
-    trim: true,
-    index: true,
-  })
+  // Unique per owner (see the compound index below), not globally.
+  @Prop({ required: true, lowercase: true, trim: true })
   domain: string;
 
   // Enabled source ids: 'news-rss' | 'edgar' | 'job-board'
@@ -42,3 +41,4 @@ export class CompanyWatch {
 }
 
 export const CompanyWatchSchema = SchemaFactory.createForClass(CompanyWatch);
+CompanyWatchSchema.index({ ownerId: 1, domain: 1 }, { unique: true });

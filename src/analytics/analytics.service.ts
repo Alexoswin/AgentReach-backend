@@ -5,9 +5,12 @@ import { MongoService } from '../mongo.service';
 export class AnalyticsService {
   constructor(private db: MongoService) {}
 
-  async getDashboardAnalytics() {
+  async getDashboardAnalytics(userId: string) {
+    const owned = { ownerId: userId };
+
     // 1. Email Metrics
     const emailHistory = await this.db.emailCampaignContact.findMany({
+      where: owned,
       include: {
         campaign: {
           include: { template: true },
@@ -32,7 +35,7 @@ export class AnalyticsService {
       sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
 
     // 2. Call Metrics
-    const callHistory = await this.db.callHistory.findMany();
+    const callHistory = await this.db.callHistory.findMany({ where: owned });
     const callsMade = callHistory.filter((c) => c.outcome !== 'PENDING').length;
     const answeredCalls = callHistory.filter(
       (c) => c.outcome === 'ANSWERED',
@@ -49,6 +52,7 @@ export class AnalyticsService {
 
     // 3. Campaign Performance Charts
     const campaigns = await this.db.emailCampaign.findMany({
+      where: owned,
       include: {
         contacts: true,
       },
@@ -79,7 +83,7 @@ export class AnalyticsService {
     });
 
     // 4. Template Performance
-    const templates = await this.db.template.findMany();
+    const templates = await this.db.template.findMany({ where: owned });
     const templatePerformance = templates.map((t) => {
       // Find history linked to campaigns using this template
       const templateHistory = emailHistory.filter(

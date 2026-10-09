@@ -26,15 +26,21 @@ export class SignalsService {
   ) {}
 
   /** Signal feed with matched-contact counts and fired-playbook badges. */
-  async getFeed(filters: { type?: string; status?: string } = {}) {
+  async getFeed(
+    userId: string,
+    filters: { type?: string; status?: string } = {},
+  ) {
     let signals = await this.db.signal.findMany({
+      where: { ownerId: userId },
       orderBy: { occurredAt: 'desc' },
     });
     if (filters.type) {
       signals = signals.filter((s) => s.type === filters.type);
     }
 
-    const allMatches = await this.db.signalMatch.findMany({});
+    const allMatches = await this.db.signalMatch.findMany({
+      where: { ownerId: userId },
+    });
     const matchesBySignal = new Map<string, any[]>();
     for (const m of allMatches) {
       const list = matchesBySignal.get(m.signalId) || [];
@@ -66,8 +72,9 @@ export class SignalsService {
   }
 
   /** Pending, actionable matches (a playbook wants to fire, awaiting review). */
-  async getReviewQueue() {
+  async getReviewQueue(userId: string) {
     const matches = await this.db.signalMatch.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'desc' },
     });
     const pending = matches.filter(
@@ -77,19 +84,20 @@ export class SignalsService {
     const results = [];
     for (const match of pending.slice(0, 100)) {
       const signal = await this.db.signal.findUnique({
-        where: { id: match.signalId },
+        where: { id: match.signalId, ownerId: userId },
       });
       const contact = await this.db.contact.findUnique({
-        where: { id: match.contactId },
+        where: { id: match.contactId, ownerId: userId },
       });
       const playbook = await this.db.playbook.findUnique({
-        where: { id: match.playbookId },
+        where: { id: match.playbookId, ownerId: userId },
       });
       if (!signal || !contact || !playbook) continue;
 
       const preview = await this.trigger.renderPreview(
         playbook.templateId,
         signal,
+        userId,
       );
 
       results.push({
@@ -121,7 +129,7 @@ export class SignalsService {
 
   async reviewMatch(matchId: string, dto: ReviewMatchDto, userId: string) {
     const match = await this.db.signalMatch.findUnique({
-      where: { id: matchId },
+      where: { id: matchId, ownerId: userId },
     });
     if (!match) throw new BadRequestException('Match not found');
     if (match.status !== 'pending-review') {
@@ -130,7 +138,7 @@ export class SignalsService {
 
     if (dto.action === 'reject') {
       await this.db.signalMatch.update({
-        where: { id: matchId },
+        where: { id: matchId, ownerId: userId },
         data: { status: 'rejected', note: dto.note },
       });
       return { success: true, outcome: 'rejected' };
@@ -141,29 +149,30 @@ export class SignalsService {
       throw new BadRequestException('This match has no playbook to launch');
     }
     const signal = await this.db.signal.findUnique({
-      where: { id: match.signalId },
+      where: { id: match.signalId, ownerId: userId },
     });
-    const playbook = await this.playbooks.findOne(match.playbookId);
+    const playbook = await this.playbooks.findOne(match.playbookId, userId);
     if (!signal) throw new BadRequestException('Signal not found');
 
-    // The approving user sends it, with their own SES credentials.
+    // Sent by the owner (the approving user), with their SES credentials.
     const result = await this.trigger.trigger(
       signal,
       match.contactId,
       playbook,
       matchId,
-      userId,
     );
     return { success: result.outcome === 'triggered', ...result };
   }
 
-  async createManualSignal(dto: CreateManualSignalDto) {
+  async createManualSignal(dto: CreateManualSignalDto, userId: string) {
     const domain =
       dto.companyDomain?.toLowerCase().trim() ||
       dto.contactEmail?.split('@')[1]?.toLowerCase().trim();
 
     const watch = domain
-      ? await this.db.companyWatch.findUnique({ where: { domain } })
+      ? await this.db.companyWatch.findUnique({
+          where: { domain, ownerId: userId },
+        })
       : null;
 
     const id = await this.ingestion.ingest(
@@ -177,6 +186,7 @@ export class SignalsService {
         occurredAt: new Date(),
         suggestedType: (dto.type as SignalType) || 'manual',
       },
+      userId,
       watch?.id,
     );
 
@@ -184,7 +194,7 @@ export class SignalsService {
   }
 
   /** SES bounce/complaint webhook — infers job-change signals from telemetry. */
-  async ingestBounce(dto: IngestBounceDto) {
+  async ingestBounce(dto: IngestBounceDto, userId: string) {
     if (!this.sesBounce.looksLikeJobChange(dto.bounceMessage || '')) {
       return { success: false, reason: 'not-a-job-change-signal' };
     }
@@ -196,25 +206,26 @@ export class SignalsService {
     });
     const watch = raw.companyDomain
       ? await this.db.companyWatch.findUnique({
-          where: { domain: raw.companyDomain },
+          where: { domain: raw.companyDomain, ownerId: userId },
         })
       : null;
-    const id = await this.ingestion.ingest(raw, watch?.id);
+    const id = await this.ingestion.ingest(raw, userId, watch?.id);
     return { success: !!id, signalId: id };
   }
 
-  async runPollNow() {
-    return this.scheduler.runPoll();
+  async runPollNow(userId: string) {
+    return this.scheduler.runPoll(userId);
   }
 
   /** Triggered-vs-manual performance comparison for the dashboard. */
-  async getStats() {
-    const triggered = await this.db.triggeredOutreach.findMany({});
+  async getStats(userId: string) {
+    const owned = { where: { ownerId: userId } };
+    const triggered = await this.db.triggeredOutreach.findMany(owned);
     const triggeredCampaignIds = new Set(
       triggered.map((t) => t.campaignId).filter(Boolean),
     );
 
-    const allContacts = await this.db.emailCampaignContact.findMany({});
+    const allContacts = await this.db.emailCampaignContact.findMany(owned);
     const rate = (rows: any[]) => {
       const sent = rows.filter(
         (r) => r.deliveryStatus === 'SENT' || r.sentTime,
@@ -236,13 +247,13 @@ export class SignalsService {
       (c) => !triggeredCampaignIds.has(c.campaignId),
     );
 
-    const activeWatches = (await this.db.companyWatch.findMany({})).filter(
-      (w) => w.status === 'active',
-    ).length;
+    const activeWatches = await this.db.companyWatch.count({
+      where: { ownerId: userId, status: 'active' },
+    });
 
     return {
       watchedCompanies: activeWatches,
-      totalSignals: (await this.db.signal.findMany({})).length,
+      totalSignals: await this.db.signal.count(owned),
       triggeredOutreach: triggered.length,
       triggered: rate(triggeredRows),
       manual: rate(manualRows),

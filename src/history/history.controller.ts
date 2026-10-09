@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Req } from '@nestjs/common';
 import { HistoryService } from './history.service';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 
@@ -18,12 +18,13 @@ export class HistoryController {
     enum: ['PENDING', 'SENT', 'DELIVERED', 'FAILED'],
   })
   async getEmailHistory(
+    @Req() request: any,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('campaignId') campaignId?: string,
     @Query('status') status?: string,
   ) {
-    return this.historyService.getEmailHistory({
+    return this.historyService.getEmailHistory(request.user.id, {
       startDate,
       endDate,
       campaignId,
@@ -42,12 +43,13 @@ export class HistoryController {
     enum: ['PENDING', 'ANSWERED', 'NO_ANSWER', 'BUSY', 'FAILED'],
   })
   async getCallHistory(
+    @Req() request: any,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('campaignId') campaignId?: string,
     @Query('outcome') outcome?: string,
   ) {
-    return this.historyService.getCallHistory({
+    return this.historyService.getCallHistory(request.user.id, {
       startDate,
       endDate,
       campaignId,

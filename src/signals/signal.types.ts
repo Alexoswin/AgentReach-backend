@@ -44,6 +44,7 @@ export const MATCH_REASON_LABELS: Record<string, string> = {
 
 export interface CompanyWatchLike {
   id: string;
+  ownerId: string;
   companyName: string;
   domain: string;
   sourcesEnabled: string[];

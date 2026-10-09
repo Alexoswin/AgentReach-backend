@@ -26,8 +26,8 @@ export class TemplatesController {
 
   @Get()
   @ApiOperation({ summary: 'Get all saved templates' })
-  async findAll() {
-    return this.templatesService.findAll();
+  async findAll(@Req() request: any) {
+    return this.templatesService.findAll(request.user.id);
   }
 
   @Get('predefined')
@@ -102,27 +102,31 @@ export class TemplatesController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a template by ID' })
-  async findOne(@Param('id') id: string) {
-    return this.templatesService.findOne(id);
+  async findOne(@Req() request: any, @Param('id') id: string) {
+    return this.templatesService.findOne(id, request.user.id);
   }
 
   @Post()
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Save a new template' })
-  async create(@Body() dto: CreateTemplateDto) {
-    return this.templatesService.create(dto);
+  async create(@Req() request: any, @Body() dto: CreateTemplateDto) {
+    return this.templatesService.create(dto, request.user.id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a template' })
-  async update(@Param('id') id: string, @Body() dto: UpdateTemplateDto) {
-    return this.templatesService.update(id, dto);
+  async update(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateTemplateDto,
+  ) {
+    return this.templatesService.update(id, dto, request.user.id);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a template' })
-  async remove(@Param('id') id: string) {
-    return this.templatesService.remove(id);
+  async remove(@Req() request: any, @Param('id') id: string) {
+    return this.templatesService.remove(id, request.user.id);
   }
 }

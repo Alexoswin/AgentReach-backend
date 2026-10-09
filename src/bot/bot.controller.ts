@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UploadedFile,
   UseInterceptors,
   UsePipes,
@@ -33,8 +34,8 @@ export class BotController {
 
   @Get()
   @ApiOperation({ summary: 'Get AI calling bots' })
-  findAll() {
-    return this.botService.findAll();
+  findAll(@Req() request: any) {
+    return this.botService.findAll(request.user.id);
   }
 
   @Post()
@@ -74,35 +75,44 @@ export class BotController {
     },
   })
   create(
+    @Req() request: any,
     @Body() dto: CreateBotDto,
     @UploadedFile() knowledgeBasePdf?: Express.Multer.File,
   ) {
-    return this.botService.create(dto, knowledgeBasePdf);
+    return this.botService.create(dto, request.user.id, knowledgeBasePdf);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get an AI calling bot' })
-  findOne(@Param('id') id: string) {
-    return this.botService.findOne(id);
+  findOne(@Req() request: any, @Param('id') id: string) {
+    return this.botService.findOne(id, request.user.id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
   @ApiOperation({ summary: 'Update an AI calling bot' })
-  update(@Param('id') id: string, @Body() dto: Partial<CreateBotDto>) {
-    return this.botService.update(id, dto);
+  update(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateBotDto>,
+  ) {
+    return this.botService.update(id, dto, request.user.id);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete an AI calling bot and embeddings' })
-  remove(@Param('id') id: string) {
-    return this.botService.remove(id);
+  remove(@Req() request: any, @Param('id') id: string) {
+    return this.botService.remove(id, request.user.id);
   }
 
   @Post(':id/search')
   @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
   @ApiOperation({ summary: 'Search bot knowledge base' })
-  search(@Param('id') id: string, @Body() dto: SearchBotDto) {
-    return this.botService.search(id, dto);
+  search(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() dto: SearchBotDto,
+  ) {
+    return this.botService.search(id, dto, request.user.id);
   }
 }

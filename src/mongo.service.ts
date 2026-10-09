@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { hashPassword } from './auth/password';
@@ -22,8 +22,12 @@ import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
 
 type AnyModel = Model<any>;
 
+// Owner of every record saved before records became per-user.
+const LEGACY_RECORDS_OWNER_EMAIL = 'oswinalex1@gmail.com';
+
 @Injectable()
 export class MongoService implements OnModuleInit {
+  private readonly logger = new Logger(MongoService.name);
   user: MongoDelegate;
   authSession: MongoDelegate;
   systemSettings: MongoDelegate;
@@ -175,6 +179,64 @@ export class MongoService implements OnModuleInit {
             initials: adminEmail.slice(0, 2).toUpperCase(),
           },
         });
+      }
+    }
+
+    await this.migrateToOwnedRecords();
+  }
+
+  // Records used to be shared by every account. Each one now belongs to a
+  // single user, so records saved before that are given to the workspace's
+  // original owner, and the old workspace-wide unique indexes (one contact
+  // per email, one directory per name, one watch per domain) are replaced
+  // by per-owner ones. Safe to run on every start: it only touches records
+  // that still have no owner.
+  private async migrateToOwnedRecords() {
+    const legacyIndexes: [AnyModel, string][] = [
+      [this.contactModel, 'email_1'],
+      [this.contactDirectoryModel, 'name_1'],
+      [this.companyWatchModel, 'domain_1'],
+    ];
+    for (const [model, index] of legacyIndexes) {
+      const exists = await model.collection
+        .indexExists(index)
+        .catch(() => false);
+      if (!exists) continue;
+      await model.collection.dropIndex(index);
+      await model.createIndexes();
+      this.logger.log(
+        `Dropped workspace-wide index ${model.modelName}.${index}`,
+      );
+    }
+
+    const owner = await this.userModel
+      .findOne({ email: LEGACY_RECORDS_OWNER_EMAIL })
+      .lean<{ _id: string }>();
+    if (!owner) return;
+
+    for (const model of [
+      this.contactModel,
+      this.contactDirectoryModel,
+      this.templateModel,
+      this.emailCampaignModel,
+      this.emailCampaignContactModel,
+      this.callingCampaignModel,
+      this.callHistoryModel,
+      this.aiCallingBotModel,
+      this.companyWatchModel,
+      this.signalModel,
+      this.signalMatchModel,
+      this.playbookModel,
+      this.triggeredOutreachModel,
+    ]) {
+      const result = await model.collection.updateMany(
+        { ownerId: null },
+        { $set: { ownerId: owner._id } },
+      );
+      if (result.modifiedCount > 0) {
+        this.logger.log(
+          `Assigned ${result.modifiedCount} ${model.modelName} record(s) to ${LEGACY_RECORDS_OWNER_EMAIL}`,
+        );
       }
     }
   }

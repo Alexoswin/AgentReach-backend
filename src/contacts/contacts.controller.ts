@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Req,
   UseInterceptors,
   UploadedFile,
   UsePipes,
@@ -26,68 +27,73 @@ export class ContactsController {
 
   @Get()
   @ApiOperation({ summary: 'Get all contacts' })
-  async findAll() {
-    return this.contactsService.findAll();
+  async findAll(@Req() request: any) {
+    return this.contactsService.findAll(request.user.id);
   }
 
   @Get('directories')
   @ApiOperation({ summary: 'Get contact directories' })
-  async findDirectories() {
-    return this.contactsService.findDirectories();
+  async findDirectories(@Req() request: any) {
+    return this.contactsService.findDirectories(request.user.id);
   }
 
   @Post('directories')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Create a contact directory' })
-  async createDirectory(@Body() dto: CreateContactDirectoryDto) {
-    return this.contactsService.createDirectory(dto);
+  async createDirectory(
+    @Req() request: any,
+    @Body() dto: CreateContactDirectoryDto,
+  ) {
+    return this.contactsService.createDirectory(dto, request.user.id);
   }
 
   @Patch('directories/:id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update a contact directory' })
   async updateDirectory(
+    @Req() request: any,
     @Param('id') id: string,
     @Body() dto: UpdateContactDirectoryDto,
   ) {
-    return this.contactsService.updateDirectory(id, dto);
+    return this.contactsService.updateDirectory(id, dto, request.user.id);
   }
 
   @Delete('directories/:id')
   @ApiOperation({
     summary: 'Delete a contact directory and unassign its contacts',
   })
-  async removeDirectory(@Param('id') id: string) {
-    return this.contactsService.removeDirectory(id);
+  async removeDirectory(@Req() request: any, @Param('id') id: string) {
+    return this.contactsService.removeDirectory(id, request.user.id);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a contact by ID' })
-  async findOne(@Param('id') id: string) {
-    return this.contactsService.findOne(id);
+  async findOne(@Req() request: any, @Param('id') id: string) {
+    return this.contactsService.findOne(id, request.user.id);
   }
 
   @Post()
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Create a contact manually' })
-  async create(@Body() dto: CreateContactDto) {
-    return this.contactsService.create(dto);
+  async create(@Req() request: any, @Body() dto: CreateContactDto) {
+    return this.contactsService.create(dto, request.user.id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Update contact details' })
   async update(
+    @Req() request: any,
     @Param('id') id: string,
     @Body() dto: Partial<CreateContactDto>,
   ) {
-    return this.contactsService.update(id, dto);
+    return this.contactsService.update(id, dto, request.user.id);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a contact' })
-  async remove(@Param('id') id: string) {
-    return this.contactsService.remove(id);
+  async remove(@Req() request: any, @Param('id') id: string) {
+    return this.contactsService.remove(id, request.user.id);
   }
 
   @Post('parse-file')
@@ -117,7 +123,7 @@ export class ContactsController {
   @Post('import')
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @ApiOperation({ summary: 'Import contacts using column mapping' })
-  async importContacts(@Body() dto: ImportContactsDto) {
-    return this.contactsService.importContacts(dto);
+  async importContacts(@Req() request: any, @Body() dto: ImportContactsDto) {
+    return this.contactsService.importContacts(dto, request.user.id);
   }
 }

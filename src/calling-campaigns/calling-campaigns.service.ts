@@ -23,6 +23,7 @@ import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto'
 
 type GenerationJob = {
   id: string;
+  userId: string;
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
   result?: Record<string, unknown>;
   error?: string;
@@ -53,8 +54,9 @@ export class CallingCampaignsService {
     private readonly geminiAuthService?: GeminiLiveAuthService,
   ) {}
 
-  async findAll() {
+  async findAll(userId: string) {
     const campaigns = await this.db.callingCampaign.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'desc' },
     });
     return Promise.all(
@@ -62,9 +64,9 @@ export class CallingCampaignsService {
     );
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string) {
     const campaign = await this.db.callingCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
       include: {
         calls: {
           include: { contact: true },
@@ -75,60 +77,75 @@ export class CallingCampaignsService {
     return this.withCounts(campaign);
   }
 
-  async create(dto: CreateCallingCampaignDto) {
+  async create(dto: CreateCallingCampaignDto, userId: string) {
     const botDefaults = dto.aiCallingBotId
-      ? await this.botService.getCampaignDefaults(dto.aiCallingBotId)
+      ? await this.botService.getCampaignDefaults(dto.aiCallingBotId, userId)
       : {};
     const data = this.normalizeCampaignPayload({
       ...botDefaults,
       ...dto,
       status: 'DRAFT',
     });
-    const campaign = await this.db.callingCampaign.create({ data });
-    await this.addCallableContacts(campaign.id, dto.contactIds || [], data);
-    return this.findOne(campaign.id);
+    const campaign = await this.db.callingCampaign.create({
+      data: { ...data, ownerId: userId },
+    });
+    await this.addCallableContacts(
+      campaign.id,
+      dto.contactIds || [],
+      data,
+      userId,
+    );
+    return this.findOne(campaign.id, userId);
   }
 
   async update(
     id: string,
     dto: Partial<CreateCallingCampaignDto> & { status?: string },
+    userId: string,
   ) {
-    await this.findOne(id);
+    await this.findOne(id, userId);
     const { contactIds, ...campaignFields } = dto;
+    // The live call reads this bot's knowledge base, so it must be the
+    // owner's own bot.
+    if (campaignFields.aiCallingBotId) {
+      await this.botService.findOne(campaignFields.aiCallingBotId, userId);
+    }
     if (Object.keys(campaignFields).length > 0) {
       await this.db.callingCampaign.update({
-        where: { id },
+        where: { id, ownerId: userId },
         data: this.normalizeCampaignPayload(campaignFields),
       });
     }
     if (contactIds?.length) {
       const campaign = await this.db.callingCampaign.findUnique({
-        where: { id },
+        where: { id, ownerId: userId },
       });
-      await this.addCallableContacts(id, contactIds, campaign || {});
+      await this.addCallableContacts(id, contactIds, campaign || {}, userId);
     }
-    return this.findOne(id);
+    return this.findOne(id, userId);
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    await this.db.callHistory.deleteMany({ where: { campaignId: id } });
-    return this.db.callingCampaign.delete({ where: { id } });
+  async remove(id: string, userId: string) {
+    await this.findOne(id, userId);
+    await this.db.callHistory.deleteMany({
+      where: { campaignId: id, ownerId: userId },
+    });
+    return this.db.callingCampaign.delete({ where: { id, ownerId: userId } });
   }
 
-  // userId is the account whose Twilio/Plivo and Gemini credentials place the
+  // userId is the owner, whose Twilio/Plivo and Gemini credentials place the
   // calls; it is recorded on the campaign as launchedBy for the webhooks and
   // live-call socket that run later without a request.
-  async launchCampaign(id: string, userId: string | null | undefined) {
+  async launchCampaign(id: string, userId: string) {
     return this.launch(id, false, userId);
   }
 
-  async relaunchCampaign(id: string, userId: string | null | undefined) {
+  async relaunchCampaign(id: string, userId: string) {
     return this.launch(id, true, userId);
   }
 
   async scheduleCampaign(id: string, scheduledAt: string, userId: string) {
-    await this.findOne(id);
+    await this.findOne(id, userId);
 
     const when = new Date(scheduledAt);
     if (Number.isNaN(when.getTime())) {
@@ -139,7 +156,7 @@ export class CallingCampaignsService {
     }
 
     await this.db.callingCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: {
         status: 'SCHEDULED',
         scheduleType: 'SCHEDULED',
@@ -155,10 +172,10 @@ export class CallingCampaignsService {
     };
   }
 
-  async unscheduleCampaign(id: string) {
-    await this.findOne(id);
+  async unscheduleCampaign(id: string, userId: string) {
+    await this.findOne(id, userId);
     await this.db.callingCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: {
         status: 'DRAFT',
         scheduleType: 'IMMEDIATE',
@@ -168,15 +185,15 @@ export class CallingCampaignsService {
     return { success: true, message: 'Schedule cancelled' };
   }
 
-  /** Returns SCHEDULED calling campaigns whose scheduledAt is due. */
+  /** Every owner's SCHEDULED calling campaigns whose scheduledAt is due. */
   async findDueScheduled() {
     return this.db.callingCampaign.findMany({
       where: { status: 'SCHEDULED', scheduledAt: { lte: new Date() } },
     });
   }
 
-  async stopCampaign(id: string) {
-    const campaign = await this.findOne(id);
+  async stopCampaign(id: string, userId: string) {
+    const campaign = await this.findOne(id, userId);
     // Calls can only be cancelled with the account that placed them.
     const settings = await this.settingsService.getRawSettings(
       campaign.launchedBy,
@@ -223,16 +240,17 @@ export class CallingCampaignsService {
     }
 
     await this.db.callingCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { status: 'STOPPED', stoppedAt: new Date() },
     });
 
     return { status: 'STOPPED', cancelledCalls };
   }
 
-  async getDashboardMetrics() {
-    const campaigns = await this.db.callingCampaign.findMany();
-    const calls = await this.db.callHistory.findMany();
+  async getDashboardMetrics(userId: string) {
+    const owned = { where: { ownerId: userId } };
+    const campaigns = await this.db.callingCampaign.findMany(owned);
+    const calls = await this.db.callHistory.findMany(owned);
     const answered = calls.filter((call: any) => call.outcome === 'ANSWERED');
     const failed = calls.filter((call: any) => call.outcome === 'FAILED');
     return {
@@ -258,10 +276,11 @@ export class CallingCampaignsService {
     return this.buildGeneratedCampaign(dto);
   }
 
-  async startGenerate(dto: GenerateCallingCampaignDto) {
+  async startGenerate(dto: GenerateCallingCampaignDto, userId: string) {
     const now = new Date();
     const job: GenerationJob = {
       id: randomUUID(),
+      userId,
       status: 'PROCESSING',
       createdAt: now,
       updatedAt: now,
@@ -282,9 +301,11 @@ export class CallingCampaignsService {
     return job;
   }
 
-  generationStatus(id: string) {
+  generationStatus(id: string, userId: string) {
     const job = this.generationJobs.get(id);
-    if (!job) throw new BadRequestException('Generation job not found.');
+    if (!job || job.userId !== userId) {
+      throw new BadRequestException('Generation job not found.');
+    }
     return job;
   }
 
@@ -528,9 +549,9 @@ export class CallingCampaignsService {
     return { ok: true };
   }
 
-  async getCallRecordingAudio(callId: string) {
+  async getCallRecordingAudio(callId: string, userId: string) {
     const call = await this.db.callHistory.findUnique({
-      where: { id: callId },
+      where: { id: callId, ownerId: userId },
     });
     if (!call) throw new NotFoundException('Call recording not found.');
     if (!call.recordingUrl) {
@@ -579,12 +600,8 @@ export class CallingCampaignsService {
     };
   }
 
-  private async launch(
-    id: string,
-    relaunch: boolean,
-    userId: string | null | undefined,
-  ) {
-    const campaign = await this.findOne(id);
+  private async launch(id: string, relaunch: boolean, userId: string) {
+    const campaign = await this.findOne(id, userId);
     const settings = await this.settingsService.getRawSettings(userId);
     const provider = this.getActiveProvider(settings);
     if (!this.hasProviderSettings(settings)) {
@@ -620,7 +637,7 @@ export class CallingCampaignsService {
           },
         });
       }
-      calls = (await this.findOne(id)).calls || [];
+      calls = (await this.findOne(id, userId)).calls || [];
     }
 
     const callable = calls.filter((call: any) => call.contact?.phoneNumber);
@@ -753,6 +770,7 @@ export class CallingCampaignsService {
     campaignId: string,
     contactIds: string[],
     campaign: Record<string, any>,
+    ownerId: string,
   ) {
     const existing = await this.db.callHistory.findMany({
       where: { campaignId },
@@ -763,11 +781,12 @@ export class CallingCampaignsService {
     for (const contactId of contactIds) {
       if (existingIds.has(contactId)) continue;
       const contact = await this.db.contact.findUnique({
-        where: { id: contactId },
+        where: { id: contactId, ownerId },
       });
       if (!contact?.phoneNumber) continue;
       await this.db.callHistory.create({
         data: {
+          ownerId,
           campaignId,
           contactId,
           duration: 0,

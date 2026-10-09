@@ -6,7 +6,12 @@ export class ContactDirectory {
   @Prop({ default: () => randomUUID() })
   _id: string;
 
-  @Prop({ required: true, unique: true, trim: true })
+  // The user who owns this record; only they can see or change it.
+  @Prop({ type: String, required: true, index: true })
+  ownerId: string;
+
+  // Unique per owner (see the compound index below), not globally.
+  @Prop({ required: true, trim: true })
   name: string;
 
   @Prop()
@@ -15,3 +20,4 @@ export class ContactDirectory {
 
 export const ContactDirectorySchema =
   SchemaFactory.createForClass(ContactDirectory);
+ContactDirectorySchema.index({ ownerId: 1, name: 1 }, { unique: true });

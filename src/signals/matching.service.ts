@@ -20,10 +20,14 @@ export interface ContactMatch {
 export class MatchingService {
   constructor(private readonly db: MongoService) {}
 
-  async matchSignalToContacts(signal: {
-    companyDomain?: string;
-    companyName?: string;
-  }): Promise<ContactMatch[]> {
+  /** Only the owner's contacts are candidates. */
+  async matchSignalToContacts(
+    signal: {
+      companyDomain?: string;
+      companyName?: string;
+    },
+    ownerId: string,
+  ): Promise<ContactMatch[]> {
     const domain = signal.companyDomain?.toLowerCase().trim();
     const nameKey = this.normalizeName(signal.companyName);
 
@@ -32,6 +36,7 @@ export class MatchingService {
     if (domain) {
       const byDomain = await this.db.contact.findMany({
         where: {
+          ownerId,
           email: { $regex: `@${escapeRegex(domain)}$`, $options: 'i' },
         },
       });
@@ -52,6 +57,7 @@ export class MatchingService {
     if (nameKey && nameToken.length >= 3) {
       const byName = await this.db.contact.findMany({
         where: {
+          ownerId,
           company: { $regex: escapeRegex(nameToken), $options: 'i' },
         },
       });

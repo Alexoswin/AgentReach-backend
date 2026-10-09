@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Req } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -11,7 +11,7 @@ export class AnalyticsController {
   @ApiOperation({
     summary: 'Get unified email and calling analytics for the dashboard',
   })
-  async getDashboardAnalytics() {
-    return this.analyticsService.getDashboardAnalytics();
+  async getDashboardAnalytics(@Req() request: any) {
+    return this.analyticsService.getDashboardAnalytics(request.user.id);
   }
 }

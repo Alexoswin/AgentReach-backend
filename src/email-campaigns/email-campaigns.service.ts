@@ -20,8 +20,9 @@ export class EmailCampaignsService {
     private settingsService: SettingsService,
   ) {}
 
-  async findAll() {
+  async findAll(userId: string) {
     const campaigns = await this.db.emailCampaign.findMany({
+      where: { ownerId: userId },
       include: {
         template: { select: { id: true, name: true } },
         contacts: { select: { id: true, deliveryStatus: true } },
@@ -50,9 +51,9 @@ export class EmailCampaignsService {
     }));
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
       include: {
         template: true,
         contacts: {
@@ -70,29 +71,29 @@ export class EmailCampaignsService {
     return campaign;
   }
 
-  async create(dto: CreateCampaignDto) {
+  async create(dto: CreateCampaignDto, userId: string) {
     if (dto.templateId) {
-      await this.assertTemplateExists(dto.templateId);
+      await this.assertTemplateExists(dto.templateId, userId);
     }
 
     return this.db.emailCampaign.create({
-      data: this.withNormalizedCopyLists(dto),
+      data: { ...this.withNormalizedCopyLists(dto), ownerId: userId },
     });
   }
 
-  async update(id: string, dto: UpdateCampaignDto) {
+  async update(id: string, dto: UpdateCampaignDto, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
     });
     if (!campaign) {
       throw new BadRequestException('Campaign not found');
     }
     if (dto.templateId) {
-      await this.assertTemplateExists(dto.templateId);
+      await this.assertTemplateExists(dto.templateId, userId);
     }
 
     return this.db.emailCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: this.withNormalizedCopyLists(dto),
     });
   }
@@ -132,9 +133,9 @@ export class EmailCampaignsService {
    * opt-in for "send the whole thing again" — the caller is responsible for
    * confirming that duplicate delivery is intended.
    */
-  async relaunchCampaign(id: string, userId: string | null | undefined) {
+  async relaunchCampaign(id: string, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
       include: { template: true, contacts: true },
     });
 
@@ -169,7 +170,7 @@ export class EmailCampaignsService {
     });
 
     await this.db.emailCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
     });
 
@@ -220,24 +221,28 @@ export class EmailCampaignsService {
     }
   }
 
-  private async assertTemplateExists(templateId: string) {
+  private async assertTemplateExists(templateId: string, userId: string) {
     const template = await this.db.template.findUnique({
-      where: { id: templateId },
+      where: { id: templateId, ownerId: userId },
     });
     if (!template) {
       throw new BadRequestException('Template not found');
     }
   }
 
-  async remove(id: string) {
-    return this.db.emailCampaign.delete({
-      where: { id },
+  async remove(id: string, userId: string) {
+    const campaign = await this.db.emailCampaign.delete({
+      where: { id, ownerId: userId },
     });
+    if (!campaign) {
+      throw new BadRequestException('Campaign not found');
+    }
+    return campaign;
   }
 
-  async addContacts(campaignId: string, dto: AddContactsDto) {
+  async addContacts(campaignId: string, dto: AddContactsDto, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id: campaignId },
+      where: { id: campaignId, ownerId: userId },
     });
     if (!campaign) {
       throw new BadRequestException('Campaign not found');
@@ -250,7 +255,7 @@ export class EmailCampaignsService {
 
     const [existingContacts, existingLinks] = await Promise.all([
       this.db.contact.findMany({
-        where: { id: { in: uniqueContactIds } },
+        where: { id: { in: uniqueContactIds }, ownerId: userId },
       }),
       this.db.emailCampaignContact.findMany({
         where: { campaignId, contactId: { in: uniqueContactIds } },
@@ -274,6 +279,7 @@ export class EmailCampaignsService {
       contactIdsToAdd.map((contactId) =>
         this.db.emailCampaignContact.create({
           data: {
+            ownerId: userId,
             campaignId,
             contactId,
             deliveryStatus: 'PENDING',
@@ -285,9 +291,9 @@ export class EmailCampaignsService {
     return { success: true, addedCount: contactIdsToAdd.length };
   }
 
-  async removeContact(campaignId: string, contactId: string) {
+  async removeContact(campaignId: string, contactId: string, userId: string) {
     const record = await this.db.emailCampaignContact.findFirst({
-      where: { campaignId, contactId },
+      where: { campaignId, contactId, ownerId: userId },
     });
 
     if (!record) {
@@ -303,7 +309,7 @@ export class EmailCampaignsService {
 
   async scheduleCampaign(id: string, scheduledAt: string, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
       include: { template: true, contacts: true },
     });
 
@@ -331,7 +337,7 @@ export class EmailCampaignsService {
     }
 
     await this.db.emailCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { status: 'SCHEDULED', scheduledAt: when, launchedBy: userId },
     });
 
@@ -342,32 +348,34 @@ export class EmailCampaignsService {
     };
   }
 
-  async unscheduleCampaign(id: string) {
-    const campaign = await this.db.emailCampaign.findUnique({ where: { id } });
+  async unscheduleCampaign(id: string, userId: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id, ownerId: userId },
+    });
     if (!campaign) {
       throw new BadRequestException('Campaign not found');
     }
 
     await this.db.emailCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { status: 'DRAFT', scheduledAt: null },
     });
 
     return { success: true, message: 'Schedule cancelled' };
   }
 
-  /** Returns SCHEDULED campaigns whose scheduledAt is due (used by the cron). */
+  /** Every owner's SCHEDULED campaigns whose scheduledAt is due (for the cron). */
   async findDueScheduled() {
     return this.db.emailCampaign.findMany({
       where: { status: 'SCHEDULED', scheduledAt: { lte: new Date() } },
     });
   }
 
-  // userId is the account whose SES credentials send the campaign. It is
+  // userId is the owner, whose SES credentials send the campaign. It is
   // stored as launchedBy because sending continues in the background.
-  async launchCampaign(id: string, userId: string | null | undefined) {
+  async launchCampaign(id: string, userId: string) {
     const campaign = await this.db.emailCampaign.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
       include: {
         template: true,
         contacts: true,
@@ -427,7 +435,7 @@ export class EmailCampaignsService {
 
     // Set campaign status to RUNNING and clear any stale schedule
     await this.db.emailCampaign.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
     });
 

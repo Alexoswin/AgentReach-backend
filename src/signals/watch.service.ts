@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
 import { CompanyWatchLike } from './signal.types';
 
@@ -16,6 +16,7 @@ const FREE_EMAIL_DOMAINS = new Set([
   'msn.com',
 ]);
 
+// Per owner.
 const MAX_WATCHES = 500;
 
 @Injectable()
@@ -24,24 +25,35 @@ export class WatchService {
 
   constructor(private readonly db: MongoService) {}
 
-  async findAll(): Promise<CompanyWatchLike[]> {
-    return this.db.companyWatch.findMany({ orderBy: { createdAt: 'desc' } });
+  async findAll(userId: string): Promise<CompanyWatchLike[]> {
+    return this.db.companyWatch.findMany({
+      where: { ownerId: userId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
-  async findActive(): Promise<CompanyWatchLike[]> {
-    const all = await this.findAll();
-    return all.filter((w) => w.status === 'active');
+  /** Active watches of one owner, or of every owner for the cron poll. */
+  async findActive(ownerId?: string): Promise<CompanyWatchLike[]> {
+    return this.db.companyWatch.findMany({
+      where: { status: 'active', ...(ownerId ? { ownerId } : {}) },
+    });
   }
 
-  async create(companyName: string, domain: string, sources?: string[]) {
+  async create(
+    companyName: string,
+    domain: string,
+    userId: string,
+    sources?: string[],
+  ) {
     const normalizedDomain = domain.toLowerCase().trim();
     const existing = await this.db.companyWatch.findUnique({
-      where: { domain: normalizedDomain },
+      where: { domain: normalizedDomain, ownerId: userId },
     });
     if (existing) return existing;
 
     return this.db.companyWatch.create({
       data: {
+        ownerId: userId,
         companyName: companyName?.trim() || normalizedDomain,
         domain: normalizedDomain,
         ...(sources ? { sourcesEnabled: sources } : {}),
@@ -51,12 +63,23 @@ export class WatchService {
     });
   }
 
-  async setStatus(id: string, status: 'active' | 'paused') {
-    return this.db.companyWatch.update({ where: { id }, data: { status } });
+  async toggle(id: string, userId: string) {
+    const watch = await this.db.companyWatch.findUnique({
+      where: { id, ownerId: userId },
+    });
+    if (!watch) throw new BadRequestException('Watch not found');
+    return this.db.companyWatch.update({
+      where: { id, ownerId: userId },
+      data: { status: watch.status === 'active' ? 'paused' : 'active' },
+    });
   }
 
-  async remove(id: string) {
-    return this.db.companyWatch.delete({ where: { id } });
+  async remove(id: string, userId: string) {
+    const watch = await this.db.companyWatch.delete({
+      where: { id, ownerId: userId },
+    });
+    if (!watch) throw new BadRequestException('Watch not found');
+    return watch;
   }
 
   async markPolled(watchId: string, source: string) {
@@ -74,15 +97,18 @@ export class WatchService {
 
   /**
    * Auto-create watches from a batch of contact email addresses.
-   * Skips free-mail domains and respects the per-workspace watch cap.
+   * Skips free-mail domains and respects the per-owner watch cap.
    */
   async ensureWatchesForEmails(
     entries: { email?: string; company?: string }[],
+    userId: string,
   ): Promise<number> {
     let created = 0;
     const seen = new Set<string>();
 
-    const currentCount = (await this.db.companyWatch.findMany({})).length;
+    const currentCount = await this.db.companyWatch.count({
+      where: { ownerId: userId },
+    });
     let budget = Math.max(0, MAX_WATCHES - currentCount);
 
     for (const entry of entries) {
@@ -94,12 +120,16 @@ export class WatchService {
       seen.add(domain);
 
       const existing = await this.db.companyWatch.findUnique({
-        where: { domain },
+        where: { domain, ownerId: userId },
       });
       if (existing) continue;
 
       try {
-        await this.create(entry.company || this.nameFromDomain(domain), domain);
+        await this.create(
+          entry.company || this.nameFromDomain(domain),
+          domain,
+          userId,
+        );
         created++;
         budget--;
       } catch (err) {

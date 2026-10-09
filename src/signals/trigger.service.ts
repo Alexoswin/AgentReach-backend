@@ -42,26 +42,20 @@ export class TriggerService {
   ) {}
 
   /**
-   * senderId is the user whose SES credentials send the outreach: the
-   * reviewer for an approved match, otherwise the playbook's creator.
+   * Everything the outreach creates belongs to the playbook's owner, and is
+   * sent with their SES credentials.
    */
   async trigger(
     signal: SignalLike,
     contactId: string,
     playbook: PlaybookLike,
     matchId?: string,
-    senderId?: string | null,
   ): Promise<TriggerResult> {
-    const sender = senderId || playbook.createdBy;
-    if (!sender) {
-      throw new Error(
-        'This playbook has no owner to send from. Edit or toggle it once to adopt it.',
-      );
-    }
+    const ownerId = playbook.ownerId;
 
     // Guardrail: never trigger the same signal for the same contact twice.
     const dupe = await this.db.triggeredOutreach.findFirst({
-      where: { signalId: signal.id, contactId },
+      where: { signalId: signal.id, contactId, ownerId },
     });
     if (dupe) return { outcome: 'skipped-duplicate' };
 
@@ -70,7 +64,7 @@ export class TriggerService {
       Date.now() - playbook.cooldownDays * 24 * 60 * 60 * 1000,
     );
     const recent = await this.db.triggeredOutreach.findFirst({
-      where: { contactId, launchedAt: { gte: cooldownStart } },
+      where: { contactId, ownerId, launchedAt: { gte: cooldownStart } },
     });
     if (recent) return { outcome: 'skipped-cooldown' };
 
@@ -89,7 +83,7 @@ export class TriggerService {
     // Materialize a signal-specific template so {{signal.*}} placeholders are
     // baked in; contact-level placeholders are filled by the send pipeline.
     const baseTemplate = await this.db.template.findUnique({
-      where: { id: playbook.templateId },
+      where: { id: playbook.templateId, ownerId },
     });
     if (!baseTemplate) {
       throw new Error('Playbook template no longer exists');
@@ -97,6 +91,7 @@ export class TriggerService {
 
     const materialized = await this.db.template.create({
       data: {
+        ownerId,
         name: `[Signal] ${baseTemplate.name} — ${signal.companyName || ''}`.slice(
           0,
           120,
@@ -112,6 +107,7 @@ export class TriggerService {
 
     const campaign = await this.db.emailCampaign.create({
       data: {
+        ownerId,
         name: `Signal: ${SIGNAL_TYPE_LABELS[signal.type] || signal.type} — ${signal.companyName || ''}`.slice(
           0,
           120,
@@ -121,13 +117,16 @@ export class TriggerService {
       },
     });
 
-    await this.emailCampaigns.addContacts(campaign.id, {
-      contactIds: [contactId],
-    });
-    await this.emailCampaigns.launchCampaign(campaign.id, sender);
+    await this.emailCampaigns.addContacts(
+      campaign.id,
+      { contactIds: [contactId] },
+      ownerId,
+    );
+    await this.emailCampaigns.launchCampaign(campaign.id, ownerId);
 
     const record = await this.db.triggeredOutreach.create({
       data: {
+        ownerId,
         signalId: signal.id,
         contactId,
         playbookId: playbook.id,
@@ -140,7 +139,7 @@ export class TriggerService {
 
     if (matchId) {
       await this.db.signalMatch.update({
-        where: { id: matchId },
+        where: { id: matchId, ownerId },
         data: { status: 'triggered', campaignId: campaign.id },
       });
     }
@@ -160,9 +159,10 @@ export class TriggerService {
   async renderPreview(
     templateId: string,
     signal: SignalLike,
+    userId: string,
   ): Promise<{ subject: string; bodyText: string }> {
     const template = await this.db.template.findUnique({
-      where: { id: templateId },
+      where: { id: templateId, ownerId: userId },
     });
     if (!template) return { subject: '', bodyText: '' };
     return {

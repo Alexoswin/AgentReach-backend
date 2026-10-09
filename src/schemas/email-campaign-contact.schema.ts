@@ -6,6 +6,10 @@ export class EmailCampaignContact {
   @Prop({ default: () => randomUUID() })
   _id: string;
 
+  // The user who owns this record; only they can see or change it.
+  @Prop({ type: String, required: true, index: true })
+  ownerId: string;
+
   @Prop({ type: String, ref: 'EmailCampaign', required: true, index: true })
   campaignId: string;
 

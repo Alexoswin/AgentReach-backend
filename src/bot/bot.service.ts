@@ -62,23 +62,34 @@ export class BotService {
     ];
   }
 
-  async findAll() {
-    return this.db.aiCallingBot.findMany({ orderBy: { createdAt: 'desc' } });
+  async findAll(userId: string) {
+    return this.db.aiCallingBot.findMany({
+      where: { ownerId: userId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
-  async findOne(id: string) {
-    const bot = await this.db.aiCallingBot.findUnique({ where: { id } });
+  async findOne(id: string, userId: string) {
+    const bot = await this.db.aiCallingBot.findUnique({
+      where: { id, ownerId: userId },
+    });
     if (!bot) throw new BadRequestException('AI calling bot not found');
     return bot;
   }
 
-  async create(dto: BotPayload, knowledgeBasePdf?: TrainingPdfFile) {
+  async create(
+    dto: BotPayload,
+    userId: string,
+    knowledgeBasePdf?: TrainingPdfFile,
+  ) {
     const normalized = this.normalizeBotPayload(dto);
     if (!normalized.name) {
       throw new BadRequestException('Bot name is required.');
     }
 
-    const bot = await this.db.aiCallingBot.create({ data: normalized });
+    const bot = await this.db.aiCallingBot.create({
+      data: { ...normalized, ownerId: userId },
+    });
     const knowledgeBaseText = cleanTrainingText(
       String(dto.knowledgeBaseText || normalized.knowledgeBaseText || ''),
     );
@@ -107,27 +118,27 @@ export class BotService {
       });
     }
 
-    return this.findOne(bot.id);
+    return this.findOne(bot.id, userId);
   }
 
-  async update(id: string, dto: BotPayload) {
-    await this.findOne(id);
+  async update(id: string, dto: BotPayload, userId: string) {
+    await this.findOne(id, userId);
     return this.db.aiCallingBot.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: this.normalizeBotPayload(dto),
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, userId: string) {
+    await this.findOne(id, userId);
     await this.db.aiCallingBotEmbedding.deleteMany({ where: { botId: id } });
-    return this.db.aiCallingBot.delete({ where: { id } });
+    return this.db.aiCallingBot.delete({ where: { id, ownerId: userId } });
   }
 
-  async search(id: string, dto: SearchBotDto) {
+  async search(id: string, dto: SearchBotDto, userId: string) {
     const query = dto.query?.trim();
     if (!query) throw new BadRequestException('Search query is required.');
-    await this.findOne(id);
+    await this.findOne(id, userId);
     return this.searchBotKnowledge(id, query, this.resolveTopK(dto.topK));
   }
 
@@ -183,9 +194,9 @@ export class BotService {
       .join('\n');
   }
 
-  async getCampaignDefaults(id?: string) {
+  async getCampaignDefaults(id: string | undefined, userId: string) {
     if (!id) return {};
-    const bot = await this.findOne(id);
+    const bot = await this.findOne(id, userId);
     return {
       aiCallingBotId: bot.id,
       language: bot.language,

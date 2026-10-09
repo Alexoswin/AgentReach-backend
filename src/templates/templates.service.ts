@@ -43,15 +43,16 @@ export class TemplatesService {
     private settingsService: SettingsService,
   ) {}
 
-  async findAll() {
+  async findAll(userId: string) {
     return this.db.template.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string) {
     const template = await this.db.template.findUnique({
-      where: { id },
+      where: { id, ownerId: userId },
     });
     if (!template) {
       throw new BadRequestException('Template not found');
@@ -59,28 +60,28 @@ export class TemplatesService {
     return template;
   }
 
-  async create(dto: CreateTemplateDto) {
+  async create(dto: CreateTemplateDto, userId: string) {
     const data = this.normalizeTemplate(dto);
 
     return this.db.template.create({
-      data,
+      data: { ...data, ownerId: userId },
     });
   }
 
-  async update(id: string, dto: Partial<CreateTemplateDto>) {
-    await this.findOne(id);
+  async update(id: string, dto: Partial<CreateTemplateDto>, userId: string) {
+    await this.findOne(id, userId);
     const data = this.normalizeTemplate(dto, false);
 
     return this.db.template.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data,
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, userId: string) {
+    await this.findOne(id, userId);
     return this.db.template.delete({
-      where: { id },
+      where: { id, ownerId: userId },
     });
   }
 
