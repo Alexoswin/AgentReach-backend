@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Req,
   UsePipes,
   ValidationPipe,
@@ -14,6 +15,7 @@ import { EmailCampaignsService } from './email-campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
+import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('email-campaigns')
@@ -22,9 +24,16 @@ export class EmailCampaignsController {
   constructor(private readonly emailCampaignsService: EmailCampaignsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all email campaigns' })
-  async findAll(@Req() request: any) {
-    return this.emailCampaignsService.findAll(request.user.id);
+  @ApiOperation({
+    summary:
+      'List email campaigns. Send page/limit (plus search, status) for a paginated envelope; without them the full array is returned.',
+  })
+  async findAll(
+    @Req() request: any,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ListCampaignsQueryDto,
+  ) {
+    return this.emailCampaignsService.findAll(request.user.id, query);
   }
 
   @Get(':id')

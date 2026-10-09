@@ -9,6 +9,13 @@ import {
   SendRawEmailCommand,
 } from '@aws-sdk/client-ses';
 import { SettingsService } from '../settings/settings.service';
+import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
+import {
+  buildPage,
+  containsRegex,
+  isPaginated,
+  resolvePage,
+} from '../common/pagination';
 
 /** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
 const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
@@ -20,17 +27,48 @@ export class EmailCampaignsService {
     private settingsService: SettingsService,
   ) {}
 
-  async findAll(userId: string) {
-    const campaigns = await this.db.emailCampaign.findMany({
-      where: { ownerId: userId },
-      include: {
-        template: { select: { id: true, name: true } },
-        contacts: { select: { id: true, deliveryStatus: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(userId: string, query?: ListCampaignsQueryDto) {
+    const where: Record<string, unknown> = { ownerId: userId };
+    if (query?.status) where.status = query.status;
+    const term = query?.search?.trim();
+    if (term) where.name = containsRegex(term);
 
-    return campaigns.map((c) => ({
+    const orderBy = { createdAt: 'desc', id: 'desc' } as const;
+    const include = {
+      template: { select: { id: true, name: true } },
+      contacts: { select: { id: true, deliveryStatus: true } },
+    };
+
+    if (!isPaginated(query)) {
+      const campaigns = await this.db.emailCampaign.findMany({
+        where,
+        include,
+        orderBy,
+      });
+      return campaigns.map((c: any) => this.toListItem(c));
+    }
+
+    const { page, limit, skip } = resolvePage(query);
+    const [campaigns, total] = await Promise.all([
+      this.db.emailCampaign.findMany({
+        where,
+        include,
+        orderBy,
+        skip,
+        take: limit,
+      }),
+      this.db.emailCampaign.count({ where }),
+    ]);
+    return buildPage(
+      campaigns.map((c: any) => this.toListItem(c)),
+      total,
+      page,
+      limit,
+    );
+  }
+
+  private toListItem(c: any) {
+    return {
       id: c.id,
       name: c.name,
       status: c.status,
@@ -48,7 +86,7 @@ export class EmailCampaignsService {
       sentCount: c.contacts.filter((contact: any) =>
         ['SENT', 'DELIVERED'].includes(contact.deliveryStatus),
       ).length,
-    }));
+    };
   }
 
   async findOne(id: string, userId: string) {
@@ -104,9 +142,9 @@ export class EmailCampaignsService {
    * twice to one mailbox, which reads as a bug to the recipient and inflates
    * the complaint rate that governs the whole sending identity.
    */
-  private withNormalizedCopyLists<
-    T extends { cc?: string[]; bcc?: string[] },
-  >(dto: T): T {
+  private withNormalizedCopyLists<T extends { cc?: string[]; bcc?: string[] }>(
+    dto: T,
+  ): T {
     const normalize = (list?: string[]) =>
       Array.from(
         new Set((list || []).map((entry) => entry.trim().toLowerCase())),

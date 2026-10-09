@@ -4,6 +4,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
+import {
+  buildPage,
+  containsRegex,
+  isPaginated,
+  resolvePage,
+} from '../common/pagination';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { MongoService } from '../mongo.service';
@@ -54,14 +61,35 @@ export class CallingCampaignsService {
     private readonly geminiAuthService?: GeminiLiveAuthService,
   ) {}
 
-  async findAll(userId: string) {
-    const campaigns = await this.db.callingCampaign.findMany({
-      where: { ownerId: userId },
-      orderBy: { createdAt: 'desc' },
-    });
-    return Promise.all(
+  async findAll(userId: string, query?: ListCampaignsQueryDto) {
+    const where: Record<string, unknown> = { ownerId: userId };
+    if (query?.status) where.status = query.status;
+    const term = query?.search?.trim();
+    if (term) where.name = containsRegex(term);
+
+    const orderBy = { createdAt: 'desc', id: 'desc' } as const;
+
+    if (!isPaginated(query)) {
+      const campaigns = await this.db.callingCampaign.findMany({
+        where,
+        orderBy,
+      });
+      return Promise.all(
+        campaigns.map((campaign: any) => this.withCounts(campaign)),
+      );
+    }
+
+    // Only the requested page pays for withCounts, which loads each
+    // campaign's call history.
+    const { page, limit, skip } = resolvePage(query);
+    const [campaigns, total] = await Promise.all([
+      this.db.callingCampaign.findMany({ where, orderBy, skip, take: limit }),
+      this.db.callingCampaign.count({ where }),
+    ]);
+    const items = await Promise.all(
       campaigns.map((campaign: any) => this.withCounts(campaign)),
     );
+    return buildPage(items, total, page, limit);
   }
 
   async findOne(id: string, userId: string) {

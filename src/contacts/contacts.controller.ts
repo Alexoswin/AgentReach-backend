@@ -9,11 +9,13 @@ import {
   Req,
   UseInterceptors,
   UploadedFile,
+  Query,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ContactsService } from './contacts.service';
+import { ListContactsQueryDto } from './dto/list-contacts.dto';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { ImportContactsDto } from './dto/import-contacts.dto';
 import { CreateContactDirectoryDto } from './dto/create-contact-directory.dto';
@@ -26,9 +28,22 @@ export class ContactsController {
   constructor(private readonly contactsService: ContactsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all contacts' })
-  async findAll(@Req() request: any) {
-    return this.contactsService.findAll(request.user.id);
+  @ApiOperation({
+    summary:
+      'List contacts. Send page/limit (plus search, directoryId) for a paginated envelope; without them the full array is returned.',
+  })
+  async findAll(
+    @Req() request: any,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ListContactsQueryDto,
+  ) {
+    return this.contactsService.findAll(request.user.id, query);
+  }
+
+  @Get('summary')
+  @ApiOperation({ summary: 'Total and unassigned contact counts' })
+  async summary(@Req() request: any) {
+    return this.contactsService.summary(request.user.id);
   }
 
   @Get('directories')

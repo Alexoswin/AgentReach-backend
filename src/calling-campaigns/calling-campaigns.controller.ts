@@ -24,6 +24,7 @@ import { CallingCampaignsService } from './calling-campaigns.service';
 import { CreateCallingCampaignDto } from './dto/create-calling-campaign.dto';
 import { UpdateCallingCampaignDto } from './dto/update-calling-campaign.dto';
 import { GenerateCallingCampaignDto } from './dto/generate-calling-campaign.dto';
+import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
 
 @ApiTags('calling-campaigns')
 @Controller('calling-campaigns')
@@ -57,9 +58,16 @@ export class CallingCampaignsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all AI calling campaigns' })
-  findAll(@Req() request: any) {
-    return this.service.findAll(request.user.id);
+  @ApiOperation({
+    summary:
+      'List AI calling campaigns. Send page/limit (plus search, status) for a paginated envelope; without them the full array is returned.',
+  })
+  findAll(
+    @Req() request: any,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ListCampaignsQueryDto,
+  ) {
+    return this.service.findAll(request.user.id, query);
   }
 
   @Post('twilio/answer/:callId')

@@ -7,6 +7,13 @@ import { UpdateContactDirectoryDto } from './dto/update-contact-directory.dto';
 import { parse } from 'csv-parse';
 import * as XLSX from 'xlsx';
 import { WatchService } from '../signals/watch.service';
+import { ListContactsQueryDto } from './dto/list-contacts.dto';
+import {
+  buildPage,
+  containsRegex,
+  isPaginated,
+  resolvePage,
+} from '../common/pagination';
 
 @Injectable()
 export class ContactsService {
@@ -15,11 +22,50 @@ export class ContactsService {
     private readonly watches: WatchService,
   ) {}
 
-  async findAll(userId: string) {
-    return this.db.contact.findMany({
-      where: { ownerId: userId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(userId: string, query?: ListContactsQueryDto) {
+    const where: Record<string, unknown> = { ownerId: userId };
+
+    if (query?.directoryId === 'uncategorized') {
+      where.directoryId = null;
+    } else if (query?.directoryId && query.directoryId !== 'all') {
+      where.directoryId = query.directoryId;
+    }
+
+    const term = query?.search?.trim();
+    if (term) {
+      const match = containsRegex(term);
+      where.$or = [
+        { firstName: match },
+        { lastName: match },
+        { email: match },
+        { company: match },
+        { jobTitle: match },
+      ];
+    }
+
+    // `_id` breaks ties so rows never repeat or vanish between pages when many
+    // contacts share a createdAt (bulk imports do).
+    const orderBy = { createdAt: 'desc', id: 'desc' } as const;
+
+    if (!isPaginated(query)) {
+      return this.db.contact.findMany({ where, orderBy });
+    }
+
+    const { page, limit, skip } = resolvePage(query);
+    const [items, total] = await Promise.all([
+      this.db.contact.findMany({ where, orderBy, skip, take: limit }),
+      this.db.contact.count({ where }),
+    ]);
+    return buildPage(items, total, page, limit);
+  }
+
+  /** Totals for the directory sidebar, without loading every contact. */
+  async summary(userId: string) {
+    const [total, unassigned] = await Promise.all([
+      this.db.contact.count({ where: { ownerId: userId } }),
+      this.db.contact.count({ where: { ownerId: userId, directoryId: null } }),
+    ]);
+    return { total, unassigned };
   }
 
   async findDirectories(userId: string) {
