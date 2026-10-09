@@ -9,15 +9,44 @@ export class AnalyticsService {
     const owned = { ownerId: userId };
 
     // 1. Email Metrics
-    const emailHistory = await this.db.emailCampaignContact.findMany({
-      where: owned,
-      include: {
-        campaign: {
-          include: { template: true },
+    // Only the columns the dashboard reads are fetched, and related campaigns,
+    // templates and contacts are loaded once each instead of per history row.
+    const [emailHistory, campaigns, templates, contacts] = await Promise.all([
+      this.db.emailCampaignContact.findMany({
+        where: owned,
+        select: {
+          campaignId: true,
+          contactId: true,
+          deliveryStatus: true,
+          openStatus: true,
+          replyStatus: true,
         },
-        contact: true,
-      },
-    });
+      }),
+      this.db.emailCampaign.findMany({
+        where: owned,
+        select: { id: true, name: true, templateId: true },
+      }),
+      this.db.template.findMany({
+        where: owned,
+        select: { id: true, name: true },
+      }),
+      this.db.contact.findMany({
+        where: owned,
+        select: { id: true, company: true },
+      }),
+    ]);
+    const templateIdByCampaign = new Map<string, string>(
+      campaigns.map((c) => [c.id, c.templateId]),
+    );
+    const companyByContact = new Map<string, string>(
+      contacts.map((c) => [c.id, c.company]),
+    );
+    const historyByCampaign = new Map<string, any[]>();
+    for (const h of emailHistory) {
+      const rows = historyByCampaign.get(h.campaignId) || [];
+      rows.push(h);
+      historyByCampaign.set(h.campaignId, rows);
+    }
 
     const sentCount = emailHistory.filter((h) =>
       this.isSent(h.deliveryStatus),
@@ -35,7 +64,10 @@ export class AnalyticsService {
       sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
 
     // 2. Call Metrics
-    const callHistory = await this.db.callHistory.findMany({ where: owned });
+    const callHistory = await this.db.callHistory.findMany({
+      where: owned,
+      select: { outcome: true, duration: true },
+    });
     const callsMade = callHistory.filter((c) => c.outcome !== 'PENDING').length;
     const answeredCalls = callHistory.filter(
       (c) => c.outcome === 'ANSWERED',
@@ -51,15 +83,8 @@ export class AnalyticsService {
       answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0;
 
     // 3. Campaign Performance Charts
-    const campaigns = await this.db.emailCampaign.findMany({
-      where: owned,
-      include: {
-        contacts: true,
-      },
-    });
-
     const campaignPerformance = campaigns.map((c) => {
-      const campaignContacts = c.contacts || [];
+      const campaignContacts = historyByCampaign.get(c.id) || [];
       const campaignSent = campaignContacts.filter((h: any) =>
         this.isSent(h.deliveryStatus),
       ).length;
@@ -83,11 +108,10 @@ export class AnalyticsService {
     });
 
     // 4. Template Performance
-    const templates = await this.db.template.findMany({ where: owned });
     const templatePerformance = templates.map((t) => {
       // Find history linked to campaigns using this template
       const templateHistory = emailHistory.filter(
-        (h) => h.campaign?.templateId === t.id,
+        (h) => templateIdByCampaign.get(h.campaignId) === t.id,
       );
       const tSent = templateHistory.filter((h) =>
         this.isSent(h.deliveryStatus),
@@ -113,8 +137,10 @@ export class AnalyticsService {
     > = {};
     emailHistory.forEach((h) => {
       const companyName =
-        h.contact?.company ||
-        (h.contact ? 'Unknown / Freelance' : 'Removed Contact');
+        companyByContact.get(h.contactId) ||
+        (companyByContact.has(h.contactId)
+          ? 'Unknown / Freelance'
+          : 'Removed Contact');
       if (!companySegments[companyName]) {
         companySegments[companyName] = { sent: 0, opens: 0, replies: 0 };
       }

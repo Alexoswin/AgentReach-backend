@@ -45,3 +45,6 @@ export class Contact {
 
 export const ContactSchema = SchemaFactory.createForClass(Contact);
 ContactSchema.index({ ownerId: 1, email: 1 }, { unique: true });
+// List view: owner's contacts newest first, optionally within one directory.
+ContactSchema.index({ ownerId: 1, createdAt: -1, _id: -1 });
+ContactSchema.index({ ownerId: 1, directoryId: 1, createdAt: -1 });

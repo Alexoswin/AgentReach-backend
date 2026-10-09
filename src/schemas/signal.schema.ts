@@ -57,3 +57,5 @@ export class Signal {
 }
 
 export const SignalSchema = SchemaFactory.createForClass(Signal);
+SignalSchema.index({ ownerId: 1, occurredAt: -1 });
+SignalSchema.index({ ownerId: 1, companyDomain: 1, occurredAt: -1 });

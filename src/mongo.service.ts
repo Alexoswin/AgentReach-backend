@@ -257,27 +257,35 @@ class MongoDelegate {
     if (typeof args.skip === 'number') query = query.skip(args.skip);
     if (typeof args.take === 'number') query = query.limit(args.take);
 
+    const projection = this.toProjection(args.select, args.include);
+    if (projection) query = query.select(projection);
+
     const docs = await query.lean();
 
-    return Promise.all(
-      docs.map((doc) =>
-        this.hydrate(this.toApi(doc), args.include, args.select),
-      ),
+    return this.hydrateMany(
+      docs.map((doc) => this.toApi(doc)),
+      args.include,
+      args.select,
     );
   }
 
   async findUnique(args: any) {
-    const doc = await this.model.findOne(this.toMongoWhere(args.where)).lean();
+    let query = this.model.findOne(this.toMongoWhere(args.where));
+    const projection = this.toProjection(args.select, args.include);
+    if (projection) query = query.select(projection);
+    const doc = await query.lean();
     return doc
       ? this.hydrate(this.toApi(doc), args.include, args.select)
       : null;
   }
 
   async findFirst(args: any = {}) {
-    const doc = await this.model
+    let query = this.model
       .findOne(this.toMongoWhere(args.where))
-      .sort(this.toMongoSort(args.orderBy) as any)
-      .lean();
+      .sort(this.toMongoSort(args.orderBy) as any);
+    const projection = this.toProjection(args.select, args.include);
+    if (projection) query = query.select(projection);
+    const doc = await query.lean();
     return doc
       ? this.hydrate(this.toApi(doc), args.include, args.select)
       : null;
@@ -406,92 +414,169 @@ class MongoDelegate {
     );
   }
 
+  // Fetch only the selected columns. Skipped when relations are included,
+  // because hydrating them needs foreign keys the caller did not select.
+  private toProjection(select?: any, include?: any) {
+    if (!select || include) return undefined;
+    const fields = Object.entries(select)
+      .filter(([, enabled]) => enabled)
+      .map(([key]) => (key === 'id' ? '_id' : key));
+    return fields.length > 0
+      ? Object.fromEntries(fields.map((field) => [field, 1]))
+      : undefined;
+  }
+
   private async hydrate(value: any, include?: any, select?: any): Promise<any> {
     if (!value) return value;
-    const next = this.applySelect(value, select);
-    if (!include) return next;
+    return (await this.hydrateMany([value], include, select))[0];
+  }
+
+  // Relations are loaded with one `$in` query per relation for the whole
+  // result set, instead of one query per row.
+  private async hydrateMany(
+    values: any[],
+    include?: any,
+    select?: any,
+  ): Promise<any[]> {
+    const nexts = values.map((value) => this.applySelect(value, select));
+    if (!include || values.length === 0) return nexts;
 
     const models = this.getModels();
+    const copy = (doc: any) => (doc ? { ...doc } : null);
+    const loadById = async (modelKey: string, ids: unknown[]) => {
+      const unique = [...new Set(ids.filter(Boolean))];
+      const found = new Map<string, any>();
+      if (unique.length === 0) return found;
+      const docs = await models[modelKey]
+        .find({ _id: { $in: unique } })
+        .lean();
+      for (const doc of docs) found.set(String(doc._id), this.toApi(doc));
+      return found;
+    };
+    // Children grouped by parent id; `select` is applied after grouping
+    // because the parent key must survive the projection.
+    const loadChildren = async (
+      modelKey: string,
+      parentKey: string,
+      opts: any,
+    ) => {
+      const delegate = new MongoDelegate(
+        modelKey,
+        models[modelKey],
+        this.getModels,
+      );
+      const projected = opts.select && !opts.include;
+      const rows = await delegate.findMany({
+        where: {
+          ...(opts.where || {}),
+          [parentKey]: { in: values.map((value) => value.id) },
+        },
+        include: opts.include,
+        select: projected ? { ...opts.select, [parentKey]: true } : undefined,
+      });
+      const grouped = new Map<string, any[]>();
+      for (const row of rows) {
+        const list = grouped.get(row[parentKey]) || [];
+        list.push(this.applySelect(row, opts.select));
+        grouped.set(row[parentKey], list);
+      }
+      return grouped;
+    };
 
     if (this.name === 'emailCampaign') {
       if (include.template) {
-        const template = value.templateId
-          ? await models.template.findOne({ _id: value.templateId }).lean()
-          : null;
-        next.template = this.applySelect(
-          this.toApi(template),
-          include.template.select,
+        const templates = await loadById(
+          'template',
+          values.map((value) => value.templateId),
         );
+        values.forEach((value, i) => {
+          nexts[i].template = this.applySelect(
+            copy(templates.get(value.templateId)),
+            include.template.select,
+          );
+        });
       }
 
       if (include.contacts) {
-        const contactDelegate = new MongoDelegate(
+        const grouped = await loadChildren(
           'emailCampaignContact',
-          models.emailCampaignContact,
-          this.getModels,
+          'campaignId',
+          include.contacts,
         );
-        next.contacts = await contactDelegate.findMany({
-          where: { campaignId: value.id, ...(include.contacts.where || {}) },
-          include: include.contacts.include,
-          select: include.contacts.select,
+        values.forEach((value, i) => {
+          nexts[i].contacts = grouped.get(value.id) || [];
         });
       }
     }
 
     if (this.name === 'emailCampaignContact') {
       if (include.contact) {
-        next.contact = this.toApi(
-          await models.contact.findOne({ _id: value.contactId }).lean(),
+        const contacts = await loadById(
+          'contact',
+          values.map((value) => value.contactId),
         );
+        values.forEach((value, i) => {
+          nexts[i].contact = copy(contacts.get(value.contactId));
+        });
       }
 
       if (include.campaign) {
-        const campaign = this.toApi(
-          await models.emailCampaign.findOne({ _id: value.campaignId }).lean(),
+        const campaigns = await loadById(
+          'emailCampaign',
+          values.map((value) => value.campaignId),
         );
-        if (campaign && include.campaign.include?.template) {
-          campaign.template = campaign.templateId
-            ? this.toApi(
-                await models.template
-                  .findOne({ _id: campaign.templateId })
-                  .lean(),
-              )
-            : null;
-        }
-        next.campaign = this.applySelect(campaign, include.campaign.select);
+        const templates = include.campaign.include?.template
+          ? await loadById(
+              'template',
+              [...campaigns.values()].map((campaign) => campaign.templateId),
+            )
+          : null;
+        values.forEach((value, i) => {
+          const campaign = copy(campaigns.get(value.campaignId));
+          if (campaign && templates) {
+            campaign.template = copy(templates.get(campaign.templateId));
+          }
+          nexts[i].campaign = this.applySelect(campaign, include.campaign.select);
+        });
       }
     }
 
     if (this.name === 'callingCampaign' && include.calls) {
-      const callDelegate = new MongoDelegate(
+      const grouped = await loadChildren(
         'callHistory',
-        models.callHistory,
-        this.getModels,
+        'campaignId',
+        include.calls,
       );
-      next.calls = await callDelegate.findMany({
-        where: { campaignId: value.id, ...(include.calls.where || {}) },
-        include: include.calls.include,
-        select: include.calls.select,
+      values.forEach((value, i) => {
+        nexts[i].calls = grouped.get(value.id) || [];
       });
     }
 
     if (this.name === 'callHistory') {
       if (include.contact) {
-        next.contact = this.toApi(
-          await models.contact.findOne({ _id: value.contactId }).lean(),
+        const contacts = await loadById(
+          'contact',
+          values.map((value) => value.contactId),
         );
+        values.forEach((value, i) => {
+          nexts[i].contact = copy(contacts.get(value.contactId));
+        });
       }
 
       if (include.campaign) {
-        const campaign = this.toApi(
-          await models.callingCampaign
-            .findOne({ _id: value.campaignId })
-            .lean(),
+        const campaigns = await loadById(
+          'callingCampaign',
+          values.map((value) => value.campaignId),
         );
-        next.campaign = this.applySelect(campaign, include.campaign.select);
+        values.forEach((value, i) => {
+          nexts[i].campaign = this.applySelect(
+            copy(campaigns.get(value.campaignId)),
+            include.campaign.select,
+          );
+        });
       }
     }
 
-    return next;
+    return nexts;
   }
 }

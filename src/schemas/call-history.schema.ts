@@ -118,3 +118,4 @@ export class CallHistory {
 }
 
 export const CallHistorySchema = SchemaFactory.createForClass(CallHistory);
+CallHistorySchema.index({ ownerId: 1, timestamp: -1 });

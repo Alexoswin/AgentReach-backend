@@ -41,7 +41,20 @@ export class AuthGuard implements CanActivate {
     }
 
     const payload = this.tokenService.verifyToken(token, 'access');
-    const user = await this.db.user.findUnique({ where: { id: payload.sub } });
+    // The session is keyed by the token's own claims, so both lookups can
+    // run together instead of one after the other on every request.
+    const [user, session] = await Promise.all([
+      this.db.user.findUnique({
+        where: { id: payload.sub },
+        select: { id: true, email: true, disabled: true },
+      }),
+      payload.sid
+        ? this.db.authSession.findUnique({
+            where: { id: payload.sid, userId: payload.sub },
+            select: { id: true },
+          })
+        : null,
+    ]);
 
     if (!user || user.disabled) {
       throw new UnauthorizedException('User not found');
@@ -49,13 +62,8 @@ export class AuthGuard implements CanActivate {
 
     // Signing out or resetting the password ends the session at once
     // instead of when its access token expires.
-    if (payload.sid) {
-      const session = await this.db.authSession.findUnique({
-        where: { id: payload.sid, userId: user.id },
-      });
-      if (!session) {
-        throw new UnauthorizedException('Session has ended');
-      }
+    if (payload.sid && !session) {
+      throw new UnauthorizedException('Session has ended');
     }
 
     request.user = {

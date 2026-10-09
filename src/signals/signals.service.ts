@@ -30,16 +30,20 @@ export class SignalsService {
     userId: string,
     filters: { type?: string; status?: string } = {},
   ) {
-    let signals = await this.db.signal.findMany({
-      where: { ownerId: userId },
+    const signals = await this.db.signal.findMany({
+      where: {
+        ownerId: userId,
+        ...(filters.type ? { type: filters.type } : {}),
+      },
       orderBy: { occurredAt: 'desc' },
+      take: 200,
     });
-    if (filters.type) {
-      signals = signals.filter((s) => s.type === filters.type);
-    }
 
     const allMatches = await this.db.signalMatch.findMany({
-      where: { ownerId: userId },
+      where: {
+        ownerId: userId,
+        signalId: { in: signals.map((s) => s.id) },
+      },
     });
     const matchesBySignal = new Map<string, any[]>();
     for (const m of allMatches) {
@@ -48,7 +52,7 @@ export class SignalsService {
       matchesBySignal.set(m.signalId, list);
     }
 
-    return signals.slice(0, 200).map((s) => {
+    return signals.map((s) => {
       const matches = matchesBySignal.get(s.id) || [];
       return {
         id: s.id,
@@ -73,25 +77,38 @@ export class SignalsService {
 
   /** Pending, actionable matches (a playbook wants to fire, awaiting review). */
   async getReviewQueue(userId: string) {
-    const matches = await this.db.signalMatch.findMany({
-      where: { ownerId: userId },
+    const pending = await this.db.signalMatch.findMany({
+      where: {
+        ownerId: userId,
+        status: 'pending-review',
+        playbookId: { $ne: null },
+      },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
-    const pending = matches.filter(
-      (m) => m.status === 'pending-review' && m.playbookId,
-    );
+
+    // One query per related collection instead of three per pending match.
+    const idsOf = (key: string) => [...new Set(pending.map((m) => m[key]))];
+    const [signals, contacts, playbooks] = await Promise.all([
+      this.db.signal.findMany({
+        where: { ownerId: userId, id: { in: idsOf('signalId') } },
+      }),
+      this.db.contact.findMany({
+        where: { ownerId: userId, id: { in: idsOf('contactId') } },
+      }),
+      this.db.playbook.findMany({
+        where: { ownerId: userId, id: { in: idsOf('playbookId') } },
+      }),
+    ]);
+    const signalById = new Map(signals.map((x) => [x.id, x]));
+    const contactById = new Map(contacts.map((x) => [x.id, x]));
+    const playbookById = new Map(playbooks.map((x) => [x.id, x]));
 
     const results = [];
-    for (const match of pending.slice(0, 100)) {
-      const signal = await this.db.signal.findUnique({
-        where: { id: match.signalId, ownerId: userId },
-      });
-      const contact = await this.db.contact.findUnique({
-        where: { id: match.contactId, ownerId: userId },
-      });
-      const playbook = await this.db.playbook.findUnique({
-        where: { id: match.playbookId, ownerId: userId },
-      });
+    for (const match of pending) {
+      const signal = signalById.get(match.signalId);
+      const contact = contactById.get(match.contactId);
+      const playbook = playbookById.get(match.playbookId);
       if (!signal || !contact || !playbook) continue;
 
       const preview = await this.trigger.renderPreview(
@@ -220,12 +237,24 @@ export class SignalsService {
   /** Triggered-vs-manual performance comparison for the dashboard. */
   async getStats(userId: string) {
     const owned = { where: { ownerId: userId } };
-    const triggered = await this.db.triggeredOutreach.findMany(owned);
+    const triggered = await this.db.triggeredOutreach.findMany({
+      ...owned,
+      select: { campaignId: true },
+    });
     const triggeredCampaignIds = new Set(
       triggered.map((t) => t.campaignId).filter(Boolean),
     );
 
-    const allContacts = await this.db.emailCampaignContact.findMany(owned);
+    const allContacts = await this.db.emailCampaignContact.findMany({
+      ...owned,
+      select: {
+        campaignId: true,
+        deliveryStatus: true,
+        sentTime: true,
+        openStatus: true,
+        replyStatus: true,
+      },
+    });
     const rate = (rows: any[]) => {
       const sent = rows.filter(
         (r) => r.deliveryStatus === 'SENT' || r.sentTime,

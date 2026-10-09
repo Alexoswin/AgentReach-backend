@@ -125,3 +125,5 @@ export class CallingCampaign {
 
 export const CallingCampaignSchema =
   SchemaFactory.createForClass(CallingCampaign);
+CallingCampaignSchema.index({ ownerId: 1, createdAt: -1, _id: -1 });
+CallingCampaignSchema.index({ status: 1, scheduledAt: 1 });

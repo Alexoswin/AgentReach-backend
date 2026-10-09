@@ -44,3 +44,5 @@ export class EmailCampaignContact {
 
 export const EmailCampaignContactSchema =
   SchemaFactory.createForClass(EmailCampaignContact);
+EmailCampaignContactSchema.index({ ownerId: 1, sentTime: -1 });
+EmailCampaignContactSchema.index({ campaignId: 1, contactId: 1 });

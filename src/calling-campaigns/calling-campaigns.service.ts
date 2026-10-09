@@ -276,9 +276,14 @@ export class CallingCampaignsService {
   }
 
   async getDashboardMetrics(userId: string) {
-    const owned = { where: { ownerId: userId } };
-    const campaigns = await this.db.callingCampaign.findMany(owned);
-    const calls = await this.db.callHistory.findMany(owned);
+    const where = { ownerId: userId };
+    const [campaigns, calls] = await Promise.all([
+      this.db.callingCampaign.findMany({ where, select: { status: true } }),
+      this.db.callHistory.findMany({
+        where,
+        select: { outcome: true, duration: true },
+      }),
+    ]);
     const answered = calls.filter((call: any) => call.outcome === 'ANSWERED');
     const failed = calls.filter((call: any) => call.outcome === 'FAILED');
     return {

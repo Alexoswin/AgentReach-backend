@@ -41,3 +41,6 @@ export class EmailCampaign {
 }
 
 export const EmailCampaignSchema = SchemaFactory.createForClass(EmailCampaign);
+EmailCampaignSchema.index({ ownerId: 1, createdAt: -1, _id: -1 });
+// The scheduler polls for due campaigns every minute across all owners.
+EmailCampaignSchema.index({ status: 1, scheduledAt: 1 });

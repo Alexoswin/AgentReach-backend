@@ -59,3 +59,4 @@ export class Template {
 }
 
 export const TemplateSchema = SchemaFactory.createForClass(Template);
+TemplateSchema.index({ ownerId: 1, createdAt: -1 });
