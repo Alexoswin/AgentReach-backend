@@ -1,7 +1,12 @@
 import { analyzeCompany } from './qualify';
 import { normalizeProfile } from './icp';
 import { applicableCriteria, scoreCriteria } from './scoring';
-import { evidenceInText, normalizeText, verifyPerson } from './verify';
+import {
+  evidenceInText,
+  inferEmailPattern,
+  normalizeText,
+  verifyPerson,
+} from './verify';
 
 const PAGE =
   'Acme builds software for banks. 450 engineers. Priya Sharma, VP HR. Contact priya.sharma@acme.com or info@acme.com. Rahul Iyer, Head of Talent.';
@@ -146,5 +151,30 @@ describe('analyzeCompany', () => {
     );
     expect(analysis.criteria[0].verdict).toBe('unknown');
     expect(analysis.criteria[0].evidence).toBe('');
+  });
+});
+
+describe('inferEmailPattern', () => {
+  it('names the pattern that published addresses follow', () => {
+    expect(
+      inferEmailPattern([
+        {
+          firstName: 'Priya',
+          lastName: 'Sharma',
+          email: 'priya.sharma@acme.com',
+        },
+        { firstName: 'Rahul', lastName: 'Iyer' },
+      ]),
+    ).toBe('first.last');
+    expect(
+      inferEmailPattern([
+        { firstName: 'Priya', lastName: 'Sharma', email: 'psharma@acme.com' },
+      ]),
+    ).toBe('flast');
+    expect(
+      inferEmailPattern([
+        { firstName: 'Priya', lastName: 'Sharma', email: 'hello@acme.com' },
+      ]),
+    ).toBe('');
   });
 });

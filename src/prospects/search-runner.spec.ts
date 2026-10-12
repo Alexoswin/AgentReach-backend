@@ -70,9 +70,14 @@ const ACME_PAGE =
 const NOPE_PAGE = 'Nope sells garden furniture.';
 
 function setup(
-  options: { companies?: any[]; contacts?: any[]; stage?: string } = {},
+  options: {
+    companies?: any[];
+    contacts?: any[];
+    stage?: string;
+    search?: Record<string, unknown>;
+  } = {},
 ) {
-  const search = {
+  const search: any = {
     id: 's1',
     ownerId: 'u1',
     maxCompanies: 5,
@@ -86,6 +91,7 @@ function setup(
       locations: ['India'],
       jobTitles: ['HR head'],
     },
+    ...options.search,
   };
   const db = {
     prospectSearch: fakeDelegate([search]),
@@ -101,6 +107,15 @@ function setup(
     },
     'nope.com': {
       pages: [{ url: 'https://nope.com/', text: NOPE_PAGE }],
+      emails: [],
+    },
+    'globex.io': {
+      pages: [
+        {
+          url: 'https://globex.io/',
+          text: 'Globex builds payments tools. Nina Rao, CEO.',
+        },
+      ],
       emails: [],
     },
     'dead.com': {
@@ -169,6 +184,40 @@ function setup(
       people: [],
     },
   };
+  const peopleOnly: Record<string, any> = {
+    'acme.com': {
+      summary: 'Acme makes banking software.',
+      people: [
+        {
+          firstName: 'Priya',
+          lastName: 'Sharma',
+          jobTitle: 'VP HR',
+          email: 'priya.sharma@acme.com',
+          url: 'https://acme.com/team',
+          relevant: true,
+        },
+        {
+          firstName: 'Rahul',
+          lastName: 'Iyer',
+          jobTitle: 'Head of Talent',
+          url: 'https://acme.com/team',
+          relevant: false,
+        },
+      ],
+    },
+    'globex.io': {
+      summary: 'Globex builds payments tools.',
+      people: [
+        {
+          firstName: 'Nina',
+          lastName: 'Rao',
+          jobTitle: 'CEO',
+          url: 'https://globex.io/',
+          relevant: false,
+        },
+      ],
+    },
+  };
   const generate = jest.fn(async (prompt: string) => {
     if (prompt.startsWith('List real companies')) {
       return {
@@ -181,7 +230,18 @@ function setup(
         ],
       };
     }
+    if (prompt.startsWith('Give the official website domain')) {
+      return {
+        companies: [
+          { name: 'Globex Corp', domain: 'globex.io' },
+          { name: 'Mystery Ltd', domain: '' },
+        ],
+      };
+    }
     const domain = /Company: .* \((.+)\)/.exec(prompt)?.[1] || '';
+    if (prompt.startsWith('You list the people')) {
+      return peopleOnly[domain];
+    }
     return answers[domain];
   });
   const deps: RunDeps = {
@@ -333,5 +393,99 @@ describe('runSearch', () => {
     expect(outcome.status).toBe('completed');
     expect(outcome.note).toMatch(/cost limit/);
     expect(db.prospectCompany.rows).toHaveLength(0);
+  });
+  it('keeps people whose title does not match instead of hiding them', async () => {
+    const { db, run, deps } = setup();
+    const original = (deps.generate as jest.Mock).getMockImplementation()!;
+    (deps.generate as jest.Mock).mockImplementation(async (prompt: string) => {
+      const result: any = await original(prompt);
+      return result?.people
+        ? {
+            ...result,
+            people: result.people.map((person: any) => ({
+              ...person,
+              relevant: false,
+            })),
+          }
+        : result;
+    });
+    await run();
+    const names = db.prospect.rows.map((row) => row.firstName).sort();
+    expect(names).toEqual(['Priya', 'Rahul']);
+  });
+
+  describe('company lookup', () => {
+    const lookup = (extra: Record<string, unknown> = {}) =>
+      setup({
+        search: {
+          mode: 'companies',
+          targets: ['https://www.acme.com/about', 'Globex Corp', 'Mystery Ltd'],
+          maxCompanies: 3,
+          peoplePerCompany: 5,
+          profile: { jobTitles: ['HR head'] },
+          ...extra,
+        },
+        contacts: [{ id: 'c1', ownerId: 'u1', email: 'someone@acme.com' }],
+      });
+
+    it('finds the people at the named companies', async () => {
+      const { db, run, generate } = lookup();
+      const outcome = await run();
+
+      expect(outcome.status).toBe('completed');
+      expect(db.prospectCompany.rows.map((row) => row.domain).sort()).toEqual([
+        'acme.com',
+        'globex.io',
+      ]);
+      expect(
+        db.prospectCompany.rows.every((row) => row.status === 'qualified'),
+      ).toBe(true);
+      expect(db.prospect.rows.map((row) => row.firstName).sort()).toEqual([
+        'Nina',
+        'Priya',
+        'Rahul',
+      ]);
+      expect(db.prospect.rows.every((row) => row.score === 0)).toBe(true);
+      const priya = db.prospect.rows.find((row) => row.firstName === 'Priya');
+      expect(priya).toMatchObject({
+        status: 'ready',
+        email: 'priya.sharma@acme.com',
+      });
+      const nina = db.prospect.rows.find((row) => row.firstName === 'Nina');
+      expect(nina.status).toBe('needs_email');
+
+      const acme = db.prospectCompany.rows.find(
+        (row) => row.domain === 'acme.com',
+      );
+      expect(acme.emailPattern).toBe('first.last');
+      expect(acme.criteria).toBeUndefined();
+
+      const prompts = generate.mock.calls.map(([prompt]) => String(prompt));
+      expect(
+        prompts.some((prompt) => prompt.startsWith('List real companies')),
+      ).toBe(false);
+      expect(db.prospectSearch.rows[0].note).toMatch(/Mystery Ltd/);
+    });
+
+    it('still looks up a company that is already in contacts', async () => {
+      const { db, run } = lookup({ targets: ['acme.com'], maxCompanies: 1 });
+      await run();
+      expect(db.prospectCompany.rows).toHaveLength(1);
+      expect(db.prospect.rows).toHaveLength(2);
+    });
+
+    it('explains when a site lists no people', async () => {
+      const { db, run, deps } = lookup({
+        targets: ['acme.com'],
+        maxCompanies: 1,
+      });
+      (deps.generate as jest.Mock).mockImplementation(async () => ({
+        summary: 'Acme makes software.',
+        people: [],
+      }));
+      await run();
+      expect(db.prospectCompany.rows[0].reason).toMatch(/No named people/);
+      expect(db.prospect.rows).toHaveLength(0);
+    });
   });
 });

@@ -128,6 +128,34 @@ describe('ProspectsService', () => {
     expect(updated).toMatchObject({ email: 'priya@acme.com', status: 'ready' });
   });
 
+  it('creates a company lookup from names and domains', async () => {
+    const { service, db } = makeService();
+    await service.createSearch('u1', {
+      mode: 'companies',
+      companies: [' acme.com ', 'Globex Corp', 'acme.com', ''],
+      profile: { jobTitles: ['Head of HR'] },
+    });
+    const data = db.prospectSearch.create.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      mode: 'companies',
+      targets: ['acme.com', 'Globex Corp'],
+      maxCompanies: 2,
+      peoplePerCompany: 5,
+      description: 'Contacts at acme.com, Globex Corp',
+    });
+    expect(data.profile.jobTitles).toEqual(['Head of HR']);
+  });
+
+  it('requires a company for a lookup and a description for a search', async () => {
+    const { service } = makeService();
+    await expect(
+      service.createSearch('u1', { mode: 'companies', companies: [' '] }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.createSearch('u1', { description: 'short', profile: {} }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('limits searches per day', async () => {
     const { service, db } = makeService();
     db.prospectSearch.count.mockResolvedValue(10);
