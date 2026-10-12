@@ -112,7 +112,7 @@ export function isPrivateAddress(address: string): boolean {
 function safeLookup(hostname: string, options: any, callback: any) {
   dns.lookup(hostname, { ...options, all: true }, (error, addresses) => {
     if (error) return callback(error);
-    const list = addresses as dns.LookupAddress[];
+    const list = addresses as unknown as dns.LookupAddress[];
     if (!list.length || list.some((item) => isPrivateAddress(item.address))) {
       return callback(new Error('Blocked address'));
     }

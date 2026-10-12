@@ -17,6 +17,7 @@ import { AuthModule } from './auth/auth.module';
 import { BotModule } from './bot/bot.module';
 import { SignalsModule } from './signals/signals.module';
 import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
+import { ProspectsModule } from './prospects/prospects.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
     AnalyticsModule,
     SignalsModule,
     CampaignSchedulerModule,
+    ProspectsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
