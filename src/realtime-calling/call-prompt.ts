@@ -44,6 +44,9 @@ export function buildCallSystemInstruction(options: {
     botId
       ? `When specific knowledge-base facts are needed, say a short natural filler first (like "let me check that for you") and then call fetch_context with bot_id "${botId}" before answering, so the line is never silent while you look it up.`
       : '',
+    Array.isArray(campaign.tools) && campaign.tools.includes('web_search')
+      ? 'When the contact asks about current events or public facts you do not know and that are not in the knowledge base, say a short natural filler first (like "one sec, let me look that up") and then call web_search. Summarize the answer in your own words; never read out URLs. Never search for private details about the contact.'
+      : '',
     'If you receive [SILENCE_CHECK], the line has gone quiet — briefly and warmly check whether the contact is still there.',
     'If you receive [RESUME], the connection briefly dropped — apologize very briefly for any cut-off and naturally pick the conversation back up.',
     'After a natural closing statement and once the objective is complete, call end_call.',

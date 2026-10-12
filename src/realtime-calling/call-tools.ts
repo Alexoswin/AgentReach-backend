@@ -2,16 +2,22 @@ import { Logger } from '@nestjs/common';
 import { BotService } from '../bot/bot.service';
 import { MongoService } from '../mongo.service';
 import { ActiveCallSession } from './call-session.types';
+import { GeminiLiveAuthService } from './gemini-live-auth.service';
+import { runWebSearchAgent, WebSearchResult } from './web-search.agent';
 
 // fetch_context must not stall the call: fall back to empty context after this.
 // The agent is prompted to speak a short filler before calling the tool, but
 // anything much beyond this still reads as dead air to the contact.
 const FETCH_CONTEXT_TIMEOUT_MS = 2500;
+// A grounded web search is slower than a knowledge-base lookup; past this the
+// agent is told the search was unavailable so it can keep talking.
+const WEB_SEARCH_TIMEOUT_MS = 6000;
 
 export type CallToolsDeps = {
   logger: Logger;
   db: Pick<MongoService, 'callHistory'>;
   botService: Pick<BotService, 'searchBotKnowledge'>;
+  geminiAuthService: Pick<GeminiLiveAuthService, 'getApiKey'>;
 };
 
 export type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
@@ -23,7 +29,7 @@ export function buildCallTools(
   tools: Array<Record<string, unknown>>;
   handlers: Map<string, ToolHandler>;
 } {
-  const { logger, db, botService } = deps;
+  const { logger, db, botService, geminiAuthService } = deps;
   const enabledTools = new Set<string>(
     Array.isArray(state.campaign?.tools)
       ? state.campaign.tools
@@ -131,6 +137,56 @@ export function buildCallTools(
           .map((item) => item.metadata?.ref || item.id)
           .filter(Boolean),
       };
+    });
+  }
+
+  if (enabledTools.has('web_search')) {
+    tools.push({
+      name: 'web_search',
+      description:
+        'Search the public web for current or general information that is not in the knowledge base (news, public company facts, general questions).',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          query: {
+            type: 'STRING',
+            description: 'Standalone web search query from the user question.',
+          },
+        },
+        required: ['query'],
+      },
+    });
+    handlers.set('web_search', async (args) => {
+      const startedAt = Date.now();
+      const query = String(args.query || '').trim();
+      const empty: WebSearchResult = { answer: '', sources: [] };
+      const apiKey = query
+        ? await geminiAuthService.getApiKey(state.campaign.launchedBy)
+        : '';
+      if (!query || !apiKey) {
+        logger.debug(
+          `Gemini Live web_search skipped callId=${state.callId} queryLength=${query.length} hasApiKey=${Boolean(apiKey)}`,
+        );
+        return { ...empty, status: 'Web search is unavailable right now.' };
+      }
+      const result = await withTimeout(
+        runWebSearchAgent(apiKey, query).catch((error: any) => {
+          logger.warn(
+            `Gemini Live web_search failed callId=${state.callId}: ${error?.message || error}`,
+          );
+          return empty;
+        }),
+        WEB_SEARCH_TIMEOUT_MS,
+        empty,
+      );
+      logger.debug(
+        `Gemini Live web_search callId=${state.callId} queryLength=${query.length} answerLength=${result.answer.length} sources=${result.sources.length} durationMs=${
+          Date.now() - startedAt
+        }`,
+      );
+      return result.answer
+        ? result
+        : { ...result, status: 'No web results were found for this question.' };
     });
   }
 

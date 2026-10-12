@@ -7,6 +7,11 @@ import {
 } from './audio-codec';
 import { extractHdVoiceName } from '../config/voice-format';
 import { signCallToken } from '../auth/secrets';
+import { runWebSearchAgent } from './web-search.agent';
+
+jest.mock('./web-search.agent', () => ({
+  runWebSearchAgent: jest.fn(),
+}));
 
 describe('RealtimeCallingGateway', () => {
   function createGateway() {
@@ -34,13 +39,70 @@ describe('RealtimeCallingGateway', () => {
         },
       ]),
     };
+    const geminiAuthService = {
+      getApiKey: jest.fn(async () => 'gemini-key'),
+    };
     const gateway = new RealtimeCallingGateway(
       db as any,
       botService as any,
-      {} as any,
+      geminiAuthService as any,
     );
-    return { gateway, db, botService };
+    return { gateway, db, botService, geminiAuthService };
   }
+
+  it('dispatches web_search to the web search agent with the launcher key', async () => {
+    const { gateway, geminiAuthService } = createGateway();
+    (runWebSearchAgent as jest.Mock).mockResolvedValueOnce({
+      answer: 'Acme raised a Series B last month.',
+      sources: [{ title: 'News', url: 'https://example.com/acme' }],
+    });
+    const state = {
+      callId: 'call-1',
+      campaign: { tools: ['web_search'], launchedBy: 'user-1' },
+    };
+
+    const { tools, handlers } = (gateway as any).buildTools(state);
+    const result = await handlers.get('web_search')({
+      query: 'Acme latest funding',
+    });
+
+    expect(tools.map((tool: any) => tool.name)).toEqual(['web_search']);
+    expect(geminiAuthService.getApiKey).toHaveBeenCalledWith('user-1');
+    expect(runWebSearchAgent).toHaveBeenCalledWith(
+      'gemini-key',
+      'Acme latest funding',
+    );
+    expect(result.answer).toBe('Acme raised a Series B last month.');
+    expect(result.sources[0].url).toBe('https://example.com/acme');
+  });
+
+  it('returns an unavailable status when web_search fails', async () => {
+    const { gateway } = createGateway();
+    (runWebSearchAgent as jest.Mock).mockRejectedValueOnce(
+      new Error('quota exceeded'),
+    );
+    const state = {
+      callId: 'call-1',
+      campaign: { tools: ['web_search'], launchedBy: 'user-1' },
+    };
+
+    const { handlers } = (gateway as any).buildTools(state);
+    const result = await handlers.get('web_search')({ query: 'weather' });
+
+    expect(result.answer).toBe('');
+    expect(result.status).toContain('No web results');
+  });
+
+  it('leaves web_search off when the campaign has no tools list', () => {
+    const { gateway } = createGateway();
+    const { handlers } = (gateway as any).buildTools({
+      callId: 'call-1',
+      campaign: {},
+    });
+
+    expect(handlers.has('web_search')).toBe(false);
+    expect([...handlers.keys()]).toEqual(['end_call', 'fetch_context']);
+  });
 
   it('dispatches fetch_context to bot RAG search', async () => {
     const { gateway, botService } = createGateway();

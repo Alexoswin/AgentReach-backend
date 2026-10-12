@@ -901,6 +901,7 @@ export class RealtimeCallingGateway {
       logger: this.logger,
       db: this.db,
       botService: this.botService,
+      geminiAuthService: this.geminiAuthService,
     });
   }
 
