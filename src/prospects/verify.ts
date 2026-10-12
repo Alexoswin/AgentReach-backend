@@ -133,3 +133,33 @@ export function verifyPerson(
     relevant: person.relevant === true,
   };
 }
+
+const EMAIL_PATTERNS: Array<[string, (first: string, last: string) => string]> =
+  [
+    ['first.last', (first, last) => `${first}.${last}`],
+    ['firstlast', (first, last) => `${first}${last}`],
+    ['first_last', (first, last) => `${first}_${last}`],
+    ['first-last', (first, last) => `${first}-${last}`],
+    ['f.last', (first, last) => `${first.slice(0, 1)}.${last}`],
+    ['flast', (first, last) => `${first.slice(0, 1)}${last}`],
+    ['firstl', (first, last) => `${first}${last.slice(0, 1)}`],
+    ['first', (first) => first],
+  ];
+
+export function inferEmailPattern(
+  people: Array<{ firstName: string; lastName: string; email?: string | null }>,
+) {
+  for (const [label, build] of EMAIL_PATTERNS) {
+    const matches = people.some((person) => {
+      if (!person.email) return false;
+      const first = nameToken(person.firstName);
+      const last = nameToken(person.lastName);
+      return (
+        Boolean(first && last) &&
+        person.email.split('@')[0].toLowerCase() === build(first, last)
+      );
+    });
+    if (matches) return label;
+  }
+  return '';
+}

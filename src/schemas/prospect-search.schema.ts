@@ -19,6 +19,13 @@ export class ProspectSearch {
   @Prop({ type: Object, default: {} })
   profile: Record<string, unknown>;
 
+  // icp | companies
+  @Prop({ default: 'icp' })
+  mode: string;
+
+  @Prop({ type: [String], default: [] })
+  targets: string[];
+
   @Prop({ default: DEFAULT_MAX_COMPANIES })
   maxCompanies: number;
 

@@ -2,11 +2,16 @@ import { MongoService } from '../mongo.service';
 import { GeminiJson } from './gemini-json';
 import { normalizeProfile, ProspectProfile } from './icp';
 import { QUALIFY_CONCURRENCY, QUALIFY_THRESHOLD } from './prospect.constants';
-import { analyzeCompany } from './qualify';
+import { analyzeCompany, rankPeople } from './qualify';
 import { scoreCriteria } from './scoring';
 import { normalizeDomain, SiteReader } from './site-reader';
 import { ProspectSource } from './sources/prospect-source';
-import { PERSONAL_EMAIL_DOMAINS } from './verify';
+import { resolveCompanies } from './sources/company-lookup';
+import {
+  inferEmailPattern,
+  PERSONAL_EMAIL_DOMAINS,
+  VerifiedPerson,
+} from './verify';
 
 export type RunDeps = {
   db: Pick<
@@ -128,14 +133,30 @@ export async function runSearch(
     return !current || current.status === 'cancelled';
   };
 
+  const lookup = search.mode === 'companies';
+  let note: string | undefined;
+
   try {
     if (search.stage === 'find') {
-      const exclude = await excludedDomains(db, search.ownerId, profile);
-      const candidates = await source.findCompanies({
-        profile,
-        limit: Math.min(search.maxCompanies * 2, MAX_CANDIDATES),
-        exclude,
-      });
+      let candidates;
+      if (lookup) {
+        const resolved = await resolveCompanies(generate, search.targets || []);
+        candidates = resolved.candidates;
+        if (resolved.unresolved.length) {
+          note = `We could not find a website for ${resolved.unresolved.join(', ')}. Enter the domain instead, for example acme.com.`;
+          await db.prospectSearch.update({
+            where: { id: search.id },
+            data: { note },
+          });
+        }
+      } else {
+        const exclude = await excludedDomains(db, search.ownerId, profile);
+        candidates = await source.findCompanies({
+          profile,
+          limit: Math.min(search.maxCompanies * 2, MAX_CANDIDATES),
+          exclude,
+        });
+      }
       for (const candidate of candidates) {
         await db.prospectCompany
           .create({
@@ -156,60 +177,13 @@ export async function runSearch(
       await saveProgress();
     }
 
-    const processCompany = async (company: any) => {
-      const reject = (status: string, reason: string, extra = {}) =>
-        db.prospectCompany.update({
-          where: { id: company.id },
-          data: { status, reason, ...extra },
-        });
-
-      if (matchesExclusion(profile, company)) {
-        await reject('rejected', 'Matches an exclusion');
-        return 'rejected';
-      }
-      const site = await reader.readSite(company.domain);
-      if (!site.pages.length) {
-        await reject(
-          'unreachable',
-          site.unreachableReason || 'Website unreachable',
-        );
-        return 'unreachable';
-      }
-
-      const analysis = await analyzeCompany(generate, profile, company, site);
-      const score = scoreCriteria(analysis.criteria);
-      const verdictOf = (key: string) =>
-        analysis.criteria.find((item) => item.key === key)?.verdict;
-      const base = {
-        summary: analysis.summary,
-        criteria: analysis.criteria,
-        score,
-        pages: site.pages.map((page) => page.url),
-      };
-
-      let reason = '';
-      if (analysis.excluded) reason = 'Matches an exclusion';
-      else if (verdictOf('industry') === 'no') reason = 'Different industry';
-      else if (verdictOf('location') === 'no')
-        reason = 'Outside the target location';
-      else if (score < QUALIFY_THRESHOLD) {
-        reason = `Score ${score}% is below the ${QUALIFY_THRESHOLD}% threshold`;
-      }
-      if (reason) {
-        await reject('rejected', reason, base);
-        return 'rejected';
-      }
-
-      const relevant = analysis.people.filter((person) => person.relevant);
-      const pool = relevant.length
-        ? relevant
-        : profile.jobTitles.length
-          ? []
-          : analysis.people;
-      const chosen = [...pool]
-        .sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)))
-        .slice(0, search.peoplePerCompany);
-
+    const savePeople = async (
+      company: any,
+      people: VerifiedPerson[],
+      score: number,
+      reasons: string[],
+    ) => {
+      const chosen = rankPeople(people).slice(0, search.peoplePerCompany);
       const emails = chosen.flatMap((person) =>
         person.email ? [person.email] : [],
       );
@@ -222,15 +196,6 @@ export async function runSearch(
       const existingEmails = new Set(
         existing.map((contact: any) => String(contact.email)),
       );
-
-      const reasons = [
-        analysis.summary,
-        ...analysis.criteria
-          .filter((item) => item.verdict === 'yes' && item.evidence)
-          .map((item) => `${item.label}: "${item.evidence}"`),
-      ]
-        .filter(Boolean)
-        .slice(0, MAX_REASONS + 1);
 
       await db.prospect.deleteMany({
         where: {
@@ -262,9 +227,92 @@ export async function runSearch(
           },
         });
       }
+      return chosen.length;
+    };
+
+    const processCompany = async (company: any) => {
+      const reject = (status: string, reason: string, extra = {}) =>
+        db.prospectCompany.update({
+          where: { id: company.id },
+          data: { status, reason, ...extra },
+        });
+
+      if (!lookup && matchesExclusion(profile, company)) {
+        await reject('rejected', 'Matches an exclusion');
+        return 'rejected';
+      }
+      const site = await reader.readSite(company.domain);
+      if (!site.pages.length) {
+        await reject(
+          'unreachable',
+          site.unreachableReason || 'Website unreachable',
+        );
+        return 'unreachable';
+      }
+
+      const analysis = await analyzeCompany(generate, profile, company, site, {
+        peopleOnly: lookup,
+      });
+      const emailPattern = inferEmailPattern(analysis.people);
+
+      if (lookup) {
+        const saved = await savePeople(
+          company,
+          analysis.people,
+          0,
+          [analysis.summary].filter(Boolean),
+        );
+        await db.prospectCompany.update({
+          where: { id: company.id },
+          data: {
+            status: 'qualified',
+            reason: saved
+              ? ''
+              : 'No named people were found on the pages we could read. The team page may load with JavaScript or the site may not list its staff.',
+            summary: analysis.summary,
+            pages: site.pages.map((page) => page.url),
+            emailPattern,
+          },
+        });
+        return 'qualified';
+      }
+
+      const score = scoreCriteria(analysis.criteria);
+      const verdictOf = (key: string) =>
+        analysis.criteria.find((item) => item.key === key)?.verdict;
+      const base = {
+        summary: analysis.summary,
+        criteria: analysis.criteria,
+        score,
+        pages: site.pages.map((page) => page.url),
+      };
+
+      let reason = '';
+      if (analysis.excluded) reason = 'Matches an exclusion';
+      else if (verdictOf('industry') === 'no') reason = 'Different industry';
+      else if (verdictOf('location') === 'no')
+        reason = 'Outside the target location';
+      else if (score < QUALIFY_THRESHOLD) {
+        reason = `Score ${score}% is below the ${QUALIFY_THRESHOLD}% threshold`;
+      }
+      if (reason) {
+        await reject('rejected', reason, base);
+        return 'rejected';
+      }
+
+      const reasons = [
+        analysis.summary,
+        ...analysis.criteria
+          .filter((item) => item.verdict === 'yes' && item.evidence)
+          .map((item) => `${item.label}: "${item.evidence}"`),
+      ]
+        .filter(Boolean)
+        .slice(0, MAX_REASONS + 1);
+
+      await savePeople(company, analysis.people, score, reasons);
       await db.prospectCompany.update({
         where: { id: company.id },
-        data: { status: 'qualified', reason: '', ...base },
+        data: { status: 'qualified', reason: '', emailPattern, ...base },
       });
       return 'qualified';
     };
@@ -272,7 +320,6 @@ export async function runSearch(
     let qualified = await db.prospectCompany.count({
       where: { searchId: search.id, status: 'qualified' },
     });
-    let note: string | undefined;
 
     while (qualified < search.maxCompanies) {
       if (limits.signal.aborted || Date.now() > limits.deadline) {
@@ -319,7 +366,9 @@ export async function runSearch(
       }
       await saveProgress();
       if (budgetHit) {
-        note = 'Stopped at the cost limit for this search.';
+        note = [note, 'Stopped at the cost limit for this search.']
+          .filter(Boolean)
+          .join(' ');
         break;
       }
     }

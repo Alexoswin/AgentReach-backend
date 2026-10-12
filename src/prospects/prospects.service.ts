@@ -18,8 +18,10 @@ import {
 import { createGeminiJson, GeminiJson } from './gemini-json';
 import { buildProfile, normalizeProfile } from './icp';
 import {
+  DEFAULT_LOOKUP_PEOPLE_PER_COMPANY,
   DEFAULT_MAX_COMPANIES,
   DEFAULT_PEOPLE_PER_COMPANY,
+  MAX_LOOKUP_COMPANIES,
   MAX_SEARCHES_PER_DAY,
   RUN_TIME_BUDGET_MS,
   STALE_RUN_MS,
@@ -76,16 +78,51 @@ export class ProspectsService {
         `Daily limit reached: ${MAX_SEARCHES_PER_DAY} searches per 24 hours.`,
       );
     }
+    const base = {
+      ownerId: userId,
+      status: 'ready',
+      stage: 'find',
+      counts: {},
+    };
+
+    if (dto.mode === 'companies') {
+      const targets = [
+        ...new Set(
+          (dto.companies || []).map((item) => item.trim()).filter(Boolean),
+        ),
+      ].slice(0, MAX_LOOKUP_COMPANIES);
+      if (!targets.length) {
+        throw new BadRequestException('Add at least one company.');
+      }
+      return this.db.prospectSearch.create({
+        data: {
+          ...base,
+          mode: 'companies',
+          targets,
+          description: `Contacts at ${targets.join(', ')}`.slice(0, 1000),
+          profile: normalizeProfile({ jobTitles: dto.profile?.jobTitles }),
+          maxCompanies: targets.length,
+          peoplePerCompany:
+            dto.peoplePerCompany || DEFAULT_LOOKUP_PEOPLE_PER_COMPANY,
+        },
+      });
+    }
+
+    const description = dto.description?.trim() || '';
+    if (description.length < 10 || !dto.profile) {
+      throw new BadRequestException(
+        'Describe your ideal customer in at least 10 characters.',
+      );
+    }
     return this.db.prospectSearch.create({
       data: {
-        ownerId: userId,
-        description: dto.description.trim(),
+        ...base,
+        mode: 'icp',
+        targets: [],
+        description,
         profile: normalizeProfile(dto.profile),
         maxCompanies: dto.maxCompanies || DEFAULT_MAX_COMPANIES,
         peoplePerCompany: dto.peoplePerCompany || DEFAULT_PEOPLE_PER_COMPANY,
-        status: 'ready',
-        stage: 'find',
-        counts: {},
       },
     });
   }
@@ -270,7 +307,7 @@ export class ProspectsService {
           email: prospect.email,
           company: prospect.companyName,
           jobTitle: prospect.jobTitle || '',
-          notes: `Found by Prospect Finder (${prospect.score}% match). Source: ${prospect.sourceUrl || prospect.domain}`,
+          notes: `Found by Prospect Finder${prospect.score > 0 ? ` (${prospect.score}% match)` : ''}. Source: ${prospect.sourceUrl || prospect.domain}`,
           prospectScore: String(prospect.score),
           prospectSource: prospect.sourceUrl || '',
         })),

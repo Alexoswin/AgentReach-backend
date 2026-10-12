@@ -12,8 +12,8 @@ const MAX_BODY_BYTES = 1_500_000;
 const MAX_REDIRECTS = 3;
 const MIN_HOST_INTERVAL_MS = 1000;
 const MAX_PAGES = 4;
-const MAX_PAGE_CHARS = 5000;
-const MAX_TOTAL_CHARS = 18_000;
+const MAX_PAGE_CHARS = 8000;
+const MAX_TOTAL_CHARS = 24_000;
 
 export type RawResponse = {
   status: number;

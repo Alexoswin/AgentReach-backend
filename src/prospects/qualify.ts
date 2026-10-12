@@ -25,32 +25,46 @@ export async function analyzeCompany(
   profile: ProspectProfile,
   company: { name: string; domain: string },
   site: SiteContent,
+  options: { peopleOnly?: boolean } = {},
 ): Promise<Analysis> {
-  const applicable = applicableCriteria(profile);
+  const applicable = options.peopleOnly ? [] : applicableCriteria(profile);
   const pageUrls = site.pages.map((page) => page.url);
   const pageText = site.pages
     .map((page) => `--- PAGE: ${page.url} ---\n${page.text}`)
     .join('\n\n');
 
-  const prompt = [
-    'You check whether a company matches an ideal customer profile, using ONLY the website text below.',
-    'Return JSON only with these keys:',
-    '  summary: one sentence about what the company does',
-    '  excluded: true if the company matches an exclusion',
-    `  criteria: an object with keys ${applicable.map((item) => `"${item.key}"`).join(', ')}, each { "verdict": "yes"|"no"|"unknown", "evidence": string, "url": string }`,
-    '  people: array of { "firstName", "lastName", "jobTitle", "email", "url", "relevant" } for people named on the pages',
-    'Rules:',
-    '- "evidence" must be copied word for word from the page text, at most 160 characters. Use "unknown" with empty evidence when the text does not say.',
-    '- "url" is the PAGE the evidence or person came from.',
-    '- Never invent people or email addresses. "email" must appear exactly in the text, otherwise leave it empty.',
-    '- "relevant" is true when the person\'s title matches one of the target job titles or is clearly equivalent.',
-    `- Criteria: industry = ${profile.industries.join(', ') || 'n/a'}; size = ${JSON.stringify(profile.companySize)} employees; location = ${profile.locations.join(', ') || 'n/a'}; signals = ${profile.signals.join(', ') || 'n/a'}; keywords = ${profile.keywords.join(', ') || 'n/a'}.`,
-    `- Target job titles: ${profile.jobTitles.join(', ') || 'any senior role'}.`,
-    `- Exclusions: ${profile.exclusions.join(', ') || 'none'}.`,
-    '',
-    `Company: ${company.name} (${company.domain})`,
-    pageText,
-  ].join('\n');
+  const targetTitles = `Target job titles: ${profile.jobTitles.join(', ') || 'any senior role'}.`;
+  const header = [`Company: ${company.name} (${company.domain})`, pageText];
+  const prompt = options.peopleOnly
+    ? [
+        'You list the people named on a company website, using ONLY the website text below.',
+        'Return JSON only with these keys:',
+        '  summary: one sentence about what the company does',
+        '  people: array of { "firstName", "lastName", "jobTitle", "email", "url", "relevant" } for every person named with a role on the pages',
+        'Rules:',
+        '- "url" is the PAGE the person came from.',
+        '- Never invent people or email addresses. "email" must appear exactly in the text, otherwise leave it empty.',
+        `- "relevant" is true when the person's title matches one of the target job titles or is clearly equivalent. ${targetTitles}`,
+        '',
+        ...header,
+      ].join('\n')
+    : [
+        'You check whether a company matches an ideal customer profile, using ONLY the website text below.',
+        'Return JSON only with these keys:',
+        '  summary: one sentence about what the company does',
+        '  excluded: true if the company matches an exclusion',
+        `  criteria: an object with keys ${applicable.map((item) => `"${item.key}"`).join(', ')}, each { "verdict": "yes"|"no"|"unknown", "evidence": string, "url": string }`,
+        '  people: array of { "firstName", "lastName", "jobTitle", "email", "url", "relevant" } for people named on the pages',
+        'Rules:',
+        '- "evidence" must be copied word for word from the page text, at most 160 characters. Use "unknown" with empty evidence when the text does not say.',
+        '- "url" is the PAGE the evidence or person came from.',
+        '- Never invent people or email addresses. "email" must appear exactly in the text, otherwise leave it empty.',
+        `- "relevant" is true when the person's title matches one of the target job titles or is clearly equivalent. ${targetTitles}`,
+        `- Criteria: industry = ${profile.industries.join(', ') || 'n/a'}; size = ${JSON.stringify(profile.companySize)} employees; location = ${profile.locations.join(', ') || 'n/a'}; signals = ${profile.signals.join(', ') || 'n/a'}; keywords = ${profile.keywords.join(', ') || 'n/a'}.`,
+        `- Exclusions: ${profile.exclusions.join(', ') || 'none'}.`,
+        '',
+        ...header,
+      ].join('\n');
 
   const raw = (await generate(prompt)) as Record<string, any>;
   const normalizedPage = normalizeText(pageText);
@@ -102,4 +116,12 @@ export async function analyzeCompany(
     criteria,
     people,
   };
+}
+
+export function rankPeople(people: VerifiedPerson[]) {
+  return [...people].sort(
+    (a, b) =>
+      Number(b.relevant) - Number(a.relevant) ||
+      Number(Boolean(b.email)) - Number(Boolean(a.email)),
+  );
 }

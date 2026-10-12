@@ -16,6 +16,7 @@ import {
 } from 'class-validator';
 import {
   MAX_COMPANIES_PER_SEARCH,
+  MAX_LOOKUP_COMPANIES,
   MAX_PEOPLE_PER_COMPANY,
 } from '../prospect.constants';
 
@@ -42,15 +43,29 @@ export class BuildProfileDto {
 }
 
 export class CreateProspectSearchDto {
-  @ApiProperty()
-  @IsString()
-  @MinLength(10)
-  @MaxLength(1000)
-  description: string;
+  @ApiProperty({ required: false, enum: ['icp', 'companies'] })
+  @IsIn(['icp', 'companies'])
+  @IsOptional()
+  mode?: 'icp' | 'companies';
 
-  @ApiProperty({ type: Object })
+  @ApiProperty({ required: false })
+  @IsString()
+  @MaxLength(1000)
+  @IsOptional()
+  description?: string;
+
+  @ApiProperty({ required: false, type: Object })
   @IsObject()
-  profile: Record<string, unknown>;
+  @IsOptional()
+  profile?: Record<string, unknown>;
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsArray()
+  @ArrayMaxSize(MAX_LOOKUP_COMPANIES)
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  @IsOptional()
+  companies?: string[];
 
   @ApiProperty({ required: false })
   @IsInt()

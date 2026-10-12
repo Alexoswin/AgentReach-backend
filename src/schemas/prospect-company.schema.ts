@@ -38,6 +38,9 @@ export class ProspectCompany {
   @Prop({ type: [String], default: [] })
   pages: string[];
 
+  @Prop()
+  emailPattern?: string;
+
   @Prop({
     type: Date,
     default: () => new Date(Date.now() + PROSPECT_RETENTION_MS),
