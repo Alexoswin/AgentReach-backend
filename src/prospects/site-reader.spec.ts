@@ -1,5 +1,7 @@
+import * as http from 'http';
 import {
   assertFetchable,
+  defaultTransport,
   htmlToText,
   isPrivateAddress,
   normalizeDomain,
@@ -112,6 +114,21 @@ describe('site-reader', () => {
     expect(picked).toContain('https://acme.com/careers');
     expect(picked.some((url) => url.includes('other.com'))).toBe(false);
     expect(picked.some((url) => url.includes('pricing'))).toBe(false);
+  });
+
+  it('refuses to connect when a hostname resolves to a private address', async () => {
+    const server = http.createServer((_, res) => res.end('secret'));
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const { port } = server.address() as { port: number };
+    try {
+      await expect(
+        defaultTransport(new URL(`http://localhost:${port}/`)),
+      ).rejects.toThrow(/Blocked address/);
+    } finally {
+      server.close();
+    }
   });
 
   describe('SiteReader', () => {

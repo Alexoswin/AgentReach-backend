@@ -143,9 +143,17 @@ export function assertFetchable(url: URL) {
   }
 }
 
-const defaultTransport: Transport = (url) =>
-  new Promise((resolve, reject) => {
+export const defaultTransport: Transport = (url) =>
+  new Promise((resolveRaw, rejectRaw) => {
     const client = url.protocol === 'https:' ? https : http;
+    const resolve = (value: RawResponse) => {
+      clearTimeout(deadline);
+      resolveRaw(value);
+    };
+    const reject = (error: Error) => {
+      clearTimeout(deadline);
+      rejectRaw(error);
+    };
     const request = client.request(
       url,
       {
@@ -196,6 +204,10 @@ const defaultTransport: Transport = (url) =>
         );
         stream.on('error', reject);
       },
+    );
+    const deadline = setTimeout(
+      () => request.destroy(new Error('Timed out')),
+      REQUEST_TIMEOUT_MS,
     );
     request.on('timeout', () => request.destroy(new Error('Timed out')));
     request.on('error', reject);
