@@ -17,6 +17,19 @@ describe('GeminiLiveSessionWrapper', () => {
     });
   }
 
+  it('marks tools as blocking only for Gemini 3.8 Live', () => {
+    const tools = [{ name: 'end_call' }];
+    const live = createWrapper({ model: 'gemini-3.8-live', tools });
+    const legacy = createWrapper({ tools });
+
+    expect(
+      live.buildLiveConfig('AUDIO').tools?.[0].functionDeclarations,
+    ).toEqual([{ name: 'end_call', behavior: 'BLOCKING' }]);
+    expect(
+      legacy.buildLiveConfig('AUDIO').tools?.[0].functionDeclarations,
+    ).toEqual([{ name: 'end_call' }]);
+  });
+
   it('sends text as a completed client turn', () => {
     const wrapper = createWrapper();
     const session = {
