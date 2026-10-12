@@ -147,6 +147,7 @@ export async function runSearch(
               searchId: search.id,
               name: candidate.name,
               domain: candidate.domain,
+              status: 'pending',
             },
           })
           .catch(() => undefined);
