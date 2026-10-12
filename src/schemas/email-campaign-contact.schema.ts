@@ -40,6 +40,34 @@ export class EmailCampaignContact {
 
   @Prop()
   errorMessage?: string;
+
+  // Identifies this send in its tracking image URL. A new one is issued on
+  // every send, so opens of an earlier send of a relaunched campaign no
+  // longer count.
+  @Prop({ type: String, default: null, index: true })
+  trackingToken?: string | null;
+
+  // SES MessageId of the sent email, for tracing a send in the SES console.
+  @Prop({ type: String, default: null })
+  sesMessageId?: string | null;
+
+  @Prop({ type: Date, default: null })
+  firstOpenedAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  lastOpenedAt?: Date | null;
+
+  // The contact's first reply. Auto-replies and replies from CC/BCC copies
+  // are not recorded here.
+  @Prop({ type: Date, default: null })
+  repliedAt?: Date | null;
+
+  @Prop({ type: String, default: null })
+  replySubject?: string | null;
+
+  // Reply text with the quoted original removed, capped in length.
+  @Prop({ type: String, default: null })
+  replyText?: string | null;
 }
 
 export const EmailCampaignContactSchema =

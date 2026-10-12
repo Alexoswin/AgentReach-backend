@@ -5,6 +5,7 @@ import {
   IsIn,
   IsEmail,
   IsArray,
+  IsBoolean,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -43,4 +44,13 @@ export class UpdateCampaignDto {
   @IsEmail({}, { each: true })
   @IsOptional()
   bcc?: string[];
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Add a tracking image to HTML emails so opens are counted (default true)',
+  })
+  @IsBoolean()
+  @IsOptional()
+  trackOpens?: boolean;
 }

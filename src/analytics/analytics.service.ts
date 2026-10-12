@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MongoService } from '../mongo.service';
+import { percentOf } from '../common/rates';
 
 @Injectable()
 export class AnalyticsService {
@@ -58,10 +59,8 @@ export class AnalyticsService {
     const openCount = emailHistory.filter((h) => h.openStatus).length;
     const replyCount = emailHistory.filter((h) => h.replyStatus).length;
 
-    const openRate =
-      sentCount > 0 ? Math.round((openCount / sentCount) * 100) : 0;
-    const replyRate =
-      sentCount > 0 ? Math.round((replyCount / sentCount) * 100) : 0;
+    const openRate = percentOf(openCount, sentCount);
+    const replyRate = percentOf(replyCount, sentCount);
 
     // 2. Call Metrics
     const callHistory = await this.db.callHistory.findMany({
@@ -118,8 +117,8 @@ export class AnalyticsService {
       ).length;
       const tOpens = templateHistory.filter((h) => h.openStatus).length;
       const tReplies = templateHistory.filter((h) => h.replyStatus).length;
-      const tOpenRate = tSent > 0 ? Math.round((tOpens / tSent) * 100) : 0;
-      const tReplyRate = tSent > 0 ? Math.round((tReplies / tSent) * 100) : 0;
+      const tOpenRate = percentOf(tOpens, tSent);
+      const tReplyRate = percentOf(tReplies, tSent);
 
       return {
         name: t.name || 'Untitled Template',
@@ -153,10 +152,8 @@ export class AnalyticsService {
 
     const segmentPerformance = Object.entries(companySegments)
       .map(([company, data]) => {
-        const openRate =
-          data.sent > 0 ? Math.round((data.opens / data.sent) * 100) : 0;
-        const replyRate =
-          data.sent > 0 ? Math.round((data.replies / data.sent) * 100) : 0;
+        const openRate = percentOf(data.opens, data.sent);
+        const replyRate = percentOf(data.replies, data.sent);
         return {
           segment: company,
           sent: data.sent,

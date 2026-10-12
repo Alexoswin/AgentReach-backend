@@ -356,6 +356,21 @@ class MongoDelegate {
     return this.create({ data: { ...args.create, ...args.where } });
   }
 
+  // For queries the Prisma-style methods above cannot express. Both take
+  // Mongo's own syntax, so filters name `_id`, not `id`.
+  async aggregate<T = any>(pipeline: any[]): Promise<T[]> {
+    return this.model.aggregate(pipeline);
+  }
+
+  // Accepts update operators or an aggregation pipeline, e.g. to set a field
+  // only when it is still empty.
+  async updateOneRaw(filter: any, update: any) {
+    const result = await this.model.updateOne(filter, update, {
+      updatePipeline: Array.isArray(update),
+    });
+    return { count: result.modifiedCount };
+  }
+
   private toMongoWhere(where: any = {}) {
     const query: any = {};
 

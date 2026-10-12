@@ -16,15 +16,42 @@ import {
   isPaginated,
   resolvePage,
 } from '../common/pagination';
+import { percentOf } from '../common/rates';
+import { EmailTrackingConfig } from '../email-tracking/email-tracking.config';
+import { addOpenPixel, newTrackingToken } from '../email-tracking/open-pixel';
 
 /** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
 const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Clears a recipient's previous send before it is queued again. Opens and
+ * replies belong to the email they were recorded for, so a re-send starts
+ * from zero; the new send gets a new tracking token.
+ */
+const RESET_FOR_RESEND = {
+  deliveryStatus: 'PENDING',
+  sentTime: null,
+  subject: null,
+  bodyHtml: null,
+  bodyText: null,
+  errorMessage: null,
+  trackingToken: null,
+  sesMessageId: null,
+  openStatus: false,
+  firstOpenedAt: null,
+  lastOpenedAt: null,
+  replyStatus: false,
+  repliedAt: null,
+  replySubject: null,
+  replyText: null,
+};
 
 @Injectable()
 export class EmailCampaignsService {
   constructor(
     private db: MongoService,
     private settingsService: SettingsService,
+    private trackingConfig: EmailTrackingConfig,
   ) {}
 
   async findAll(userId: string, query?: ListCampaignsQueryDto) {
@@ -34,10 +61,7 @@ export class EmailCampaignsService {
     if (term) where.name = containsRegex(term);
 
     const orderBy = { createdAt: 'desc', id: 'desc' } as const;
-    const include = {
-      template: { select: { id: true, name: true } },
-      contacts: { select: { id: true, deliveryStatus: true } },
-    };
+    const include = { template: { select: { id: true, name: true } } };
 
     if (!isPaginated(query)) {
       const campaigns = await this.db.emailCampaign.findMany({
@@ -45,7 +69,7 @@ export class EmailCampaignsService {
         include,
         orderBy,
       });
-      return campaigns.map((c: any) => this.toListItem(c));
+      return this.toListItems(campaigns, userId);
     }
 
     const { page, limit, skip } = resolvePage(query);
@@ -60,15 +84,19 @@ export class EmailCampaignsService {
       this.db.emailCampaign.count({ where }),
     ]);
     return buildPage(
-      campaigns.map((c: any) => this.toListItem(c)),
+      await this.toListItems(campaigns, userId),
       total,
       page,
       limit,
     );
   }
 
-  private toListItem(c: any) {
-    return {
+  private async toListItems(campaigns: any[], userId: string) {
+    const stats = await this.countRecipientsByCampaign(
+      campaigns.map((c) => c.id),
+      userId,
+    );
+    return campaigns.map((c) => ({
       id: c.id,
       name: c.name,
       status: c.status,
@@ -76,17 +104,49 @@ export class EmailCampaignsService {
       updatedAt: c.updatedAt,
       scheduledAt: c.scheduledAt,
       template: c.template,
-      contactCount: c.contacts.length,
-      pendingCount: c.contacts.filter(
-        (contact: any) => contact.deliveryStatus === 'PENDING',
-      ).length,
-      failedCount: c.contacts.filter(
-        (contact: any) => contact.deliveryStatus === 'FAILED',
-      ).length,
-      sentCount: c.contacts.filter((contact: any) =>
-        ['SENT', 'DELIVERED'].includes(contact.deliveryStatus),
-      ).length,
-    };
+      trackOpens: c.trackOpens !== false,
+      opensIncludeCopies: this.opensIncludeCopies(c),
+      ...withRates(stats.get(c.id) ?? emptyCounts()),
+    }));
+  }
+
+  /** Recipient counts per campaign, counted by Mongo rather than in memory. */
+  private async countRecipientsByCampaign(ids: string[], userId: string) {
+    const counts = new Map<string, RecipientCounts>();
+    if (ids.length === 0) return counts;
+
+    const sent = { $in: ['$deliveryStatus', SENT_STATUSES] };
+    const countIf = (condition: unknown) => ({
+      $sum: { $cond: [condition, 1, 0] },
+    });
+    const rows = await this.db.emailCampaignContact.aggregate<
+      RecipientCounts & { _id: string }
+    >([
+      { $match: { ownerId: userId, campaignId: { $in: ids } } },
+      {
+        $group: {
+          _id: '$campaignId',
+          contactCount: { $sum: 1 },
+          pendingCount: countIf({ $eq: ['$deliveryStatus', 'PENDING'] }),
+          failedCount: countIf({ $eq: ['$deliveryStatus', 'FAILED'] }),
+          sentCount: countIf(sent),
+          openedCount: countIf({
+            $and: [sent, { $eq: ['$openStatus', true] }],
+          }),
+          repliedCount: countIf({
+            $and: [sent, { $eq: ['$replyStatus', true] }],
+          }),
+        },
+      },
+    ]);
+    for (const { _id, ...row } of rows) counts.set(_id, row);
+    return counts;
+  }
+
+  // CC/BCC copies carry the same tracking image as the contact's email, so
+  // opens on such a campaign may be a copy recipient's.
+  private opensIncludeCopies(campaign: any) {
+    return (campaign.cc?.length || 0) + (campaign.bcc?.length || 0) > 0;
   }
 
   async findOne(id: string, userId: string) {
@@ -106,7 +166,21 @@ export class EmailCampaignsService {
       throw new BadRequestException('Campaign not found');
     }
 
-    return campaign;
+    const isSent = (row: any) => SENT_STATUSES.includes(row.deliveryStatus);
+    const rows: any[] = campaign.contacts;
+    return {
+      ...campaign,
+      trackOpens: campaign.trackOpens !== false,
+      opensIncludeCopies: this.opensIncludeCopies(campaign),
+      stats: withRates({
+        contactCount: rows.length,
+        pendingCount: rows.filter((r) => r.deliveryStatus === 'PENDING').length,
+        failedCount: rows.filter((r) => r.deliveryStatus === 'FAILED').length,
+        sentCount: rows.filter(isSent).length,
+        openedCount: rows.filter((r) => isSent(r) && r.openStatus).length,
+        repliedCount: rows.filter((r) => isSent(r) && r.replyStatus).length,
+      }),
+    };
   }
 
   async create(dto: CreateCampaignDto, userId: string) {
@@ -197,14 +271,7 @@ export class EmailCampaignsService {
     // Reset every recipient, not just the failed ones.
     await this.db.emailCampaignContact.updateMany({
       where: { campaignId: id },
-      data: {
-        deliveryStatus: 'PENDING',
-        sentTime: null,
-        subject: null,
-        bodyHtml: null,
-        bodyText: null,
-        errorMessage: null,
-      },
+      data: RESET_FOR_RESEND,
     });
 
     await this.db.emailCampaign.update({
@@ -460,14 +527,7 @@ export class EmailCampaignsService {
       // recipients untouched so relaunching never re-emails someone twice.
       await this.db.emailCampaignContact.updateMany({
         where: { campaignId: id, deliveryStatus: 'FAILED' },
-        data: {
-          deliveryStatus: 'PENDING',
-          sentTime: null,
-          subject: null,
-          bodyHtml: null,
-          bodyText: null,
-          errorMessage: null,
-        },
+        data: RESET_FOR_RESEND,
       });
     }
 
@@ -543,6 +603,10 @@ export class EmailCampaignsService {
         },
       });
 
+      // Campaigns created before the setting existed have no value: track.
+      const trackOpens = campaign.trackOpens !== false;
+      const replyDomain = this.trackingConfig.replyDomain();
+
       for (const campaignContact of campaign.contacts) {
         const contact = campaignContact.contact;
         if (!contact) {
@@ -573,13 +637,27 @@ export class EmailCampaignsService {
           template.attachments,
           contact,
         );
+        // Only the copy handed to SES carries the tracking image; the stored
+        // bodyHtml stays without it (see addOpenPixel).
+        const trackingToken = newTrackingToken();
+        const sentHtml =
+          trackOpens && bodyHtml.trim()
+            ? addOpenPixel(
+                bodyHtml,
+                this.trackingConfig.openPixelUrl(trackingToken),
+              )
+            : bodyHtml;
+        const replyTo = replyDomain
+          ? this.trackingConfig.replyToAddress(campaignContact.id, replyDomain)
+          : undefined;
+
         const messageBody: {
           Html?: { Data: string };
           Text?: { Data: string };
         } = {};
 
-        if (bodyHtml.trim()) {
-          messageBody.Html = { Data: bodyHtml };
+        if (sentHtml.trim()) {
+          messageBody.Html = { Data: sentHtml };
         }
 
         if (bodyText.trim()) {
@@ -591,7 +669,7 @@ export class EmailCampaignsService {
             throw new Error('Template has no email body content');
           }
 
-          await this.sendWithRetry(async () => {
+          const result = await this.sendWithRetry(async () => {
             if (attachments.length > 0) {
               const command = new SendRawEmailCommand({
                 Destinations: [contact.email, ...contactCc, ...contactBcc],
@@ -600,8 +678,9 @@ export class EmailCampaignsService {
                     this.buildRawEmail({
                       to: contact.email,
                       cc: contactCc,
+                      replyTo,
                       subject,
-                      bodyHtml,
+                      bodyHtml: sentHtml,
                       bodyText,
                       attachments,
                       from: senderSource,
@@ -610,23 +689,24 @@ export class EmailCampaignsService {
                 },
               });
 
-              await client.send(command);
-            } else {
-              const command = new SendEmailCommand({
-                Source: senderSource,
-                Destination: {
-                  ToAddresses: [contact.email],
-                  CcAddresses: contactCc.length ? contactCc : undefined,
-                  BccAddresses: contactBcc.length ? contactBcc : undefined,
-                },
-                Message: {
-                  Subject: { Data: subject },
-                  Body: messageBody,
-                },
-              });
-
-              await client.send(command);
+              return client.send(command);
             }
+
+            const command = new SendEmailCommand({
+              Source: senderSource,
+              Destination: {
+                ToAddresses: [contact.email],
+                CcAddresses: contactCc.length ? contactCc : undefined,
+                BccAddresses: contactBcc.length ? contactBcc : undefined,
+              },
+              ReplyToAddresses: replyTo ? [replyTo] : undefined,
+              Message: {
+                Subject: { Data: subject },
+                Body: messageBody,
+              },
+            });
+
+            return client.send(command);
           });
 
           // Small pacing delay between real sends to stay under SES's
@@ -641,6 +721,8 @@ export class EmailCampaignsService {
               subject,
               bodyHtml,
               bodyText,
+              trackingToken: sentHtml !== bodyHtml ? trackingToken : null,
+              sesMessageId: result?.MessageId || null,
             },
           });
         } catch (err: any) {
@@ -673,9 +755,9 @@ export class EmailCampaignsService {
   }
 
   /** Retries a single SES send once after a short backoff on throttling-style errors. */
-  private async sendWithRetry(send: () => Promise<unknown>) {
+  private async sendWithRetry<T>(send: () => Promise<T>): Promise<T> {
     try {
-      await send();
+      return await send();
     } catch (err: any) {
       const message = String(err?.name || err?.message || '').toLowerCase();
       const isThrottling =
@@ -683,7 +765,7 @@ export class EmailCampaignsService {
       if (!isThrottling) throw err;
 
       await new Promise((r) => setTimeout(r, 1000));
-      await send();
+      return send();
     }
   }
 
@@ -739,6 +821,7 @@ export class EmailCampaignsService {
   private buildRawEmail({
     to,
     cc,
+    replyTo,
     subject,
     bodyHtml,
     bodyText,
@@ -747,6 +830,7 @@ export class EmailCampaignsService {
   }: {
     to: string;
     cc?: string[];
+    replyTo?: string;
     subject: string;
     bodyHtml: string;
     bodyText: string;
@@ -759,6 +843,7 @@ export class EmailCampaignsService {
       `From: ${from}`,
       `To: ${stripLineBreaks(to)}`,
       ...(cc && cc.length > 0 ? [`Cc: ${stripLineBreaks(cc.join(', '))}`] : []),
+      ...(replyTo ? [`Reply-To: ${stripLineBreaks(replyTo)}`] : []),
       `Subject: ${this.encodeMimeHeader(subject)}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
@@ -825,6 +910,37 @@ export class EmailCampaignsService {
   private escapeMimeParameter(value: string) {
     return (value || 'attachment').replace(/[\r\n"]/g, '_').slice(0, 180);
   }
+}
+
+const SENT_STATUSES = ['SENT', 'DELIVERED'];
+
+type RecipientCounts = {
+  contactCount: number;
+  pendingCount: number;
+  failedCount: number;
+  sentCount: number;
+  openedCount: number;
+  repliedCount: number;
+};
+
+function emptyCounts(): RecipientCounts {
+  return {
+    contactCount: 0,
+    pendingCount: 0,
+    failedCount: 0,
+    sentCount: 0,
+    openedCount: 0,
+    repliedCount: 0,
+  };
+}
+
+// Rates are a share of emails actually sent, not of every recipient.
+function withRates(counts: RecipientCounts) {
+  return {
+    ...counts,
+    openRate: percentOf(counts.openedCount, counts.sentCount),
+    replyRate: percentOf(counts.repliedCount, counts.sentCount),
+  };
 }
 
 function escapeHtml(value: string) {

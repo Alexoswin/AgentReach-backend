@@ -8,6 +8,7 @@ import { SettingsModule } from './settings/settings.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { TemplatesModule } from './templates/templates.module';
 import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
+import { EmailTrackingModule } from './email-tracking/email-tracking.module';
 import { CallingCampaignsModule } from './calling-campaigns/calling-campaigns.module';
 import { RealtimeCallingModule } from './realtime-calling/realtime-calling.module';
 import { HistoryModule } from './history/history.module';
@@ -34,6 +35,7 @@ import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
     ContactsModule,
     TemplatesModule,
     EmailCampaignsModule,
+    EmailTrackingModule,
     BotModule,
     CallingCampaignsModule,
     RealtimeCallingModule,

@@ -1,4 +1,11 @@
-import { IsString, IsUUID, IsOptional, IsEmail, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  IsOptional,
+  IsEmail,
+  IsArray,
+  IsBoolean,
+} from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateCampaignDto {
@@ -15,7 +22,7 @@ export class CreateCampaignDto {
     required: false,
     type: [String],
     example: ['hiring-manager@company.com'],
-    description: 'Email addresses CC\'d on every send in this campaign',
+    description: "Email addresses CC'd on every send in this campaign",
   })
   @IsArray()
   @IsEmail({}, { each: true })
@@ -26,10 +33,19 @@ export class CreateCampaignDto {
     required: false,
     type: [String],
     example: ['records@company.com'],
-    description: 'Email addresses BCC\'d on every send in this campaign',
+    description: "Email addresses BCC'd on every send in this campaign",
   })
   @IsArray()
   @IsEmail({}, { each: true })
   @IsOptional()
   bcc?: string[];
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Add a tracking image to HTML emails so opens are counted (default true)',
+  })
+  @IsBoolean()
+  @IsOptional()
+  trackOpens?: boolean;
 }

@@ -38,6 +38,10 @@ export class EmailCampaign {
 
   @Prop({ type: [String], default: [] })
   bcc?: string[];
+
+  // Adds a 1×1 tracking image to HTML emails so opens can be counted.
+  @Prop({ default: true })
+  trackOpens: boolean;
 }
 
 export const EmailCampaignSchema = SchemaFactory.createForClass(EmailCampaign);

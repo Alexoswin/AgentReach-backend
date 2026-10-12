@@ -13,6 +13,10 @@ describe('requiresCsrfToken', () => {
     }
   });
 
+  it('lets SNS post inbound email replies without a CSRF token', () => {
+    expect(requiresCsrfToken('POST', '/api/email-track/inbound')).toBe(false);
+  });
+
   it('still protects signed-in actions, including launching calls', () => {
     expect(
       requiresCsrfToken('POST', '/api/calling-campaigns/campaign-1/launch'),
