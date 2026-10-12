@@ -8,21 +8,27 @@
  * can no longer be saved.
  */
 export enum GeminiLiveModel {
-  Live = 'gemini-3.8-live',
   FlashLivePreview = 'gemini-3.1-flash-live-preview',
   FlashNativeAudioPreview = 'gemini-2.5-flash-native-audio-preview-12-2025',
 }
 
-export const DEFAULT_GEMINI_LIVE_MODEL = GeminiLiveModel.Live;
+export const DEFAULT_GEMINI_LIVE_MODEL = GeminiLiveModel.FlashLivePreview;
 
 export const GEMINI_LIVE_MODEL_OPTIONS: Array<{
   value: GeminiLiveModel;
   label: string;
 }> = [
-  { value: GeminiLiveModel.Live, label: 'Gemini 3.8 Live' },
   { value: GeminiLiveModel.FlashLivePreview, label: 'Flash Live (preview)' },
   {
     value: GeminiLiveModel.FlashNativeAudioPreview,
     label: 'Flash Native Audio (preview)',
   },
 ];
+
+// AI calling runs only on the Flash models above: a campaign or
+// GEMINI_LIVE_MODEL naming anything else falls back to the default.
+export function resolveGeminiLiveModel(model?: string | null) {
+  return (Object.values(GeminiLiveModel) as string[]).includes(model || '')
+    ? (model as GeminiLiveModel)
+    : DEFAULT_GEMINI_LIVE_MODEL;
+}

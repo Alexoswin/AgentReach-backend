@@ -8,10 +8,7 @@ import {
   getResponseSpeedPreset,
   normalizeResponseSpeed,
 } from './response-speed';
-import {
-  DEFAULT_GEMINI_LIVE_MODEL,
-  GeminiLiveModel,
-} from '../config/gemini-live';
+import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -101,19 +98,14 @@ export class GeminiLiveSessionWrapper extends EventEmitter {
     const languageHints = this.getTranscriptionLanguageHints(
       this.config.languageCode,
     );
-    // Gemini 3.8 Live defaults tools to NON_BLOCKING; keep them blocking so
-    // end_call and the "filler, then lookup" flow behave as on older models.
-    const functionDeclarations =
-      (this.config.model || DEFAULT_GEMINI_LIVE_MODEL) ===
-      (GeminiLiveModel.Live as string)
-        ? this.config.tools.map((tool) => ({ ...tool, behavior: 'BLOCKING' }))
-        : this.config.tools;
     return {
       responseModalities: [audioModality],
       systemInstruction: {
         parts: [{ text: this.config.systemInstruction }],
       },
-      tools: this.config.tools.length ? [{ functionDeclarations }] : undefined,
+      tools: this.config.tools.length
+        ? [{ functionDeclarations: this.config.tools }]
+        : undefined,
       maxOutputTokens: this.config.maxOutputTokens || 4000,
       speechConfig: {
         voiceConfig: {

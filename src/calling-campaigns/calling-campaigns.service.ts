@@ -20,7 +20,7 @@ import { BotService } from '../bot/bot.service';
 import { GeminiLiveAuthService } from '../realtime-calling/gemini-live-auth.service';
 import { GeminiLiveSessionWrapper } from '../realtime-calling/gemini-live-session.wrapper';
 import { normalizeResponseSpeed } from '../realtime-calling/response-speed';
-import { DEFAULT_GEMINI_LIVE_MODEL } from '../config/gemini-live';
+import { resolveGeminiLiveModel } from '../config/gemini-live';
 import {
   extractHdVoiceName,
   normalizeGoogleVoiceForLanguage,
@@ -886,10 +886,10 @@ export class CallingCampaignsService {
       typeof dto.preventInterruption === 'boolean'
         ? dto.preventInterruption
         : false;
-    data.realtimeModel =
-      data.realtimeModel ||
-      process.env.GEMINI_LIVE_MODEL ||
-      DEFAULT_GEMINI_LIVE_MODEL;
+    data.realtimeModel = resolveGeminiLiveModel(
+      (data.realtimeModel as string | undefined) ||
+        process.env.GEMINI_LIVE_MODEL,
+    );
     data.maxTokens = this.numberOr(dto.maxTokens, 4000);
     data.threshold = this.numberOr(dto.threshold, 0);
     data.responseSpeed = normalizeResponseSpeed(dto.responseSpeed);
@@ -1075,10 +1075,9 @@ export class CallingCampaignsService {
     const voiceName = extractHdVoiceName(
       normalizeGoogleVoiceForLanguage(selectedVoice, languageCode),
     );
-    const model =
-      campaign.realtimeModel ||
-      process.env.GEMINI_LIVE_MODEL ||
-      DEFAULT_GEMINI_LIVE_MODEL;
+    const model = resolveGeminiLiveModel(
+      campaign.realtimeModel || process.env.GEMINI_LIVE_MODEL,
+    );
     const gemini = new GeminiLiveSessionWrapper(this.geminiAuthService, {
       userId,
       model,

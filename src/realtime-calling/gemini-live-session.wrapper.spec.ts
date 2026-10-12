@@ -3,6 +3,7 @@ import {
   GeminiLiveSessionWrapper,
 } from './gemini-live-session.wrapper';
 import { buildAutomaticActivityDetectionConfig } from './response-speed';
+import { resolveGeminiLiveModel } from '../config/gemini-live';
 
 describe('GeminiLiveSessionWrapper', () => {
   function createWrapper(overrides: Partial<GeminiLiveConfig> = {}) {
@@ -17,17 +18,16 @@ describe('GeminiLiveSessionWrapper', () => {
     });
   }
 
-  it('marks tools as blocking only for Gemini 3.8 Live', () => {
-    const tools = [{ name: 'end_call' }];
-    const live = createWrapper({ model: 'gemini-3.8-live', tools });
-    const legacy = createWrapper({ tools });
-
+  it('only resolves to Flash Live models', () => {
     expect(
-      live.buildLiveConfig('AUDIO').tools?.[0].functionDeclarations,
-    ).toEqual([{ name: 'end_call', behavior: 'BLOCKING' }]);
-    expect(
-      legacy.buildLiveConfig('AUDIO').tools?.[0].functionDeclarations,
-    ).toEqual([{ name: 'end_call' }]);
+      resolveGeminiLiveModel('gemini-2.5-flash-native-audio-preview-12-2025'),
+    ).toBe('gemini-2.5-flash-native-audio-preview-12-2025');
+    expect(resolveGeminiLiveModel('gemini-3.8-live')).toBe(
+      'gemini-3.1-flash-live-preview',
+    );
+    expect(resolveGeminiLiveModel(undefined)).toBe(
+      'gemini-3.1-flash-live-preview',
+    );
   });
 
   it('sends text as a completed client turn', () => {
