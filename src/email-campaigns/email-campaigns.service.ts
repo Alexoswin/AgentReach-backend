@@ -10,6 +10,7 @@ import {
 } from '@aws-sdk/client-ses';
 import { SettingsService } from '../settings/settings.service';
 import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
+import { ListRepliesQueryDto } from './dto/list-replies.dto';
 import {
   buildPage,
   containsRegex,
@@ -17,7 +18,10 @@ import {
   resolvePage,
 } from '../common/pagination';
 import { percentOf } from '../common/rates';
-import { EmailTrackingConfig } from '../email-tracking/email-tracking.config';
+import {
+  EmailTrackingConfig,
+  replyDomainFor,
+} from '../email-tracking/email-tracking.config';
 import { addOpenPixel, newTrackingToken } from '../email-tracking/open-pixel';
 
 /** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
@@ -44,6 +48,7 @@ const RESET_FOR_RESEND = {
   repliedAt: null,
   replySubject: null,
   replyText: null,
+  replyReadAt: null,
 };
 
 @Injectable()
@@ -147,6 +152,86 @@ export class EmailCampaignsService {
   // opens on such a campaign may be a copy recipient's.
   private opensIncludeCopies(campaign: any) {
     return (campaign.cc?.length || 0) + (campaign.bcc?.length || 0) > 0;
+  }
+
+  /** The owner's replies across all campaigns, newest first. */
+  async listReplies(userId: string, query: ListRepliesQueryDto) {
+    const owned = { ownerId: userId, replyStatus: true };
+    const where: Record<string, unknown> = { ...owned };
+    if (query.campaignId) where.campaignId = query.campaignId;
+    if (query.unread === 'true') where.replyReadAt = null;
+
+    const term = query.search?.trim();
+    if (term) {
+      const pattern = containsRegex(term);
+      const contacts = await this.db.contact.findMany({
+        where: {
+          ownerId: userId,
+          $or: [
+            { firstName: pattern },
+            { lastName: pattern },
+            { email: pattern },
+            { company: pattern },
+          ],
+        },
+        select: { id: true },
+      });
+      where.$or = [
+        { replySubject: pattern },
+        { replyText: pattern },
+        { contactId: { $in: contacts.map((c: any) => c.id) } },
+      ];
+    }
+
+    const { page, limit, skip } = resolvePage(query);
+    const [rows, total, unreadCount] = await Promise.all([
+      this.db.emailCampaignContact.findMany({
+        where,
+        include: {
+          contact: true,
+          campaign: { select: { id: true, name: true } },
+        },
+        orderBy: { repliedAt: 'desc', id: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.db.emailCampaignContact.count({ where }),
+      this.db.emailCampaignContact.count({
+        where: { ...owned, replyReadAt: null },
+      }),
+    ]);
+
+    const items = rows.map((row: any) => ({
+      id: row.id,
+      campaign: row.campaign,
+      contact: row.contact
+        ? {
+            id: row.contact.id,
+            firstName: row.contact.firstName,
+            lastName: row.contact.lastName,
+            email: row.contact.email,
+            company: row.contact.company,
+          }
+        : null,
+      subject: row.subject,
+      sentTime: row.sentTime,
+      repliedAt: row.repliedAt,
+      replySubject: row.replySubject,
+      replyText: row.replyText,
+      read: !!row.replyReadAt,
+    }));
+    return { ...buildPage(items, total, page, limit), unreadCount };
+  }
+
+  async setReplyRead(id: string, read: boolean, userId: string) {
+    const updated = await this.db.emailCampaignContact.update({
+      where: { id, ownerId: userId, replyStatus: true },
+      data: { replyReadAt: read ? new Date() : null },
+    });
+    if (!updated) {
+      throw new BadRequestException('Reply not found');
+    }
+    return { success: true, read };
   }
 
   async findOne(id: string, userId: string) {
@@ -605,7 +690,7 @@ export class EmailCampaignsService {
 
       // Campaigns created before the setting existed have no value: track.
       const trackOpens = campaign.trackOpens !== false;
-      const replyDomain = this.trackingConfig.replyDomain();
+      const replyDomain = replyDomainFor(settings);
 
       for (const campaignContact of campaign.contacts) {
         const contact = campaignContact.contact;

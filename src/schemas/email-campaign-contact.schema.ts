@@ -68,9 +68,15 @@ export class EmailCampaignContact {
   // Reply text with the quoted original removed, capped in length.
   @Prop({ type: String, default: null })
   replyText?: string | null;
+
+  // When the owner read the reply in the Replies inbox; null means unread.
+  @Prop({ type: Date, default: null })
+  replyReadAt?: Date | null;
 }
 
 export const EmailCampaignContactSchema =
   SchemaFactory.createForClass(EmailCampaignContact);
 EmailCampaignContactSchema.index({ ownerId: 1, sentTime: -1 });
 EmailCampaignContactSchema.index({ campaignId: 1, contactId: 1 });
+// The Replies inbox lists an owner's replies, newest first.
+EmailCampaignContactSchema.index({ ownerId: 1, replyStatus: 1, repliedAt: -1 });

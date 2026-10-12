@@ -6,19 +6,21 @@ const REPLY_LOCAL_PART =
   /^reply\+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 /**
- * The campaign recipient row a reply is addressed to, taken from the envelope
- * recipients SES received the message for.
+ * The campaign recipient row a reply is addressed to, and the domain it was
+ * sent to, from the envelope recipients SES received the message for. The
+ * caller checks the domain against the row owner's reply domain.
  */
-export function campaignContactIdFromRecipients(
+export function replyAddressFromRecipients(
   recipients: string[],
-  replyDomain: string,
-): string | null {
+): { campaignContactId: string; domain: string } | null {
   for (const recipient of recipients || []) {
     const address = recipient.trim().toLowerCase();
     const at = address.lastIndexOf('@');
-    if (at === -1 || address.slice(at + 1) !== replyDomain) continue;
+    if (at === -1) continue;
     const match = REPLY_LOCAL_PART.exec(address.slice(0, at));
-    if (match) return match[1];
+    if (match) {
+      return { campaignContactId: match[1], domain: address.slice(at + 1) };
+    }
   }
   return null;
 }

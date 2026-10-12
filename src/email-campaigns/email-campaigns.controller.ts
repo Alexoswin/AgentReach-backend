@@ -16,6 +16,7 @@ import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
 import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
+import { ListRepliesQueryDto } from './dto/list-replies.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('email-campaigns')
@@ -34,6 +35,34 @@ export class EmailCampaignsController {
     query: ListCampaignsQueryDto,
   ) {
     return this.emailCampaignsService.findAll(request.user.id, query);
+  }
+
+  // Declared before ':id' so "replies" is not read as a campaign id.
+  @Get('replies')
+  @ApiOperation({
+    summary:
+      'Replies received across all email campaigns, newest first (paginated)',
+  })
+  async listReplies(
+    @Req() request: any,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ListRepliesQueryDto,
+  ) {
+    return this.emailCampaignsService.listReplies(request.user.id, query);
+  }
+
+  @Post('replies/:id/read')
+  @ApiOperation({ summary: 'Mark a reply as read, or unread with read=false' })
+  async setReplyRead(
+    @Req() request: any,
+    @Param('id') id: string,
+    @Body() body: { read?: boolean },
+  ) {
+    return this.emailCampaignsService.setReplyRead(
+      id,
+      body?.read !== false,
+      request.user.id,
+    );
   }
 
   @Get(':id')

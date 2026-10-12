@@ -28,6 +28,21 @@ export class UpdateSettingsDto {
   @IsOptional()
   awsSenderEmail?: string;
 
+  // Both reply tracking fields are format-checked in SettingsService, for
+  // the same empty-string reason as awsSenderEmail.
+  @ApiProperty({ required: false, example: 'reply.example.com' })
+  @IsString()
+  @IsOptional()
+  replyTrackingDomain?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'arn:aws:sns:us-east-1:123456789012:campaign-replies',
+  })
+  @IsString()
+  @IsOptional()
+  replyTrackingTopicArn?: string;
+
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()

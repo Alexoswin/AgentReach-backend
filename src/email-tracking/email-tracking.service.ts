@@ -1,17 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SendRawEmailCommand } from '@aws-sdk/client-ses';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
 import { simpleParser } from 'mailparser';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
-import { EmailTrackingConfig } from './email-tracking.config';
+import { replyDomainFor } from './email-tracking.config';
 import { buildForwardedEmail } from './forward-email';
 import {
-  campaignContactIdFromRecipients,
   isAutomatedMessage,
+  replyAddressFromRecipients,
   stripQuotedReply,
 } from './reply-parsing';
-import { isSnsUrl, SnsMessage, verifySnsMessage } from './sns';
+import { isSnsUrl, SnsMessage, verifySnsSignature } from './sns';
 
 // Link scanners and some mail gateways fetch every image the moment a
 // message arrives; an "open" that soon after sending is not a person.
@@ -28,12 +27,7 @@ type SesReceivedNotification = {
     recipients?: string[];
     spamVerdict?: { status?: string };
     virusVerdict?: { status?: string };
-    action?: {
-      type?: string;
-      encoding?: string;
-      bucketName?: string;
-      objectKey?: string;
-    };
+    action?: { type?: string; encoding?: string };
   };
   content?: string;
 };
@@ -46,7 +40,6 @@ export class EmailTrackingService {
   constructor(
     private readonly db: MongoService,
     private readonly settingsService: SettingsService,
-    private readonly trackingConfig: EmailTrackingConfig,
   ) {}
 
   async recordOpen(trackingToken: string) {
@@ -76,19 +69,22 @@ export class EmailTrackingService {
   }
 
   /**
-   * Handles a POST from the SNS topic that SES publishes received replies
-   * to. Returns false for anything that is not a genuine message from an
-   * allowed topic, so the controller can reject it.
+   * Handles a POST from an SNS topic that SES publishes received replies to.
+   * Each user sets up their own topic and saves its ARN in Settings. Returns
+   * false for anything that is not a genuine message from the topic of the
+   * account it concerns, so the controller can reject it.
    */
   async handleSnsMessage(message: SnsMessage) {
-    if (
-      !(await verifySnsMessage(message, this.trackingConfig.snsTopicArns()))
-    ) {
-      return false;
-    }
+    if (!(await verifySnsSignature(message))) return false;
 
     if (message.Type === 'SubscriptionConfirmation') {
-      if (!isSnsUrl(message.SubscribeURL)) return false;
+      // Only subscribe to topics an account has saved, not any topic that
+      // points itself at this endpoint.
+      const owner = await this.db.systemSettings.findFirst({
+        where: { replyTrackingTopicArn: message.TopicArn },
+        select: { id: true },
+      });
+      if (!owner || !isSnsUrl(message.SubscribeURL)) return false;
       const response = await fetch(message.SubscribeURL!);
       if (!response.ok) {
         throw new Error(
@@ -104,13 +100,15 @@ export class EmailTrackingService {
     const notification = JSON.parse(message.Message) as SesReceivedNotification;
     if (notification.notificationType !== 'Received') return true;
 
-    await this.handleReceivedEmail(notification);
-    return true;
+    return this.handleReceivedEmail(notification, message.TopicArn);
   }
 
-  private async handleReceivedEmail(notification: SesReceivedNotification) {
+  private async handleReceivedEmail(
+    notification: SesReceivedNotification,
+    topicArn: string,
+  ) {
     const sesMessageId = notification.mail?.messageId;
-    if (sesMessageId && this.recentMessageIds.has(sesMessageId)) return;
+    if (sesMessageId && this.recentMessageIds.has(sesMessageId)) return true;
 
     const receipt = notification.receipt || {};
     if (
@@ -120,34 +118,46 @@ export class EmailTrackingService {
       this.logger.warn(
         `Dropped inbound message ${sesMessageId}: failed SES spam/virus check`,
       );
-      return;
+      return true;
     }
 
-    const replyDomain = this.trackingConfig.replyDomain();
-    const campaignContactId = replyDomain
-      ? campaignContactIdFromRecipients(receipt.recipients || [], replyDomain)
-      : null;
-    if (!campaignContactId) {
+    const address = replyAddressFromRecipients(receipt.recipients || []);
+    if (!address) {
       this.logger.warn(
         `Inbound message ${sesMessageId} is not addressed to a campaign reply address`,
       );
-      return;
+      return true;
     }
 
     const row = await this.db.emailCampaignContact.findUnique({
-      where: { id: campaignContactId },
+      where: { id: address.campaignContactId },
       include: { contact: true, campaign: true },
     });
     if (!row) {
       // The recipient row or its campaign was deleted, so there is no one
       // left to forward the reply to.
       this.logger.warn(
-        `Inbound message ${sesMessageId} is for unknown campaign recipient ${campaignContactId}`,
+        `Inbound message ${sesMessageId} is for unknown campaign recipient ${address.campaignContactId}`,
       );
-      return;
+      return true;
     }
 
-    const raw = await this.loadRawEmail(notification);
+    // The reply must come through the owner's own topic and domain; a valid
+    // SNS signature alone could come from anyone's topic.
+    const settings = await this.settingsService.getRawSettings(
+      row.campaign?.launchedBy || row.ownerId,
+    );
+    if (
+      settings?.replyTrackingTopicArn !== topicArn ||
+      replyDomainFor(settings) !== address.domain
+    ) {
+      this.logger.warn(
+        `Inbound message ${sesMessageId} did not come through the reply topic and domain of its campaign's owner`,
+      );
+      return false;
+    }
+
+    const raw = this.loadRawEmail(notification);
     const parsed = await simpleParser(raw);
     const from = parsed.from?.value?.[0];
     const fromAddress = (from?.address || '').trim().toLowerCase();
@@ -178,6 +188,7 @@ export class EmailTrackingService {
               repliedAt: now,
               replySubject: parsed.subject || null,
               replyText: stripQuotedReply(parsed.text || ''),
+              replyReadAt: null,
               // Replying means they read it, even if their client blocked
               // the tracking image.
               openStatus: true,
@@ -190,82 +201,54 @@ export class EmailTrackingService {
 
     // Every message is passed on, including auto-replies and bounces: the
     // reply address replaced the user's own, so nothing may be swallowed.
-    await this.forwardToUser(row, raw, from?.name);
+    await this.forwardToUser(settings, raw, from?.name);
     this.rememberMessageId(sesMessageId);
+    return true;
   }
 
-  private async loadRawEmail(notification: SesReceivedNotification) {
-    const action = notification.receipt?.action;
-
-    if (notification.content) {
-      return Buffer.from(
-        notification.content,
-        action?.encoding === 'BASE64' ? 'base64' : 'utf8',
+  // The receipt rule's SNS action includes the whole email. SES bounces
+  // anything over SNS's 150 KB limit back to the sender, so very large
+  // replies (big attachments) never reach this point.
+  private loadRawEmail(notification: SesReceivedNotification) {
+    if (!notification.content) {
+      throw new Error(
+        'SES notification has no email content. The receipt rule needs an SNS action (not an S3 action).',
       );
     }
-
-    // SNS carries at most 150 KB, so larger replies (anything with an
-    // attachment) are delivered with an S3 action and fetched from the bucket.
-    if (action?.type === 'S3' && action.bucketName && action.objectKey) {
-      const ses = this.trackingConfig.platformSes();
-      if (!ses) throw new Error('Platform AWS credentials are not configured');
-      const s3 = new S3Client({
-        region: this.trackingConfig.s3Region(),
-        credentials: ses.credentials,
-      });
-      const object = await s3.send(
-        new GetObjectCommand({
-          Bucket: action.bucketName,
-          Key: action.objectKey,
-        }),
-      );
-      return Buffer.from(await object.Body!.transformToByteArray());
-    }
-
-    throw new Error(
-      'SES notification has no email content. Use an SNS action, or an S3 action with an SNS topic.',
+    return Buffer.from(
+      notification.content,
+      notification.receipt?.action?.encoding === 'BASE64' ? 'base64' : 'utf8',
     );
   }
 
-  private async forwardToUser(row: any, raw: Buffer, fromName?: string) {
-    const ses = this.trackingConfig.platformSes();
-    if (!ses) throw new Error('Platform SES is not configured');
+  /**
+   * Passes the reply on to the user's sender inbox with their own SES
+   * credentials, from their own verified sender address to itself, which SES
+   * allows even in sandbox mode.
+   */
+  private async forwardToUser(settings: any, raw: Buffer, fromName?: string) {
+    const sender = settings.awsSenderEmail.trim();
+    const client = new SESClient({
+      region: settings.awsRegion || 'us-east-1',
+      credentials: {
+        accessKeyId: settings.awsAccessKeyId,
+        secretAccessKey: settings.awsSecretAccessKey,
+      },
+    });
 
-    const to = await this.forwardingAddress(row);
-    if (!to) {
-      this.logger.error(
-        `No address to forward the reply for campaign recipient ${row.id} to`,
-      );
-      return;
-    }
-
-    await ses.client.send(
+    await client.send(
       new SendRawEmailCommand({
-        Source: ses.senderEmail,
-        Destinations: [to],
+        Source: sender,
+        Destinations: [sender],
         RawMessage: {
           Data: buildForwardedEmail(raw, {
-            fromAddress: ses.senderEmail,
+            fromAddress: sender,
             fromName,
-            to,
+            to: sender,
           }),
         },
       }),
     );
-  }
-
-  /** The sender address the campaign went out from, else the owner's login. */
-  private async forwardingAddress(row: any): Promise<string | null> {
-    const ownerId = row.campaign?.launchedBy || row.ownerId;
-    const settings = await this.settingsService.getRawSettings(ownerId);
-    const sender = settings?.awsSenderEmail?.trim();
-    if (sender) return sender;
-
-    const owner = await this.db.user.findUnique({
-      where: { id: row.ownerId },
-      select: { email: true },
-    });
-    return owner?.email || null;
   }
 
   private rememberMessageId(id?: string) {

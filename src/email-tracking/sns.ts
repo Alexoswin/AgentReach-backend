@@ -89,15 +89,13 @@ function fetchCertificate(url: string) {
 }
 
 /**
- * True only for a message that SNS signed and that came from one of
- * `allowedTopicArns`. The signature alone is not enough: anyone can create
- * their own SNS topic and point it at this endpoint.
+ * True only for a message that SNS itself signed. That proves nothing about
+ * whose topic sent it (anyone can create a topic and point it at this
+ * endpoint), so callers must also check TopicArn against the account the
+ * message is for.
  */
-export async function verifySnsMessage(
-  message: SnsMessage,
-  allowedTopicArns: string[],
-) {
-  if (!message || !allowedTopicArns.includes(message.TopicArn)) return false;
+export async function verifySnsSignature(message: SnsMessage) {
+  if (!message?.TopicArn) return false;
   if (!isSnsUrl(message.SigningCertURL, true)) return false;
 
   const stringToSign = snsStringToSign(message);

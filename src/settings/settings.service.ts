@@ -14,6 +14,11 @@ import {
 
 const MAX_VOICE_PREVIEW_TEXT_LENGTH = 300;
 
+const DOMAIN_PATTERN =
+  /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const SNS_TOPIC_ARN_PATTERN =
+  /^arn:aws(-cn|-us-gov)?:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/;
+
 const PROVIDER_STATUS_FIELDS: Record<string, string[]> = {
   geminiStatus: ['geminiApiKey'],
   twilioStatus: ['twilioAccountSid', 'twilioAuthToken', 'twilioPhoneNumber'],
@@ -92,6 +97,35 @@ export class SettingsService {
       throw new BadRequestException(
         'Sender email must be a valid email address, or leave it blank.',
       );
+    }
+
+    if (data.replyTrackingDomain) {
+      data.replyTrackingDomain = data.replyTrackingDomain.toLowerCase();
+      if (!DOMAIN_PATTERN.test(data.replyTrackingDomain)) {
+        throw new BadRequestException(
+          'Reply domain must be a domain name such as reply.example.com, or leave it blank.',
+        );
+      }
+    }
+    if (data.replyTrackingTopicArn) {
+      if (!SNS_TOPIC_ARN_PATTERN.test(data.replyTrackingTopicArn)) {
+        throw new BadRequestException(
+          'SNS topic ARN must look like arn:aws:sns:us-east-1:123456789012:campaign-replies, or leave it blank.',
+        );
+      }
+      // Inbound replies are matched to an account through its topic, so one
+      // topic cannot serve two accounts.
+      const claimed = await this.db.systemSettings.findFirst({
+        where: {
+          replyTrackingTopicArn: data.replyTrackingTopicArn,
+          id: { $ne: userId },
+        },
+      });
+      if (claimed) {
+        throw new BadRequestException(
+          'This SNS topic is already used by another account. Create a topic for this account.',
+        );
+      }
     }
 
     if (data.geminiTextModel !== undefined) {

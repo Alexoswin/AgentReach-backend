@@ -3,11 +3,11 @@ import { simpleParser } from 'mailparser';
 import { buildForwardedEmail } from './forward-email';
 import { addOpenPixel, parseTrackingToken } from './open-pixel';
 import {
-  campaignContactIdFromRecipients,
   isAutomatedMessage,
+  replyAddressFromRecipients,
   stripQuotedReply,
 } from './reply-parsing';
-import { snsStringToSign, SnsMessage, verifySnsMessage } from './sns';
+import { snsStringToSign, SnsMessage, verifySnsSignature } from './sns';
 
 const ROW_ID = '3f2b8c1e-6a4d-4e9f-9b7a-0c1d2e3f4a5b';
 
@@ -37,22 +37,19 @@ describe('parseTrackingToken', () => {
   });
 });
 
-describe('campaignContactIdFromRecipients', () => {
-  it('finds the recipient row on the reply domain', () => {
+describe('replyAddressFromRecipients', () => {
+  it('finds the recipient row and the domain it was sent to', () => {
     expect(
-      campaignContactIdFromRecipients(
-        ['someone@else.com', `Reply+${ROW_ID}@Reply.Example.com`],
-        'reply.example.com',
-      ),
-    ).toBe(ROW_ID);
+      replyAddressFromRecipients([
+        'someone@else.com',
+        `Reply+${ROW_ID}@Reply.Example.com`,
+      ]),
+    ).toEqual({ campaignContactId: ROW_ID, domain: 'reply.example.com' });
   });
 
-  it('ignores the same address on another domain', () => {
+  it('ignores addresses that are not reply addresses', () => {
     expect(
-      campaignContactIdFromRecipients(
-        [`reply+${ROW_ID}@evil.com`],
-        'reply.example.com',
-      ),
+      replyAddressFromRecipients(['reply+not-an-id@reply.example.com']),
     ).toBeNull();
   });
 });
@@ -148,7 +145,7 @@ describe('buildForwardedEmail', () => {
   });
 });
 
-describe('verifySnsMessage', () => {
+describe('verifySnsSignature', () => {
   const topicArn = 'arn:aws:sns:us-east-1:123456789012:replies';
   const { privateKey, publicKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
@@ -181,27 +178,20 @@ describe('verifySnsMessage', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('accepts a correctly signed message from an allowed topic', async () => {
-    await expect(verifySnsMessage(signed(), [topicArn])).resolves.toBe(true);
+  it('accepts a correctly signed message', async () => {
+    await expect(verifySnsSignature(signed())).resolves.toBe(true);
   });
 
   it('rejects a tampered message', async () => {
     const message = { ...signed(), Message: '{"forged":true}' };
-    await expect(verifySnsMessage(message, [topicArn])).resolves.toBe(false);
-  });
-
-  it('rejects a validly signed message from someone else’s topic', async () => {
-    const message = signed({
-      TopicArn: 'arn:aws:sns:us-east-1:999999999999:attacker',
-    });
-    await expect(verifySnsMessage(message, [topicArn])).resolves.toBe(false);
+    await expect(verifySnsSignature(message)).resolves.toBe(false);
   });
 
   it('never fetches a certificate from a non-SNS host', async () => {
     const message = signed({
       SigningCertURL: 'https://attacker.example.com/cert.pem',
     });
-    await expect(verifySnsMessage(message, [topicArn])).resolves.toBe(false);
+    await expect(verifySnsSignature(message)).resolves.toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
