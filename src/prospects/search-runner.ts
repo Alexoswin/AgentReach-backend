@@ -134,7 +134,7 @@ export async function runSearch(
   };
 
   const lookup = search.mode === 'companies';
-  let note: string | undefined;
+  let note: string | undefined = search.note || undefined;
 
   try {
     if (search.stage === 'find') {
@@ -324,11 +324,11 @@ export async function runSearch(
     while (qualified < search.maxCompanies) {
       if (limits.signal.aborted || Date.now() > limits.deadline) {
         await saveProgress();
-        return { status: 'paused', stage: 'qualify' };
+        return { status: 'paused', stage: 'qualify', note };
       }
       if (await isCancelled()) {
         await saveProgress();
-        return { status: 'cancelled', stage: 'qualify' };
+        return { status: 'cancelled', stage: 'qualify', note };
       }
 
       const batch = await db.prospectCompany.findMany({
@@ -356,6 +356,7 @@ export async function runSearch(
           return {
             status: 'failed',
             stage: 'qualify',
+            note,
             error: `Analysis failed: ${result.reason?.message || 'unknown error'}`,
           };
         }
@@ -384,12 +385,15 @@ export async function runSearch(
       return {
         status: 'completed',
         stage: search.stage === 'find' ? 'find' : 'done',
-        note: 'Stopped at the cost limit for this search.',
+        note: [note, 'Stopped at the cost limit for this search.']
+          .filter(Boolean)
+          .join(' '),
       };
     }
     return {
       status: 'failed',
       stage: search.stage,
+      note,
       error: error?.message || 'The search failed.',
     };
   }
