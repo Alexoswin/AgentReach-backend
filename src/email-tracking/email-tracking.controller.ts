@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import { timingSafeEqual } from 'crypto';
 import { Public } from '../auth/public.decorator';
 import { EmailTrackingService } from './email-tracking.service';
 import { parseTrackingToken, TRANSPARENT_GIF } from './open-pixel';
@@ -19,6 +20,7 @@ import { SnsMessage } from './sns';
 
 // SNS notifications with the email inline are at most ~200 KB once encoded.
 const MAX_SNS_BODY_BYTES = 1024 * 1024;
+const MAX_RAW_EMAIL_BYTES = 26 * 1024 * 1024;
 
 @ApiExcludeController()
 @Controller('email-track')
@@ -61,7 +63,7 @@ export class EmailTrackingController {
   async inbound(@Req() request: Request) {
     let message: SnsMessage;
     try {
-      message = JSON.parse(await readBody(request));
+      message = JSON.parse((await readBody(request)).toString('utf8'));
     } catch {
       throw new BadRequestException('Expected an SNS message');
     }
@@ -71,23 +73,53 @@ export class EmailTrackingController {
     }
     return { ok: true };
   }
+
+  /** Raw replies handed over by the inbound SMTP service. */
+  @Post('inbound-raw')
+  @Public()
+  @HttpCode(200)
+  async inboundRaw(@Req() request: Request) {
+    const secret = Buffer.from(process.env.INBOUND_SECRET || '');
+    const given = Buffer.from(
+      String(request.headers['x-inbound-secret'] || ''),
+    );
+    if (
+      !secret.length ||
+      given.length !== secret.length ||
+      !timingSafeEqual(given, secret)
+    ) {
+      throw new ForbiddenException('Invalid inbound secret');
+    }
+
+    const recipients = String(request.headers['x-recipients'] || '')
+      .split(',')
+      .filter(Boolean);
+    const raw = await readBody(request, MAX_RAW_EMAIL_BYTES);
+    if (!(await this.tracking.handleRawEmail(raw, recipients))) {
+      throw new BadRequestException('Not a campaign reply address');
+    }
+    return { ok: true };
+  }
 }
 
 // SNS posts JSON as text/plain, which the app's JSON parser leaves unread.
-async function readBody(request: Request): Promise<string> {
-  if (typeof request.body === 'string') return request.body;
+async function readBody(
+  request: Request,
+  maxBytes = MAX_SNS_BODY_BYTES,
+): Promise<Buffer> {
+  if (typeof request.body === 'string') return Buffer.from(request.body);
   if (request.body && Object.keys(request.body).length > 0) {
-    return JSON.stringify(request.body);
+    return Buffer.from(JSON.stringify(request.body));
   }
 
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_SNS_BODY_BYTES) {
+    if (size > maxBytes) {
       throw new BadRequestException('Message too large');
     }
     chunks.push(Buffer.from(chunk));
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }

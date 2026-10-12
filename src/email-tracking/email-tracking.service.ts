@@ -3,7 +3,7 @@ import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
 import { simpleParser } from 'mailparser';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
-import { replyDomainFor } from './email-tracking.config';
+import { platformReplyDomain, replyDomainFor } from './email-tracking.config';
 import { buildForwardedEmail } from './forward-email';
 import {
   isAutomatedMessage,
@@ -157,7 +157,31 @@ export class EmailTrackingService {
       return false;
     }
 
-    const raw = this.loadRawEmail(notification);
+    await this.processReply(row, settings, this.loadRawEmail(notification));
+    this.rememberMessageId(sesMessageId);
+    return true;
+  }
+
+  async handleRawEmail(raw: Buffer, recipients: string[]) {
+    const address = replyAddressFromRecipients(recipients);
+    if (!address || address.domain !== platformReplyDomain()) return false;
+
+    const row = await this.db.emailCampaignContact.findUnique({
+      where: { id: address.campaignContactId },
+      include: { contact: true, campaign: true },
+    });
+    if (!row) return true;
+
+    const settings = await this.settingsService.getRawSettings(
+      row.campaign?.launchedBy || row.ownerId,
+    );
+    if (replyDomainFor(settings) !== address.domain) return true;
+
+    await this.processReply(row, settings, raw);
+    return true;
+  }
+
+  private async processReply(row: any, settings: any, raw: Buffer) {
     const parsed = await simpleParser(raw);
     const from = parsed.from?.value?.[0];
     const fromAddress = (from?.address || '').trim().toLowerCase();
@@ -202,8 +226,6 @@ export class EmailTrackingService {
     // Every message is passed on, including auto-replies and bounces: the
     // reply address replaced the user's own, so nothing may be swallowed.
     await this.forwardToUser(settings, raw, from?.name);
-    this.rememberMessageId(sesMessageId);
-    return true;
   }
 
   // The receipt rule's SNS action includes the whole email. SES bounces

@@ -41,10 +41,12 @@ export class EmailTrackingConfig {
  * address nothing reads.
  */
 export function replyDomainFor(settings: any): string | null {
-  const domain = settings?.replyTrackingDomain?.trim().toLowerCase();
+  const domain =
+    (settings?.replyTrackingTopicArn?.trim() &&
+      settings?.replyTrackingDomain?.trim().toLowerCase()) ||
+    platformReplyDomain();
   if (
     !domain ||
-    !settings?.replyTrackingTopicArn?.trim() ||
     !settings?.awsAccessKeyId ||
     !settings?.awsSecretAccessKey ||
     !settings?.awsSenderEmail?.trim()
@@ -52,4 +54,8 @@ export function replyDomainFor(settings: any): string | null {
     return null;
   }
   return domain;
+}
+
+export function platformReplyDomain() {
+  return process.env.REPLY_DOMAIN?.trim().toLowerCase() || null;
 }

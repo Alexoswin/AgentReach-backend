@@ -110,4 +110,28 @@ describe('EmailTrackingService replies', () => {
     expect(updateOneRaw).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
+
+  it('records a raw reply from the SMTP service on the platform domain', async () => {
+    process.env.REPLY_DOMAIN = 'reply.platform.com';
+    const { service, updateOneRaw, send } = setup();
+    const settings = (service as any).settingsService;
+    settings.getRawSettings.mockResolvedValue({
+      ...ownerSettings,
+      replyTrackingTopicArn: '',
+    });
+    const raw = Buffer.from(
+      'From: Jane <jane@acme.com>\r\nSubject: Re: Hello\r\n\r\nInterested.',
+    );
+
+    await expect(
+      service.handleRawEmail(raw, [`reply+${ROW_ID}@reply.platform.com`]),
+    ).resolves.toBe(true);
+    await expect(
+      service.handleRawEmail(raw, [`reply+${ROW_ID}@evil.com`]),
+    ).resolves.toBe(false);
+
+    expect(updateOneRaw).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    delete process.env.REPLY_DOMAIN;
+  });
 });

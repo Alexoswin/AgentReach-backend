@@ -106,12 +106,12 @@ const PROVIDER_WEBHOOK_PATH = /^\/api\/calling-campaigns\/(twilio|plivo)\//;
 // AWS SNS posts replies received on the reply domain here. Like the calling
 // webhooks it has no session, and each message is checked against SNS's
 // signature and the configured topic instead.
-const EMAIL_INBOUND_WEBHOOK_PATH = '/api/email-track/inbound';
+const EMAIL_INBOUND_WEBHOOK_PATH = /^\/api\/email-track\/inbound(-raw)?$/;
 
 export function requiresCsrfToken(method: string, path: string) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return false;
   if (CSRF_EXEMPT_AUTH_PATHS.has(path)) return false;
-  if (path === EMAIL_INBOUND_WEBHOOK_PATH) return false;
+  if (EMAIL_INBOUND_WEBHOOK_PATH.test(path)) return false;
   return !PROVIDER_WEBHOOK_PATH.test(path);
 }
 

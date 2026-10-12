@@ -1,0 +1,12 @@
+{
+  "name": "reachconvert-smtp-inbound",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "smtp-server": "^3.19.21"
+  }
+}
