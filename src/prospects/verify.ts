@@ -29,7 +29,9 @@ export function normalizeText(text: string) {
 }
 
 export function evidenceInText(evidence: string, normalizedPage: string) {
-  const needle = normalizeText(evidence).replace(/\.\.\.|…/g, '').trim();
+  const needle = normalizeText(evidence)
+    .replace(/\.\.\.|…/g, '')
+    .trim();
   return needle.length >= 8 && normalizedPage.includes(needle);
 }
 
@@ -92,8 +94,10 @@ export function verifyPerson(
     pageUrls: string[];
   },
 ): VerifiedPerson | null {
-  const firstName = typeof person.firstName === 'string' ? person.firstName.trim() : '';
-  const lastName = typeof person.lastName === 'string' ? person.lastName.trim() : '';
+  const firstName =
+    typeof person.firstName === 'string' ? person.firstName.trim() : '';
+  const lastName =
+    typeof person.lastName === 'string' ? person.lastName.trim() : '';
   const first = nameToken(firstName);
   const last = nameToken(lastName);
   if (!first || !last) return null;
@@ -120,7 +124,10 @@ export function verifyPerson(
   return {
     firstName,
     lastName,
-    jobTitle: typeof person.jobTitle === 'string' ? person.jobTitle.trim().slice(0, 120) : '',
+    jobTitle:
+      typeof person.jobTitle === 'string'
+        ? person.jobTitle.trim().slice(0, 120)
+        : '',
     email,
     sourceUrl: context.pageUrls.includes(url) ? url : context.fallbackUrl,
     relevant: person.relevant === true,

@@ -46,5 +46,6 @@ export class ProspectSearch {
   heartbeatAt?: Date;
 }
 
-export const ProspectSearchSchema = SchemaFactory.createForClass(ProspectSearch);
+export const ProspectSearchSchema =
+  SchemaFactory.createForClass(ProspectSearch);
 ProspectSearchSchema.index({ ownerId: 1, createdAt: -1 });

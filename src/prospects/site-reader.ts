@@ -221,7 +221,8 @@ export function parseRobots(text: string): RobotsRule[] {
       collectingAgents = true;
     } else if ((field === 'allow' || field === 'disallow') && current) {
       collectingAgents = false;
-      if (value) current.rules.push({ allow: field === 'allow', pattern: value });
+      if (value)
+        current.rules.push({ allow: field === 'allow', pattern: value });
     } else {
       collectingAgents = false;
     }
@@ -264,7 +265,10 @@ export function htmlToText(html: string) {
   return html
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<\/(p|div|li|ul|ol|h[1-6]|tr|section|article|header|footer|br)>/gi, '\n')
+    .replace(
+      /<\/(p|div|li|ul|ol|h[1-6]|tr|section|article|header|footer|br)>/gi,
+      '\n',
+    )
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
@@ -330,7 +334,10 @@ export function pickPages(
       continue;
     }
     const target = `${url.pathname} ${text}`.toLowerCase();
-    if (url.pathname === '/' || /\.(pdf|jpe?g|png|zip|docx?)$/i.test(url.pathname)) {
+    if (
+      url.pathname === '/' ||
+      /\.(pdf|jpe?g|png|zip|docx?)$/i.test(url.pathname)
+    ) {
       continue;
     }
     const score = PAGE_HINTS.reduce(
@@ -446,7 +453,9 @@ export class SiteReader {
 
   private async loadRobots(url: URL): Promise<RobotsRule[]> {
     try {
-      const { response } = await this.follow(new URL('/robots.txt', url.origin));
+      const { response } = await this.follow(
+        new URL('/robots.txt', url.origin),
+      );
       if (response.status === 200) return parseRobots(response.body);
       if (response.status >= 400 && response.status < 500) return [];
     } catch {

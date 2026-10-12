@@ -1,7 +1,7 @@
 import { runSearch, RunDeps } from './search-runner';
 import { WebsiteSource } from './sources/website.source';
 
-function fakeDelegate(initial: any[] = []) {
+function fakeDelegate(initial: any[] = [], uniqueDomain = false) {
   const rows = initial.map((row) => ({ ...row }));
   let tick = 0;
   const matches = (row: any, where: Record<string, any> = {}) =>
@@ -35,8 +35,7 @@ function fakeDelegate(initial: any[] = []) {
       rows.filter((row) => matches(row, where)).length,
     create: async ({ data }: any) => {
       if (
-        data.searchId &&
-        data.domain &&
+        uniqueDomain &&
         rows.some(
           (row) => row.searchId === data.searchId && row.domain === data.domain,
         )
@@ -70,7 +69,9 @@ const ACME_PAGE =
   'Acme builds software for banks. 450 engineers. Offices in Pune. Priya Sharma, VP HR. priya.sharma@acme.com. Rahul Iyer, Head of Talent. Made Up, CEO.';
 const NOPE_PAGE = 'Nope sells garden furniture.';
 
-function setup(options: { companies?: any[]; contacts?: any[]; stage?: string } = {}) {
+function setup(
+  options: { companies?: any[]; contacts?: any[]; stage?: string } = {},
+) {
   const search = {
     id: 's1',
     ownerId: 'u1',
@@ -88,7 +89,7 @@ function setup(options: { companies?: any[]; contacts?: any[]; stage?: string } 
   };
   const db = {
     prospectSearch: fakeDelegate([search]),
-    prospectCompany: fakeDelegate(options.companies || []),
+    prospectCompany: fakeDelegate(options.companies || [], true),
     prospect: fakeDelegate(),
     contact: fakeDelegate(options.contacts || []),
     companyWatch: fakeDelegate(),
@@ -102,28 +103,68 @@ function setup(options: { companies?: any[]; contacts?: any[]; stage?: string } 
       pages: [{ url: 'https://nope.com/', text: NOPE_PAGE }],
       emails: [],
     },
-    'dead.com': { pages: [], emails: [], unreachableReason: 'Website unreachable' },
+    'dead.com': {
+      pages: [],
+      emails: [],
+      unreachableReason: 'Website unreachable',
+    },
   };
   const answers: Record<string, any> = {
     'acme.com': {
       summary: 'Acme makes banking software.',
       excluded: false,
       criteria: {
-        industry: { verdict: 'yes', evidence: 'Acme builds software for banks', url: 'https://acme.com/team' },
-        size: { verdict: 'yes', evidence: '450 engineers', url: 'https://acme.com/team' },
-        location: { verdict: 'yes', evidence: 'Offices in Pune', url: 'https://acme.com/team' },
+        industry: {
+          verdict: 'yes',
+          evidence: 'Acme builds software for banks',
+          url: 'https://acme.com/team',
+        },
+        size: {
+          verdict: 'yes',
+          evidence: '450 engineers',
+          url: 'https://acme.com/team',
+        },
+        location: {
+          verdict: 'yes',
+          evidence: 'Offices in Pune',
+          url: 'https://acme.com/team',
+        },
       },
       people: [
-        { firstName: 'Priya', lastName: 'Sharma', jobTitle: 'VP HR', email: 'priya.sharma@acme.com', url: 'https://acme.com/team', relevant: true },
-        { firstName: 'Rahul', lastName: 'Iyer', jobTitle: 'Head of Talent', email: 'rahul.iyer@acme.com', url: 'https://acme.com/team', relevant: true },
-        { firstName: 'Ghost', lastName: 'Writer', jobTitle: 'HR', email: 'ghost@acme.com', relevant: true },
+        {
+          firstName: 'Priya',
+          lastName: 'Sharma',
+          jobTitle: 'VP HR',
+          email: 'priya.sharma@acme.com',
+          url: 'https://acme.com/team',
+          relevant: true,
+        },
+        {
+          firstName: 'Rahul',
+          lastName: 'Iyer',
+          jobTitle: 'Head of Talent',
+          email: 'rahul.iyer@acme.com',
+          url: 'https://acme.com/team',
+          relevant: true,
+        },
+        {
+          firstName: 'Ghost',
+          lastName: 'Writer',
+          jobTitle: 'HR',
+          email: 'ghost@acme.com',
+          relevant: true,
+        },
       ],
     },
     'nope.com': {
       summary: 'Sells furniture.',
       excluded: false,
       criteria: {
-        industry: { verdict: 'yes', evidence: 'We are a leading bank', url: 'https://nope.com/' },
+        industry: {
+          verdict: 'yes',
+          evidence: 'We are a leading bank',
+          url: 'https://nope.com/',
+        },
       },
       people: [],
     },
@@ -146,10 +187,14 @@ function setup(options: { companies?: any[]; contacts?: any[]; stage?: string } 
   const deps: RunDeps = {
     db: db as any,
     generate,
-    reader: { readSite: jest.fn(async (domain: string) => sites[domain]) } as any,
+    reader: {
+      readSite: jest.fn(async (domain: string) => sites[domain]),
+    } as any,
     createSource: (counted) => new WebsiteSource(counted),
   };
-  const run = (overrides: Partial<{ signal: AbortSignal; deadline: number }> = {}) =>
+  const run = (
+    overrides: Partial<{ signal: AbortSignal; deadline: number }> = {},
+  ) =>
     runSearch(search, deps, {
       signal: new AbortController().signal,
       deadline: Date.now() + 60_000,
@@ -175,16 +220,18 @@ describe('runSearch', () => {
       'dead.com',
       'nope.com',
     ]);
-    expect(byDomain['acme.com']).toMatchObject({ status: 'qualified', score: 100 });
+    expect(byDomain['acme.com']).toMatchObject({
+      status: 'qualified',
+      score: 100,
+    });
     expect(byDomain['nope.com']).toMatchObject({ status: 'rejected' });
     expect(byDomain['nope.com'].criteria[0].verdict).toBe('unknown');
     expect(byDomain['dead.com']).toMatchObject({ status: 'unreachable' });
 
     const people = db.prospect.rows;
-    expect(people.map((row) => `${row.firstName} ${row.lastName}`).sort()).toEqual([
-      'Priya Sharma',
-      'Rahul Iyer',
-    ]);
+    expect(
+      people.map((row) => `${row.firstName} ${row.lastName}`).sort(),
+    ).toEqual(['Priya Sharma', 'Rahul Iyer']);
     const priya = people.find((row) => row.firstName === 'Priya');
     expect(priya).toMatchObject({
       email: 'priya.sharma@acme.com',
@@ -209,7 +256,14 @@ describe('runSearch', () => {
     const { db, run } = setup({
       stage: 'qualify',
       companies: [
-        { id: 'k1', ownerId: 'u1', searchId: 's1', name: 'Acme', domain: 'acme.com', status: 'pending' },
+        {
+          id: 'k1',
+          ownerId: 'u1',
+          searchId: 's1',
+          name: 'Acme',
+          domain: 'acme.com',
+          status: 'pending',
+        },
       ],
       contacts: [{ id: 'c1', ownerId: 'u1', email: 'priya.sharma@acme.com' }],
     });
@@ -222,17 +276,21 @@ describe('runSearch', () => {
     const { db, deps, run } = setup();
     const paused = await run({ deadline: Date.now() - 1 });
     expect(paused).toMatchObject({ status: 'paused', stage: 'qualify' });
-    expect(db.prospectCompany.rows.every((row) => row.status === 'pending')).toBe(true);
+    expect(
+      db.prospectCompany.rows.every((row) => row.status === 'pending'),
+    ).toBe(true);
 
-    const search = (await db.prospectSearch.findUnique({ where: { id: 's1' } }))!;
+    const search = (await db.prospectSearch.findUnique({
+      where: { id: 's1' },
+    }))!;
     search.stage = 'qualify';
     const finished = await runSearch(search, deps, {
       signal: new AbortController().signal,
       deadline: Date.now() + 60_000,
     });
     expect(finished.status).toBe('completed');
-    const findCalls = (deps.generate as jest.Mock).mock.calls.filter(([prompt]) =>
-      String(prompt).startsWith('List real companies'),
+    const findCalls = (deps.generate as jest.Mock).mock.calls.filter(
+      ([prompt]) => String(prompt).startsWith('List real companies'),
     );
     expect(findCalls).toHaveLength(1);
   });

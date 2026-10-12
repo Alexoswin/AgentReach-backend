@@ -29,7 +29,9 @@ export class ProspectsController {
   constructor(private readonly prospects: ProspectsService) {}
 
   @Post('profile')
-  @ApiOperation({ summary: 'Turn a description into an editable search profile' })
+  @ApiOperation({
+    summary: 'Turn a description into an editable search profile',
+  })
   buildProfile(@Req() request: any, @Body() dto: BuildProfileDto) {
     return this.prospects.buildProfile(request.user.id, dto);
   }

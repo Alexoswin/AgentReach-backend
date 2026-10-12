@@ -38,7 +38,10 @@ export class ProspectCompany {
   @Prop({ type: [String], default: [] })
   pages: string[];
 
-  @Prop({ type: Date, default: () => new Date(Date.now() + PROSPECT_RETENTION_MS) })
+  @Prop({
+    type: Date,
+    default: () => new Date(Date.now() + PROSPECT_RETENTION_MS),
+  })
   expireAt?: Date | null;
 }
 

@@ -43,7 +43,9 @@ export function normalizeProfile(raw: unknown): ProspectProfile {
   const max = toCount(size.max);
   return {
     summary:
-      typeof source.summary === 'string' ? source.summary.trim().slice(0, 300) : '',
+      typeof source.summary === 'string'
+        ? source.summary.trim().slice(0, 300)
+        : '',
     industries: toList(source.industries),
     keywords: toList(source.keywords),
     companySize: {

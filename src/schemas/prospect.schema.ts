@@ -54,7 +54,10 @@ export class Prospect {
   @Prop({ type: String })
   contactId?: string | null;
 
-  @Prop({ type: Date, default: () => new Date(Date.now() + PROSPECT_RETENTION_MS) })
+  @Prop({
+    type: Date,
+    default: () => new Date(Date.now() + PROSPECT_RETENTION_MS),
+  })
   expireAt?: Date | null;
 }
 

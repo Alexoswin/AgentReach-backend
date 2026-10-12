@@ -258,7 +258,9 @@ export class ProspectsService {
       where: { ownerId: userId, email: { in: emails } },
       select: { email: true },
     });
-    const existing = new Set(before.map((contact: any) => String(contact.email)));
+    const existing = new Set(
+      before.map((contact: any) => String(contact.email)),
+    );
 
     const result = await this.contacts.importContacts(
       {

@@ -11,8 +11,9 @@ function makeService() {
             row.ownerId === where.ownerId && where.id.in.includes(row.id),
         ),
       ),
-      findUnique: jest.fn(async ({ where }: any) =>
-        prospects.find((row) => row.id === where.id) || null,
+      findUnique: jest.fn(
+        async ({ where }: any) =>
+          prospects.find((row) => row.id === where.id) || null,
       ),
       update: jest.fn(async ({ where, data }: any) => {
         const row = prospects.find((item) => item.id === where.id);
@@ -112,7 +113,11 @@ describe('ProspectsService', () => {
   it('only accepts a work email at the company domain', async () => {
     const { service, prospects } = makeService();
     prospects.push(
-      prospect({ email: undefined, status: 'needs_email', emailStatus: 'none' }),
+      prospect({
+        email: undefined,
+        status: 'needs_email',
+        emailStatus: 'none',
+      }),
     );
     await expect(
       service.updateProspect('u1', 'p1', { email: 'priya@gmail.com' }),

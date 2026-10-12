@@ -20,7 +20,10 @@ describe('verification', () => {
     ).toBe(true);
     expect(evidenceInText('450 ENGINEERS.', context.normalizedPage)).toBe(true);
     expect(
-      evidenceInText('We are the leading bank in India', context.normalizedPage),
+      evidenceInText(
+        'We are the leading bank in India',
+        context.normalizedPage,
+      ),
     ).toBe(false);
     expect(evidenceInText('banks', context.normalizedPage)).toBe(false);
   });

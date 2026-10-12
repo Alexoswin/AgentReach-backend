@@ -60,7 +60,8 @@ export async function analyzeCompany(
     const claimed: Verdict = VERDICTS.includes(entry.verdict)
       ? entry.verdict
       : 'unknown';
-    const evidence = typeof entry.evidence === 'string' ? entry.evidence.trim() : '';
+    const evidence =
+      typeof entry.evidence === 'string' ? entry.evidence.trim() : '';
     const supported =
       claimed === 'unknown' || evidenceInText(evidence, normalizedPage);
     const url = pageUrls.includes(entry.url) ? entry.url : pageUrls[0] || '';
@@ -95,7 +96,8 @@ export async function analyzeCompany(
   }
 
   return {
-    summary: typeof raw?.summary === 'string' ? raw.summary.trim().slice(0, 240) : '',
+    summary:
+      typeof raw?.summary === 'string' ? raw.summary.trim().slice(0, 240) : '',
     excluded: raw?.excluded === true,
     criteria,
     people,

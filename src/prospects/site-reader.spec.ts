@@ -53,7 +53,9 @@ describe('site-reader', () => {
     ]) {
       expect(() => assertFetchable(new URL(url))).toThrow();
     }
-    expect(() => assertFetchable(new URL('https://example.com/about'))).not.toThrow();
+    expect(() =>
+      assertFetchable(new URL('https://example.com/about')),
+    ).not.toThrow();
   });
 
   it('normalizes domains and rejects IPs', () => {
@@ -150,9 +152,7 @@ describe('site-reader', () => {
       const site = await reader.readSite('acme.com');
       expect(site.pages).toEqual([]);
       expect(site.unreachableReason).toMatch(/disallows/);
-      expect(transport).not.toHaveBeenCalledWith(
-        new URL('https://acme.com/'),
-      );
+      expect(transport).not.toHaveBeenCalledWith(new URL('https://acme.com/'));
     });
 
     it('treats a failing robots.txt as disallowed and a missing one as allowed', async () => {
@@ -176,7 +176,9 @@ describe('site-reader', () => {
           headers: { location: 'https://www.acme.com/robots.txt' },
           body: '',
         },
-        'https://www.acme.com/robots.txt': page('User-agent: *\nDisallow: /secret'),
+        'https://www.acme.com/robots.txt': page(
+          'User-agent: *\nDisallow: /secret',
+        ),
         'https://acme.com/': page('<p>hello</p>'),
       });
       expect((await reader.readSite('acme.com')).pages).toHaveLength(1);

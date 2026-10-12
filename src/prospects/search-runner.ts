@@ -1,10 +1,7 @@
 import { MongoService } from '../mongo.service';
 import { GeminiJson } from './gemini-json';
 import { normalizeProfile, ProspectProfile } from './icp';
-import {
-  QUALIFY_CONCURRENCY,
-  QUALIFY_THRESHOLD,
-} from './prospect.constants';
+import { QUALIFY_CONCURRENCY, QUALIFY_THRESHOLD } from './prospect.constants';
 import { analyzeCompany } from './qualify';
 import { scoreCriteria } from './scoring';
 import { normalizeDomain, SiteReader } from './site-reader';
@@ -172,7 +169,10 @@ export async function runSearch(
       }
       const site = await reader.readSite(company.domain);
       if (!site.pages.length) {
-        await reject('unreachable', site.unreachableReason || 'Website unreachable');
+        await reject(
+          'unreachable',
+          site.unreachableReason || 'Website unreachable',
+        );
         return 'unreachable';
       }
 
@@ -190,7 +190,8 @@ export async function runSearch(
       let reason = '';
       if (analysis.excluded) reason = 'Matches an exclusion';
       else if (verdictOf('industry') === 'no') reason = 'Different industry';
-      else if (verdictOf('location') === 'no') reason = 'Outside the target location';
+      else if (verdictOf('location') === 'no')
+        reason = 'Outside the target location';
       else if (score < QUALIFY_THRESHOLD) {
         reason = `Score ${score}% is below the ${QUALIFY_THRESHOLD}% threshold`;
       }
