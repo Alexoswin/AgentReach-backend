@@ -189,7 +189,7 @@ function setup(
     generate,
     reader: {
       readSite: jest.fn(async (domain: string) => sites[domain]),
-    } as any,
+    },
     createSource: (counted) => new WebsiteSource(counted),
   };
   const run = (
