@@ -49,6 +49,16 @@ import {
   TriggeredOutreachSchema,
 } from './schemas/triggered-outreach.schema';
 
+import {
+  ProspectSearch,
+  ProspectSearchSchema,
+} from './schemas/prospect-search.schema';
+import {
+  ProspectCompany,
+  ProspectCompanySchema,
+} from './schemas/prospect-company.schema';
+import { Prospect, ProspectSchema } from './schemas/prospect.schema';
+
 @Global()
 @Module({
   imports: [
@@ -73,6 +83,9 @@ import {
       { name: SignalMatch.name, schema: SignalMatchSchema },
       { name: Playbook.name, schema: PlaybookSchema },
       { name: TriggeredOutreach.name, schema: TriggeredOutreachSchema },
+      { name: ProspectSearch.name, schema: ProspectSearchSchema },
+      { name: ProspectCompany.name, schema: ProspectCompanySchema },
+      { name: Prospect.name, schema: ProspectSchema },
     ]),
   ],
   providers: [MongoService],

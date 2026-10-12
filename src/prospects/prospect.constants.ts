@@ -1,0 +1,10 @@
+export const PROSPECT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+export const DEFAULT_MAX_COMPANIES = 25;
+export const MAX_COMPANIES_PER_SEARCH = 100;
+export const DEFAULT_PEOPLE_PER_COMPANY = 2;
+export const MAX_PEOPLE_PER_COMPANY = 5;
+export const MAX_SEARCHES_PER_DAY = 10;
+export const QUALIFY_THRESHOLD = 60;
+export const QUALIFY_CONCURRENCY = 3;
+export const RUN_TIME_BUDGET_MS = 50_000;
+export const STALE_RUN_MS = 2 * 60 * 1000;

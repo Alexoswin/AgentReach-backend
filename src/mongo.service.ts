@@ -19,6 +19,9 @@ import { Signal } from './schemas/signal.schema';
 import { SignalMatch } from './schemas/signal-match.schema';
 import { Playbook } from './schemas/playbook.schema';
 import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
+import { ProspectSearch } from './schemas/prospect-search.schema';
+import { ProspectCompany } from './schemas/prospect-company.schema';
+import { Prospect } from './schemas/prospect.schema';
 
 type AnyModel = Model<any>;
 
@@ -45,6 +48,9 @@ export class MongoService implements OnModuleInit {
   signalMatch: MongoDelegate;
   playbook: MongoDelegate;
   triggeredOutreach: MongoDelegate;
+  prospectSearch: MongoDelegate;
+  prospectCompany: MongoDelegate;
+  prospect: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -67,6 +73,9 @@ export class MongoService implements OnModuleInit {
     @InjectModel(Playbook.name) private playbookModel: AnyModel,
     @InjectModel(TriggeredOutreach.name)
     private triggeredOutreachModel: AnyModel,
+    @InjectModel(ProspectSearch.name) private prospectSearchModel: AnyModel,
+    @InjectModel(ProspectCompany.name) private prospectCompanyModel: AnyModel,
+    @InjectModel(Prospect.name) private prospectModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -85,6 +94,9 @@ export class MongoService implements OnModuleInit {
       signalMatch: this.signalMatchModel,
       playbook: this.playbookModel,
       triggeredOutreach: this.triggeredOutreachModel,
+      prospectSearch: this.prospectSearchModel,
+      prospectCompany: this.prospectCompanyModel,
+      prospect: this.prospectModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -152,6 +164,17 @@ export class MongoService implements OnModuleInit {
       this.triggeredOutreachModel,
       models,
     );
+    this.prospectSearch = new MongoDelegate(
+      'prospectSearch',
+      this.prospectSearchModel,
+      models,
+    );
+    this.prospectCompany = new MongoDelegate(
+      'prospectCompany',
+      this.prospectCompanyModel,
+      models,
+    );
+    this.prospect = new MongoDelegate('prospect', this.prospectModel, models);
   }
 
   async onModuleInit() {
