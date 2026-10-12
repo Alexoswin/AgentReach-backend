@@ -1,5 +1,6 @@
 import { IsString, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { GEMINI_TEXT_MODEL_OPTIONS } from '../../config/gemini-text';
 
 // Every field is optional and may be an empty string (which clears it); the
 // Settings page sends all fields on each save. Connection statuses are not
@@ -49,7 +50,7 @@ export class UpdateSettingsDto {
   geminiApiKey?: string;
 
   @ApiProperty({ required: false })
-  @IsString()
+  @IsIn(['', ...GEMINI_TEXT_MODEL_OPTIONS.map((option) => option.value)])
   @IsOptional()
   geminiTextModel?: string;
 
