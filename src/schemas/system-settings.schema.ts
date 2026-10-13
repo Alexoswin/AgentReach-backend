@@ -18,6 +18,12 @@ export class SystemSettings {
   @Prop({ default: '' })
   awsSenderEmail: string;
 
+  @Prop({ default: '' })
+  sendingDomainId: string;
+
+  @Prop({ default: '' })
+  sendingFromEmail: string;
+
   // Reply tracking, set up in the user's own AWS account: replies to
   // campaign emails go to reply+<id>@replyTrackingDomain, which SES receives
   // and publishes to replyTrackingTopicArn, subscribed to this API.

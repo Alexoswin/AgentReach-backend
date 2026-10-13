@@ -164,7 +164,7 @@ export class EmailTrackingService {
 
   async handleRawEmail(raw: Buffer, recipients: string[]) {
     const address = replyAddressFromRecipients(recipients);
-    if (!address || address.domain !== platformReplyDomain()) return false;
+    if (!address) return false;
 
     const row = await this.db.emailCampaignContact.findUnique({
       where: { id: address.campaignContactId },
@@ -175,7 +175,30 @@ export class EmailTrackingService {
     const settings = await this.settingsService.getRawSettings(
       row.campaign?.launchedBy || row.ownerId,
     );
-    if (replyDomainFor(settings) !== address.domain) return true;
+    const ownerDomain = address.domain.startsWith('reply.')
+      ? address.domain.slice('reply.'.length)
+      : null;
+    const verifiedDomain = ownerDomain
+      ? await this.db.emailDomain.findFirst({
+          where: {
+            ownerId: row.ownerId,
+            domain: ownerDomain,
+            status: 'VERIFIED',
+          },
+        })
+      : null;
+    const isSelectedVerifiedDomain =
+      verifiedDomain && settings?.sendingDomainId === verifiedDomain.id;
+    const isLegacyPlatformDomain = address.domain === platformReplyDomain();
+    if (!isLegacyPlatformDomain && !isSelectedVerifiedDomain) {
+      return false;
+    }
+    if (
+      replyDomainFor(settings) !== address.domain &&
+      !isSelectedVerifiedDomain
+    ) {
+      return true;
+    }
 
     await this.processReply(row, settings, raw);
     return true;
@@ -225,7 +248,14 @@ export class EmailTrackingService {
 
     // Every message is passed on, including auto-replies and bounces: the
     // reply address replaced the user's own, so nothing may be swallowed.
-    await this.forwardToUser(settings, raw, from?.name);
+    try {
+      await this.forwardToUser(settings, raw, from?.name);
+    } catch (error: any) {
+      // The reply is already persisted in the Replies inbox. Forwarding is a
+      // convenience and must not make the inbound SMTP server retry a valid
+      // reply forever when the sender transport is temporarily unavailable.
+      this.logger.warn(`Could not forward inbound reply: ${error?.message}`);
+    }
   }
 
   // The receipt rule's SNS action includes the whole email. SES bounces

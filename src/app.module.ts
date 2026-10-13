@@ -19,6 +19,7 @@ import { SignalsModule } from './signals/signals.module';
 import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
 import { ProspectsModule } from './prospects/prospects.module';
 import { MailServiceModule } from './mail-service/mail-service.module';
+import { DomainsModule } from './domains/domains.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { MailServiceModule } from './mail-service/mail-service.module';
     CampaignSchedulerModule,
     ProspectsModule,
     MailServiceModule,
+    DomainsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -666,11 +666,26 @@ export class EmailCampaignsService {
         );
       }
 
-      const senderEmail = settings.awsSenderEmail?.trim();
+      const senderEmail =
+        settings.sendingFromEmail?.trim() || settings.awsSenderEmail?.trim();
       if (!senderEmail) {
         throw new Error(
-          'No sender email configured. Add a Sender Email Address in Settings before launching real campaigns.',
+          'No sender email configured. Add and verify a sending domain before launching real campaigns.',
         );
+      }
+      if (settings.sendingDomainId && settings.sendingFromEmail?.trim()) {
+        const sendingDomain = await this.db.emailDomain.findUnique({
+          where: { id: settings.sendingDomainId, ownerId: campaign.launchedBy },
+        });
+        if (
+          !sendingDomain ||
+          sendingDomain.status !== 'VERIFIED' ||
+          sendingDomain.defaultSenderEmail !== senderEmail
+        ) {
+          throw new Error(
+            'Verify the selected sending domain and sender address before launching this campaign.',
+          );
+        }
       }
       const senderSource = `<${senderEmail}>`;
       const ccAddresses: string[] = (campaign.cc || [])

@@ -58,6 +58,7 @@ import {
   ProspectCompanySchema,
 } from './schemas/prospect-company.schema';
 import { Prospect, ProspectSchema } from './schemas/prospect.schema';
+import { EmailDomain, EmailDomainSchema } from './schemas/email-domain.schema';
 
 @Global()
 @Module({
@@ -86,6 +87,7 @@ import { Prospect, ProspectSchema } from './schemas/prospect.schema';
       { name: ProspectSearch.name, schema: ProspectSearchSchema },
       { name: ProspectCompany.name, schema: ProspectCompanySchema },
       { name: Prospect.name, schema: ProspectSchema },
+      { name: EmailDomain.name, schema: EmailDomainSchema },
     ]),
   ],
   providers: [MongoService],

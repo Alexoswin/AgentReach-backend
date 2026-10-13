@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { SMTPServer } from 'smtp-server';
 
-const REPLY_DOMAIN = (process.env.REPLY_DOMAIN || '').trim().toLowerCase();
+const LEGACY_REPLY_DOMAIN = (process.env.REPLY_DOMAIN || '').trim().toLowerCase();
 const API_INBOUND_URL = process.env.API_INBOUND_URL;
 const INBOUND_SECRET = process.env.INBOUND_SECRET;
 const MAX_BYTES = Number(process.env.MAX_MESSAGE_MB || 25) * 1024 * 1024;
@@ -10,9 +10,10 @@ const MAX_CONNECTIONS_PER_IP = 10;
 const API_TIMEOUT_MS = 20000;
 const REPLY_LOCAL_PART =
   /^reply\+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DOMAIN_PATTERN = /^(?:[a-z0-9-]+\.)+[a-z]{2,63}$/;
 
-if (!REPLY_DOMAIN || !API_INBOUND_URL || !INBOUND_SECRET) {
-  throw new Error('REPLY_DOMAIN, API_INBOUND_URL and INBOUND_SECRET are required');
+if (!API_INBOUND_URL || !INBOUND_SECRET) {
+  throw new Error('API_INBOUND_URL and INBOUND_SECRET are required');
 }
 
 const tls = process.env.TLS_KEY_PATH && process.env.TLS_CERT_PATH;
@@ -54,8 +55,8 @@ const server = new SMTPServer({
     const at = value.lastIndexOf('@');
     if (
       at === -1 ||
-      value.slice(at + 1) !== REPLY_DOMAIN ||
-      !REPLY_LOCAL_PART.test(value.slice(0, at))
+      !REPLY_LOCAL_PART.test(value.slice(0, at)) ||
+      !DOMAIN_PATTERN.test(value.slice(at + 1))
     ) {
       log('rejected', session.remoteAddress, value);
       return callback(smtpError(550, 'No such recipient'));
@@ -109,5 +110,9 @@ const server = new SMTPServer({
 
 server.on('error', (error) => log('error', error.message));
 server.listen(Number(process.env.SMTP_PORT || 25), () =>
-  log(`listening on ${process.env.SMTP_PORT || 25} for ${REPLY_DOMAIN}`),
+  log(
+    `listening on ${process.env.SMTP_PORT || 25} for verified reply domains${
+      LEGACY_REPLY_DOMAIN ? ` (legacy ${LEGACY_REPLY_DOMAIN})` : ''
+    }`,
+  ),
 );

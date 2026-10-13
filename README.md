@@ -145,6 +145,7 @@ npm run start:dev         # watch mode on http://localhost:3001
 | `MAIL_SERVICE_ENABLED`     | optional | Enables connectivity to the standalone mail service; keep `false` until its queue and MTA are production-ready. |
 | `MAIL_SERVICE_URL`         | optional | Mail service API base, normally `http://localhost:3020/api`. |
 | `MAIL_SERVICE_SECRET`      | optional | Shared internal secret; must match the mail service `INTERNAL_API_SECRET`. |
+| `MAIL_INBOUND_MX_HOSTNAME` | optional | Hostname users add as the MX target for `reply.<domain>`. |
 
 > Most provider credentials (AWS SES, Twilio, Gemini) are configured at
 > runtime through **Settings** in the UI and stored **encrypted** in MongoDB, not in
@@ -194,6 +195,13 @@ The standalone mail service lives in the sibling
 backend currently uses its health and authenticated submission contract only;
 SES remains the active sender until the mail service has durable queueing and
 MTA delivery.
+
+### Sending Domains — `/api/domains`
+
+Users can add a domain, verify its ownership TXT record, choose a verified
+default sender, and remove it. The API returns the TXT verification record and
+the MX record for `reply.<domain>`. Campaigns use the selected verified sender
+and set `reply+<campaign-contact-id>@reply.<domain>` as the Reply-To address.
 
 ### Contacts — `/api/contacts`
 CRUD on `/`, `/:id`; directories under `/directories` (+ `/:id`); `POST /parse-file`

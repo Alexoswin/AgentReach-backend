@@ -41,15 +41,20 @@ export class EmailTrackingConfig {
  * address nothing reads.
  */
 export function replyDomainFor(settings: any): string | null {
+  const configuredDomain = settings?.replyTrackingDomain?.trim().toLowerCase();
   const domain =
-    (settings?.replyTrackingTopicArn?.trim() &&
-      settings?.replyTrackingDomain?.trim().toLowerCase()) ||
-    platformReplyDomain();
+    (settings?.replyTrackingTopicArn?.trim() && configuredDomain) ||
+    (settings?.sendingDomainId && settings?.sendingFromEmail?.trim()
+      ? configuredDomain
+      : platformReplyDomain());
+  const selfHostedDomain =
+    settings?.sendingDomainId && settings?.sendingFromEmail?.trim();
   if (
     !domain ||
-    !settings?.awsAccessKeyId ||
-    !settings?.awsSecretAccessKey ||
-    !settings?.awsSenderEmail?.trim()
+    (!selfHostedDomain &&
+      (!settings?.awsAccessKeyId ||
+        !settings?.awsSecretAccessKey ||
+        !settings?.awsSenderEmail?.trim()))
   ) {
     return null;
   }

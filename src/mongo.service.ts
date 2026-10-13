@@ -22,6 +22,7 @@ import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
 import { ProspectSearch } from './schemas/prospect-search.schema';
 import { ProspectCompany } from './schemas/prospect-company.schema';
 import { Prospect } from './schemas/prospect.schema';
+import { EmailDomain } from './schemas/email-domain.schema';
 
 type AnyModel = Model<any>;
 
@@ -51,6 +52,7 @@ export class MongoService implements OnModuleInit {
   prospectSearch: MongoDelegate;
   prospectCompany: MongoDelegate;
   prospect: MongoDelegate;
+  emailDomain: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -76,6 +78,7 @@ export class MongoService implements OnModuleInit {
     @InjectModel(ProspectSearch.name) private prospectSearchModel: AnyModel,
     @InjectModel(ProspectCompany.name) private prospectCompanyModel: AnyModel,
     @InjectModel(Prospect.name) private prospectModel: AnyModel,
+    @InjectModel(EmailDomain.name) private emailDomainModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -97,6 +100,7 @@ export class MongoService implements OnModuleInit {
       prospectSearch: this.prospectSearchModel,
       prospectCompany: this.prospectCompanyModel,
       prospect: this.prospectModel,
+      emailDomain: this.emailDomainModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -175,6 +179,11 @@ export class MongoService implements OnModuleInit {
       models,
     );
     this.prospect = new MongoDelegate('prospect', this.prospectModel, models);
+    this.emailDomain = new MongoDelegate(
+      'emailDomain',
+      this.emailDomainModel,
+      models,
+    );
   }
 
   async onModuleInit() {
