@@ -142,6 +142,9 @@ npm run start:dev         # watch mode on http://localhost:3001
 | `ENABLE_SWAGGER`           | optional | `true` serves `/docs` in production (off by default). |
 | `GEMINI_API_KEY`           | optional | Bootstrap fallback. The encrypted key saved in Settings takes precedence. |
 | `GEMINI_LIVE_MODEL`        | optional | Gemini Live model id (e.g. `gemini-2.5-flash-native-audio-preview-12-2025`). |
+| `MAIL_SERVICE_ENABLED`     | optional | Enables connectivity to the standalone mail service; keep `false` until its queue and MTA are production-ready. |
+| `MAIL_SERVICE_URL`         | optional | Mail service API base, normally `http://localhost:3020/api`. |
+| `MAIL_SERVICE_SECRET`      | optional | Shared internal secret; must match the mail service `INTERNAL_API_SECRET`. |
 
 > Most provider credentials (AWS SES, Twilio, Gemini) are configured at
 > runtime through **Settings** in the UI and stored **encrypted** in MongoDB, not in
@@ -183,8 +186,14 @@ unless noted. Explore the live, always-accurate contract in **Swagger** at `/doc
 
 ### Settings — `/api/settings`
 `GET /` (masked), `PATCH /` (encrypted update), and connection tests:
-`POST /test-ses`, `/test-twilio`, `/test-gemini`,
+`POST /test-ses`, `/test-mail-service`, `/test-twilio`, `/test-gemini`,
 `/preview-gemini-voice`.
+
+The standalone mail service lives in the sibling
+[`../AgentReach-mail-service`](../AgentReach-mail-service) repository. The
+backend currently uses its health and authenticated submission contract only;
+SES remains the active sender until the mail service has durable queueing and
+MTA delivery.
 
 ### Contacts — `/api/contacts`
 CRUD on `/`, `/:id`; directories under `/directories` (+ `/:id`); `POST /parse-file`

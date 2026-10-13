@@ -11,11 +11,15 @@ import {
 import { SettingsService } from './settings.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { MailServiceClient } from '../mail-service/mail-service.client';
 
 @ApiTags('settings')
 @Controller('settings')
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly mailService: MailServiceClient,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Get current settings' })
@@ -36,6 +40,12 @@ export class SettingsController {
   @ApiOperation({ summary: 'Test AWS SES connection' })
   async testAwsSes(@Req() request: any) {
     return this.settingsService.testAwsSes(request.user.id);
+  }
+
+  @Post('test-mail-service')
+  @ApiOperation({ summary: 'Test the AgentReach mail service connection' })
+  async testMailService() {
+    return this.mailService.testConnection();
   }
 
   @Post('test-twilio')
