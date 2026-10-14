@@ -26,7 +26,12 @@ import { CreateDraftDto, SendDraftDto, UpdateDraftDto } from './dto/draft.dto';
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 // Only these are ever shown inline; anything else (HTML, SVG, PDF, ...) is a
 // download, so an attachment can never run script on this origin.
-const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const INLINE_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
 
 const body = new ValidationPipe({ whitelist: true, transform: true });
 
@@ -39,7 +44,9 @@ export class MailboxController {
   ) {}
 
   @Get('threads')
-  @ApiOperation({ summary: 'Conversations in a folder, newest first (paginated)' })
+  @ApiOperation({
+    summary: 'Conversations in a folder, newest first (paginated)',
+  })
   listThreads(@Req() request: any, @Query(body) query: ListThreadsQueryDto) {
     return this.mailbox.listThreads(request.user.id, query);
   }
@@ -57,7 +64,9 @@ export class MailboxController {
   }
 
   @Get('contact-context')
-  @ApiOperation({ summary: 'A contact with their campaigns and calls, by email' })
+  @ApiOperation({
+    summary: 'A contact with their campaigns and calls, by email',
+  })
   contactContext(@Req() request: any, @Query('email') email: string) {
     return this.mailbox.contactContext(request.user.id, String(email || ''));
   }

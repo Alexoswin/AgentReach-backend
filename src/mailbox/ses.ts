@@ -31,7 +31,11 @@ export function sesReplyDomain(settings: any): string | null {
   const domain =
     settings?.replyTrackingTopicArn?.trim() &&
     settings?.replyTrackingDomain?.trim().toLowerCase();
-  if (!domain || !hasSesCredentials(settings) || !settings?.awsSenderEmail?.trim()) {
+  if (
+    !domain ||
+    !hasSesCredentials(settings) ||
+    !settings?.awsSenderEmail?.trim()
+  ) {
     return null;
   }
   return domain;
@@ -81,7 +85,11 @@ export function isRetryableSesError(error: any) {
   ) {
     return true;
   }
-  if (['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(error?.code)) {
+  if (
+    ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(
+      error?.code,
+    )
+  ) {
     return true;
   }
   return (error?.$metadata?.httpStatusCode || 0) >= 500;

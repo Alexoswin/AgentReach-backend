@@ -61,7 +61,11 @@ export class MailAttachmentsService {
   /** Template attachments are stored inline as base64; copy them in once. */
   async saveTemplateAttachments(
     ownerId: string,
-    attachments: { name?: string; contentType?: string; contentBase64?: string }[] = [],
+    attachments: {
+      name?: string;
+      contentType?: string;
+      contentBase64?: string;
+    }[] = [],
   ) {
     const saved: MailAttachmentRef[] = [];
     for (const attachment of attachments) {

@@ -729,7 +729,9 @@ export class EmailCampaignsService {
     });
     if (!campaign) throw new BadRequestException('Campaign not found');
     if (campaign.status !== 'RUNNING') {
-      throw new BadRequestException('Only a campaign that is sending can be paused.');
+      throw new BadRequestException(
+        'Only a campaign that is sending can be paused.',
+      );
     }
 
     await this.db.emailCampaign.update({
@@ -792,7 +794,10 @@ export class EmailCampaignsService {
       throw new BadRequestException('This campaign is not sending.');
     }
 
-    const cancelled = await this.cancelQueued({ campaignId: id, ownerId: userId });
+    const cancelled = await this.cancelQueued({
+      campaignId: id,
+      ownerId: userId,
+    });
     await this.db.emailCampaignContact.updateMany({
       where: { campaignId: id, deliveryStatus: 'QUEUED' },
       data: { deliveryStatus: 'PENDING' },
@@ -825,7 +830,9 @@ export class EmailCampaignsService {
     });
     const to = (dto.to || settings.awsSenderEmail).trim().toLowerCase();
     if (!isEmail(to)) {
-      throw new BadRequestException('Enter a valid address to send the test to.');
+      throw new BadRequestException(
+        'Enter a valid address to send the test to.',
+      );
     }
     const contact = dto.contactId
       ? await this.db.contact.findFirst({
@@ -879,7 +886,10 @@ export class EmailCampaignsService {
   }
 
   /** The owner's settings, checked for everything a campaign send needs. */
-  private async sendingSettings(userId: string, campaign: { fromEmail?: string }) {
+  private async sendingSettings(
+    userId: string,
+    campaign: { fromEmail?: string },
+  ) {
     const settings = await this.settingsService.getRawSettings(userId);
     if (!hasSesCredentials(settings)) {
       throw new BadRequestException(
@@ -952,7 +962,10 @@ export class EmailCampaignsService {
         })
       : [];
     const threadByRow = new Map<string, string>(
-      existingThreads.map((thread: any) => [thread.campaignContactId, thread.id]),
+      existingThreads.map((thread: any) => [
+        thread.campaignContactId,
+        thread.id,
+      ]),
     );
     const spacingMs = campaign.sendRatePerHour
       ? Math.ceil(3_600_000 / campaign.sendRatePerHour)
@@ -981,7 +994,9 @@ export class EmailCampaignsService {
       const rendered = this.render(
         template,
         contact,
-        unsubscribeToken ? this.trackingConfig.unsubscribeUrl(unsubscribeToken) : null,
+        unsubscribeToken
+          ? this.trackingConfig.unsubscribeUrl(unsubscribeToken)
+          : null,
       );
       const to = [{ email: recipient, name: contactName(contact) }];
       let threadId = threadByRow.get(row.id);
@@ -1032,7 +1047,8 @@ export class EmailCampaignsService {
         })),
         sendAt: new Date(start + queuedRowIds.length * spacingMs),
         trackOpens,
-        trackingToken: trackOpens && rendered.html.trim() ? newTrackingToken() : null,
+        trackingToken:
+          trackOpens && rendered.html.trim() ? newTrackingToken() : null,
         unsubscribeToken,
         campaignId: campaign.id,
         campaignContactId: row.id,
@@ -1090,7 +1106,11 @@ export class EmailCampaignsService {
   /** Cancels queued and paused campaign emails; returns how many. */
   private async cancelQueued(where: Record<string, unknown>) {
     const result = await this.db.mailMessage.updateMany({
-      where: { ...where, source: 'CAMPAIGN', status: { in: ['QUEUED', 'PAUSED'] } },
+      where: {
+        ...where,
+        source: 'CAMPAIGN',
+        status: { in: ['QUEUED', 'PAUSED'] },
+      },
       data: { status: 'CANCELLED' },
     });
     return result.count;

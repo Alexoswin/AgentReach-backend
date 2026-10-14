@@ -9,7 +9,10 @@ import { SettingsService } from '../settings/settings.service';
 import { EmailTrackingConfig } from '../email-tracking/email-tracking.config';
 import { newTrackingToken } from '../email-tracking/open-pixel';
 import { buildPage, containsRegex, resolvePage } from '../common/pagination';
-import type { MailAddress, MailAttachmentRef } from '../schemas/mail-message.schema';
+import type {
+  MailAddress,
+  MailAttachmentRef,
+} from '../schemas/mail-message.schema';
 import { MailAttachmentsService } from './mail-attachments.service';
 import { MailSendersService } from './mail-senders.service';
 import { MailStoreService, contactName } from './mail-store.service';
@@ -23,7 +26,11 @@ import {
   withPrefix,
 } from './mail-format';
 import { encodedSize } from './mime';
-import { hasSesCredentials, SES_MAX_RAW_MESSAGE_BYTES, sesReplyDomain } from './ses';
+import {
+  hasSesCredentials,
+  SES_MAX_RAW_MESSAGE_BYTES,
+  sesReplyDomain,
+} from './ses';
 import { ListThreadsQueryDto } from './dto/list-threads.dto';
 import { BulkThreadsDto, UpdateThreadDto } from './dto/update-thread.dto';
 import {
@@ -40,7 +47,11 @@ const SEARCH_MESSAGE_LIMIT = 500;
 
 const messageTime = (message: any) =>
   new Date(
-    message.receivedAt || message.sentAt || message.sendAt || message.createdAt || 0,
+    message.receivedAt ||
+      message.sentAt ||
+      message.sendAt ||
+      message.createdAt ||
+      0,
   ).getTime();
 
 function toThreadItem(thread: any, campaigns: Map<string, any> = new Map()) {
@@ -65,7 +76,10 @@ function toThreadItem(thread: any, campaigns: Map<string, any> = new Map()) {
     lastStatus: thread.lastStatus,
     contactId: thread.contactId || null,
     campaign: thread.campaignId
-      ? campaigns.get(thread.campaignId) || { id: thread.campaignId, name: 'Deleted campaign' }
+      ? campaigns.get(thread.campaignId) || {
+          id: thread.campaignId,
+          name: 'Deleted campaign',
+        }
       : null,
   };
 }
@@ -89,14 +103,16 @@ function toMessageView(message: any) {
     quotedText: message.quotedText,
     quotedMessageId: message.quotedMessageId,
     snippet: message.snippet,
-    attachments: (message.attachments || []).map((attachment: MailAttachmentRef) => ({
-      id: attachment.fileId,
-      name: attachment.name,
-      contentType: attachment.contentType,
-      size: attachment.size,
-      contentId: attachment.contentId || null,
-      inline: Boolean(attachment.inline),
-    })),
+    attachments: (message.attachments || []).map(
+      (attachment: MailAttachmentRef) => ({
+        id: attachment.fileId,
+        name: attachment.name,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        contentId: attachment.contentId || null,
+        inline: Boolean(attachment.inline),
+      }),
+    ),
     sendAt: message.sendAt,
     scheduled: message.scheduled,
     sentAt: message.sentAt,
@@ -204,9 +220,9 @@ export class MailboxService {
       orderBy: { createdAt: 'asc' },
     });
     const ordered = [
-      ...messages.filter((m: any) => m.status !== 'DRAFT').sort(
-        (a: any, b: any) => messageTime(a) - messageTime(b),
-      ),
+      ...messages
+        .filter((m: any) => m.status !== 'DRAFT')
+        .sort((a: any, b: any) => messageTime(a) - messageTime(b)),
       ...messages.filter((m: any) => m.status === 'DRAFT'),
     ];
     const campaigns = await this.campaignNames([thread]);
@@ -237,7 +253,9 @@ export class MailboxService {
     if (dto.archived !== undefined) data.archived = dto.archived;
     if (dto.trashed !== undefined) data.trashed = dto.trashed;
     if (dto.labels !== undefined) {
-      data.labels = [...new Set(dto.labels.map((label) => label.trim()).filter(Boolean))];
+      data.labels = [
+        ...new Set(dto.labels.map((label) => label.trim()).filter(Boolean)),
+      ];
     }
     if (Object.keys(data).length > 0) {
       await this.db.mailThread.update({ where: { id, ownerId }, data });
@@ -309,7 +327,9 @@ export class MailboxService {
   async deleteThread(ownerId: string, id: string) {
     const thread = await this.ownedThread(ownerId, id);
     if (!thread.trashed) {
-      throw new BadRequestException('Move the conversation to Trash before deleting it.');
+      throw new BadRequestException(
+        'Move the conversation to Trash before deleting it.',
+      );
     }
     const messages = await this.db.mailMessage.findMany({
       where: { ownerId, threadId: id, status: { $nin: ['QUEUED', 'SENDING'] } },
@@ -325,7 +345,9 @@ export class MailboxService {
     await this.store.refreshThread(id);
     await this.attachments.deleteUnreferenced(
       ownerId,
-      messages.flatMap((m: any) => (m.attachments || []).map((a: any) => a.fileId)),
+      messages.flatMap((m: any) =>
+        (m.attachments || []).map((a: any) => a.fileId),
+      ),
     );
     return { success: true };
   }
@@ -338,7 +360,9 @@ export class MailboxService {
 
     if (mode !== 'new') {
       if (!dto.sourceMessageId) {
-        throw new BadRequestException('Choose the message to reply to or forward.');
+        throw new BadRequestException(
+          'Choose the message to reply to or forward.',
+        );
       }
       const source = await this.db.mailMessage.findFirst({
         where: { id: dto.sourceMessageId, ownerId },
@@ -367,7 +391,9 @@ export class MailboxService {
         source: 'MANUAL',
         status: 'DRAFT',
         from: {
-          email: (dto.from || base.from || settings?.awsSenderEmail || '').trim().toLowerCase(),
+          email: (dto.from || base.from || settings?.awsSenderEmail || '')
+            .trim()
+            .toLowerCase(),
           name: settings?.mailFromName?.trim() || null,
         },
         to: await this.toAddresses(ownerId, dto.to, base.to),
@@ -396,9 +422,12 @@ export class MailboxService {
   async updateDraft(ownerId: string, id: string, dto: UpdateDraftDto) {
     const draft = await this.ownedDraft(ownerId, id);
     const data: Record<string, unknown> = {};
-    if (dto.to !== undefined) data.to = await this.toAddresses(ownerId, dto.to, []);
-    if (dto.cc !== undefined) data.cc = await this.toAddresses(ownerId, dto.cc, []);
-    if (dto.bcc !== undefined) data.bcc = await this.toAddresses(ownerId, dto.bcc, []);
+    if (dto.to !== undefined)
+      data.to = await this.toAddresses(ownerId, dto.to, []);
+    if (dto.cc !== undefined)
+      data.cc = await this.toAddresses(ownerId, dto.cc, []);
+    if (dto.bcc !== undefined)
+      data.bcc = await this.toAddresses(ownerId, dto.bcc, []);
     if (dto.subject !== undefined) data.subject = dto.subject;
     if (dto.html !== undefined) {
       data.html = dto.html;
@@ -409,7 +438,10 @@ export class MailboxService {
       data.from = { ...draft.from, email: dto.from.trim().toLowerCase() };
     }
     if (dto.attachments !== undefined) {
-      data.attachments = await this.resolveAttachments(ownerId, dto.attachments);
+      data.attachments = await this.resolveAttachments(
+        ownerId,
+        dto.attachments,
+      );
     }
     if (dto.trackOpens !== undefined) data.trackOpens = dto.trackOpens;
 
@@ -430,12 +462,16 @@ export class MailboxService {
 
   async deleteDraft(ownerId: string, id: string) {
     const draft = await this.ownedDraft(ownerId, id);
-    await this.db.mailMessage.delete({ where: { id, ownerId, status: 'DRAFT' } });
+    await this.db.mailMessage.delete({
+      where: { id, ownerId, status: 'DRAFT' },
+    });
     const remaining = await this.db.mailMessage.count({
       where: { threadId: draft.threadId },
     });
     if (remaining === 0) {
-      await this.db.mailThread.delete({ where: { id: draft.threadId, ownerId } });
+      await this.db.mailThread.delete({
+        where: { id: draft.threadId, ownerId },
+      });
     } else {
       await this.store.refreshThread(draft.threadId);
     }
@@ -482,7 +518,8 @@ export class MailboxService {
       html: `${draft.html || ''}${draft.quotedHtml || ''}`,
       text: `${draft.text || ''}${draft.quotedText || ''}`,
       attachmentBytes: (draft.attachments || []).reduce(
-        (total: number, attachment: MailAttachmentRef) => total + (attachment.size || 0),
+        (total: number, attachment: MailAttachmentRef) =>
+          total + (attachment.size || 0),
         0,
       ),
     });
@@ -492,15 +529,21 @@ export class MailboxService {
       );
     }
 
-    let sendAt = new Date(Date.now() + (dto.undoSeconds ?? DEFAULT_UNDO_SECONDS) * 1000);
+    let sendAt = new Date(
+      Date.now() + (dto.undoSeconds ?? DEFAULT_UNDO_SECONDS) * 1000,
+    );
     if (dto.sendAt) {
       sendAt = new Date(dto.sendAt);
       const ahead = sendAt.getTime() - Date.now();
       if (Number.isNaN(ahead) || ahead < 30 * 1000) {
-        throw new BadRequestException('Pick a time at least a minute from now.');
+        throw new BadRequestException(
+          'Pick a time at least a minute from now.',
+        );
       }
       if (ahead > MAX_SCHEDULE_MS) {
-        throw new BadRequestException('Emails can be scheduled up to a year ahead.');
+        throw new BadRequestException(
+          'Emails can be scheduled up to a year ahead.',
+        );
       }
     }
 
@@ -513,11 +556,15 @@ export class MailboxService {
           status: 'QUEUED',
           sendAt,
           scheduled: Boolean(dto.sendAt),
-          from: { email: from, name: settings?.mailFromName?.trim() || draft.from?.name || null },
+          from: {
+            email: from,
+            name: settings?.mailFromName?.trim() || draft.from?.name || null,
+          },
           replyTo: replyDomain
             ? this.trackingConfig.replyToAddress(draft.threadId, replyDomain)
             : null,
-          trackingToken: draft.trackOpens && html.trim() ? newTrackingToken() : null,
+          trackingToken:
+            draft.trackOpens && html.trim() ? newTrackingToken() : null,
           attempts: 0,
           lastError: null,
         },
@@ -556,7 +603,9 @@ export class MailboxService {
       },
     );
     if (reverted.count === 0) {
-      throw new BadRequestException('Too late to undo: this email is already sent.');
+      throw new BadRequestException(
+        'Too late to undo: this email is already sent.',
+      );
     }
     await this.store.refreshThread(message.threadId);
     const draft = await this.db.mailMessage.findUnique({ where: { id } });
@@ -612,7 +661,9 @@ export class MailboxService {
     const [rows, calls] = await Promise.all([
       this.db.emailCampaignContact.findMany({
         where: { ownerId, contactId: contact.id },
-        include: { campaign: { select: { id: true, name: true, status: true } } },
+        include: {
+          campaign: { select: { id: true, name: true, status: true } },
+        },
         orderBy: { createdAt: 'desc' },
         take: 10,
       }),
@@ -661,21 +712,32 @@ export class MailboxService {
       select: { from: true },
     });
     const own = new Set(
-      [settings?.awsSenderEmail, lastOutbound?.from?.email, source.direction === 'OUTBOUND' ? source.from?.email : null]
+      [
+        settings?.awsSenderEmail,
+        lastOutbound?.from?.email,
+        source.direction === 'OUTBOUND' ? source.from?.email : null,
+      ]
         .filter(Boolean)
         .map((email: string) => email.toLowerCase()),
     );
     const isOwn = (email: string) =>
-      own.has(email) || Boolean(replyDomain && email.endsWith(`@${replyDomain}`));
+      own.has(email) ||
+      Boolean(replyDomain && email.endsWith(`@${replyDomain}`));
     const clean = (list: MailAddress[] = []) =>
-      list.filter((address) => address?.email && !isOwn(address.email.toLowerCase()));
+      list.filter(
+        (address) => address?.email && !isOwn(address.email.toLowerCase()),
+      );
 
     let to: MailAddress[] = [];
     let cc: MailAddress[] = [];
     if (mode !== 'forward') {
       to =
         source.direction === 'INBOUND'
-          ? clean([source.replyTo ? { email: source.replyTo, name: source.from?.name } : source.from])
+          ? clean([
+              source.replyTo
+                ? { email: source.replyTo, name: source.from?.name }
+                : source.from,
+            ])
           : clean(source.to);
       if (mode === 'replyAll') {
         const taken = new Set(to.map((address) => address.email.toLowerCase()));
@@ -687,14 +749,19 @@ export class MailboxService {
 
     const date = new Date(messageTime(source));
     const original = {
-      html: [source.html, source.quotedHtml].filter((part) => part?.trim()).join('<br>'),
-      text: [source.text, source.quotedText].filter((part) => part?.trim()).join('\n\n'),
+      html: [source.html, source.quotedHtml]
+        .filter((part) => part?.trim())
+        .join('<br>'),
+      text: [source.text, source.quotedText]
+        .filter((part) => part?.trim())
+        .join('\n\n'),
       from: source.from,
       to: source.to,
       subject: source.subject,
       date,
     };
-    const quoted = mode === 'forward' ? quoteForForward(original) : quoteForReply(original);
+    const quoted =
+      mode === 'forward' ? quoteForForward(original) : quoteForReply(original);
     return {
       to,
       cc,
@@ -702,18 +769,25 @@ export class MailboxService {
         source.direction === 'OUTBOUND'
           ? source.from?.email
           : lastOutbound?.from?.email || settings?.awsSenderEmail,
-      subject: withPrefix(mode === 'forward' ? 'Fwd' : 'Re', source.subject || thread.subject),
+      subject: withPrefix(
+        mode === 'forward' ? 'Fwd' : 'Re',
+        source.subject || thread.subject,
+      ),
       inReplyTo: mode === 'forward' ? null : source.messageIdHeader || null,
       references:
         mode === 'forward'
           ? []
-          : [...(source.references || []), source.messageIdHeader].filter(Boolean).slice(-20),
+          : [...(source.references || []), source.messageIdHeader]
+              .filter(Boolean)
+              .slice(-20),
       quotedHtml: quoted.quotedHtml,
       quotedText: quoted.quotedText,
       quotedMessageId: source.id,
       attachments:
         mode === 'forward'
-          ? (source.attachments || []).filter((attachment: MailAttachmentRef) => !attachment.inline)
+          ? (source.attachments || []).filter(
+              (attachment: MailAttachmentRef) => !attachment.inline,
+            )
           : [],
     };
   }
@@ -726,7 +800,9 @@ export class MailboxService {
   ): Promise<MailAddress[]> {
     if (typed === undefined) return fallback;
     const emails = [
-      ...new Set(typed.map((value) => parseAddress(value)).filter(Boolean) as string[]),
+      ...new Set(
+        typed.map((value) => parseAddress(value)).filter(Boolean) as string[],
+      ),
     ];
     if (emails.length === 0) return [];
     const contacts = await this.db.contact.findMany({
@@ -734,18 +810,26 @@ export class MailboxService {
       select: { email: true, firstName: true, lastName: true },
     });
     const names = new Map(contacts.map((c: any) => [c.email, contactName(c)]));
-    const known = new Map(fallback.map((a) => [a.email.toLowerCase(), a.name || null]));
+    const known = new Map(
+      fallback.map((a) => [a.email.toLowerCase(), a.name || null]),
+    );
     return emails.map((email) => ({
       email,
       name: names.get(email) || known.get(email) || null,
     }));
   }
 
-  private async resolveAttachments(ownerId: string, refs: DraftAttachmentDto[]) {
+  private async resolveAttachments(
+    ownerId: string,
+    refs: DraftAttachmentDto[],
+  ) {
     const resolved: MailAttachmentRef[] = [];
     for (const ref of refs) {
       const file = await this.attachments.find(ownerId, ref.fileId);
-      if (!file) throw new BadRequestException('An attachment could not be found. Upload it again.');
+      if (!file)
+        throw new BadRequestException(
+          'An attachment could not be found. Upload it again.',
+        );
       resolved.push({
         fileId: ref.fileId,
         name: ref.name?.trim() || file.filename,
@@ -768,13 +852,17 @@ export class MailboxService {
   }
 
   private async ownedThread(ownerId: string, id: string) {
-    const thread = await this.db.mailThread.findUnique({ where: { id, ownerId } });
+    const thread = await this.db.mailThread.findUnique({
+      where: { id, ownerId },
+    });
     if (!thread) throw new NotFoundException('Conversation not found');
     return thread;
   }
 
   private async ownedDraft(ownerId: string, id: string) {
-    const draft = await this.db.mailMessage.findFirst({ where: { id, ownerId } });
+    const draft = await this.db.mailMessage.findFirst({
+      where: { id, ownerId },
+    });
     if (!draft) throw new NotFoundException('Draft not found');
     if (draft.status !== 'DRAFT') {
       throw new BadRequestException('This draft was already sent.');

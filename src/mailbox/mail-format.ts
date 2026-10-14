@@ -27,14 +27,20 @@ export function htmlToText(html: string) {
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<li[^>]*>/gi, '- ')
     .replace(/<\/(p|div|h[1-6]|li|tr|blockquote|pre|table)>/gi, '\n')
-    .replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
-      const text = String(label).replace(/<[^>]+>/g, '').trim();
-      return text && text !== href ? `${text} (${href})` : href;
-    })
+    .replace(
+      /<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_, href, label) => {
+        const text = String(label)
+          .replace(/<[^>]+>/g, '')
+          .trim();
+        return text && text !== href ? `${text} (${href})` : href;
+      },
+    )
     .replace(/<[^>]+>/g, '')
     .replace(/&(#?\w+);/g, (match, name: string) => {
       if (ENTITIES[name] !== undefined) return ENTITIES[name];
-      if (/^#\d+$/.test(name)) return String.fromCodePoint(Number(name.slice(1)));
+      if (/^#\d+$/.test(name))
+        return String.fromCodePoint(Number(name.slice(1)));
       return match;
     })
     .replace(/[ \t]+\n/g, '\n')
@@ -47,7 +53,9 @@ export function textToHtml(text: string) {
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean)
-    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .map(
+      (paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`,
+    )
     .join('');
 }
 
@@ -85,7 +93,9 @@ export function quoteForReply(source: {
   const body = source.html?.trim()
     ? extractBody(source.html)
     : textToHtml(source.text || '');
-  const text = source.text?.trim() ? source.text : htmlToText(source.html || '');
+  const text = source.text?.trim()
+    ? source.text
+    : htmlToText(source.html || '');
   return {
     quotedHtml:
       `<div class="rc_quote"><div>${escapeHtml(attribution)}</div>` +
@@ -116,7 +126,9 @@ export function quoteForForward(source: {
   const body = source.html?.trim()
     ? extractBody(source.html)
     : textToHtml(source.text || '');
-  const text = source.text?.trim() ? source.text : htmlToText(source.html || '');
+  const text = source.text?.trim()
+    ? source.text
+    : htmlToText(source.html || '');
   return {
     quotedHtml: `<div class="rc_quote"><div>${lines.map(escapeHtml).join('<br>')}</div><br>${body}</div>`,
     quotedText: `${lines.join('\n')}\n\n${text}`,

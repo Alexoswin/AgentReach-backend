@@ -46,7 +46,10 @@ describe('buildMimeMessage', () => {
     expect((parsed.cc as any).value[0].address).toBe('boss@client.com');
     expect(parsed.replyTo?.value[0].address).toBe('reply+abc@reply.acme.com');
     expect(parsed.inReplyTo).toBe('<prev@email.amazonses.com>');
-    expect(parsed.references).toEqual(['<first@x.com>', '<prev@email.amazonses.com>']);
+    expect(parsed.references).toEqual([
+      '<first@x.com>',
+      '<prev@email.amazonses.com>',
+    ]);
     const headerLine = (key: string) =>
       parsed.headerLines.find((line) => line.key === key)?.line;
     expect(headerLine('list-unsubscribe')).toBe(
@@ -84,7 +87,11 @@ describe('buildMimeMessage', () => {
       subject: 'Files',
       text: 'See attached',
       attachments: [
-        { name: 'résumé.pdf', contentType: 'bad type\r\nX: y', content: Buffer.from('x') },
+        {
+          name: 'résumé.pdf',
+          contentType: 'bad type\r\nX: y',
+          content: Buffer.from('x'),
+        },
       ],
     });
     const parsed = await simpleParser(raw);
@@ -127,7 +134,9 @@ describe('mail formatting', () => {
     expect(reply.quotedText).toContain('> Original');
 
     const forward = quoteForForward(source);
-    expect(forward.quotedText).toContain('---------- Forwarded message ---------');
+    expect(forward.quotedText).toContain(
+      '---------- Forwarded message ---------',
+    );
     expect(forward.quotedText).toContain('Subject: Plan');
   });
 
@@ -156,15 +165,26 @@ describe('SES helpers', () => {
 
   it('retries throttling and outages but not rejections', () => {
     expect(
-      isRetryableSesError({ name: 'Throttling', message: 'Maximum sending rate exceeded.' }),
+      isRetryableSesError({
+        name: 'Throttling',
+        message: 'Maximum sending rate exceeded.',
+      }),
     ).toBe(true);
-    expect(isRetryableSesError({ $metadata: { httpStatusCode: 503 } })).toBe(true);
+    expect(isRetryableSesError({ $metadata: { httpStatusCode: 503 } })).toBe(
+      true,
+    );
     expect(isRetryableSesError({ code: 'ECONNRESET' })).toBe(true);
     expect(
-      isRetryableSesError({ name: 'MessageRejected', message: 'Email address is not verified.' }),
+      isRetryableSesError({
+        name: 'MessageRejected',
+        message: 'Email address is not verified.',
+      }),
     ).toBe(false);
     expect(
-      isRetryableSesError({ name: 'Throttling', message: 'Daily message quota exceeded.' }),
+      isRetryableSesError({
+        name: 'Throttling',
+        message: 'Daily message quota exceeded.',
+      }),
     ).toBe(false);
   });
 });

@@ -55,7 +55,10 @@ export class UpdateSettingsDto {
   @MaxLength(100)
   mailFromName?: string;
 
-  @ApiProperty({ required: false, description: 'HTML signature for mailbox emails' })
+  @ApiProperty({
+    required: false,
+    description: 'HTML signature for mailbox emails',
+  })
   @IsString()
   @IsOptional()
   @MaxLength(10000)

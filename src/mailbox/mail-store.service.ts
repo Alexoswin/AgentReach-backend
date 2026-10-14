@@ -18,7 +18,9 @@ const MAX_PARTICIPANTS = 20;
 const BACKFILL_BATCH_SIZE = 200;
 
 export function contactName(contact: any) {
-  return `${contact?.firstName || ''} ${contact?.lastName || ''}`.trim() || null;
+  return (
+    `${contact?.firstName || ''} ${contact?.lastName || ''}`.trim() || null
+  );
 }
 
 export function isDuplicateKeyError(error: any) {
@@ -27,7 +29,11 @@ export function isDuplicateKeyError(error: any) {
 
 const messageTime = (message: any) =>
   new Date(
-    message.receivedAt || message.sentAt || message.updatedAt || message.createdAt || 0,
+    message.receivedAt ||
+      message.sentAt ||
+      message.updatedAt ||
+      message.createdAt ||
+      0,
   ).getTime();
 
 const activityTime = (message: any) =>
@@ -74,7 +80,10 @@ export function summarizeThread(messages: any[]) {
       if (!email || ownAddresses.has(email) || email.startsWith('reply+')) {
         continue;
       }
-      if (!participants.has(email) || (!participants.get(email)!.name && address.name)) {
+      if (
+        !participants.has(email) ||
+        (!participants.get(email)!.name && address.name)
+      ) {
         participants.set(email, { email, name: address.name || null });
       }
     }
@@ -164,7 +173,9 @@ export class MailStoreService implements OnApplicationBootstrap {
   }
 
   async suppressedEmails(ownerId: string, emails: string[]) {
-    const normalized = [...new Set(emails.map((e) => (e || '').trim().toLowerCase()))].filter(Boolean);
+    const normalized = [
+      ...new Set(emails.map((e) => (e || '').trim().toLowerCase())),
+    ].filter(Boolean);
     if (normalized.length === 0) return new Set<string>();
     const rows = await this.db.emailSuppression.findMany({
       where: { ownerId, email: { in: normalized } },
@@ -193,7 +204,13 @@ export class MailStoreService implements OnApplicationBootstrap {
     if (!/^[a-f0-9]{32}$/.test(token || '')) return null;
     const message = await this.db.mailMessage.findFirst({
       where: { unsubscribeToken: token },
-      select: { id: true, ownerId: true, to: true, from: true, campaignContactId: true },
+      select: {
+        id: true,
+        ownerId: true,
+        to: true,
+        from: true,
+        campaignContactId: true,
+      },
     });
     const email = message?.to?.[0]?.email;
     if (!message || !email) return null;
@@ -250,7 +267,9 @@ export class MailStoreService implements OnApplicationBootstrap {
         where: { campaignContactId: { in: rows.map((row: any) => row.id) } },
         select: { campaignContactId: true },
       });
-      const done = new Set(threaded.map((thread: any) => thread.campaignContactId));
+      const done = new Set(
+        threaded.map((thread: any) => thread.campaignContactId),
+      );
       for (const row of rows) {
         if (done.has(row.id)) continue;
         if (!settingsByOwner.has(row.ownerId)) {
@@ -259,13 +278,18 @@ export class MailStoreService implements OnApplicationBootstrap {
             await this.settingsService.getRawSettings(row.ownerId),
           );
         }
-        await this.createThreadFromCampaignRow(row, settingsByOwner.get(row.ownerId));
+        await this.createThreadFromCampaignRow(
+          row,
+          settingsByOwner.get(row.ownerId),
+        );
         created += 1;
       }
     }
 
     if (created > 0) {
-      this.logger.log(`Created mailbox threads for ${created} campaign email(s)`);
+      this.logger.log(
+        `Created mailbox threads for ${created} campaign email(s)`,
+      );
     }
     return created;
   }
@@ -294,7 +318,9 @@ export class MailStoreService implements OnApplicationBootstrap {
       });
     } catch (error) {
       if (!isDuplicateKeyError(error)) throw error;
-      return this.db.mailThread.findFirst({ where: { campaignContactId: row.id } });
+      return this.db.mailThread.findFirst({
+        where: { campaignContactId: row.id },
+      });
     }
 
     const shared = {

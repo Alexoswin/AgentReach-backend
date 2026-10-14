@@ -8,10 +8,11 @@ import { MailAttachmentsService } from './mail-attachments.service';
 import { MailStoreService } from './mail-store.service';
 import { snippetOf } from './mail-format';
 
+// thread or row may be null, but not both.
 export type ReplyTarget = {
   ownerId: string;
-  thread: any | null;
-  row: any | null;
+  thread: any;
+  row: any;
 };
 
 function addresses(value?: AddressObject | AddressObject[]): MailAddress[] {
@@ -52,7 +53,9 @@ export class MailIngestService {
    * created here; the caller checks the owner first.
    */
   async resolveReplyTarget(token: string): Promise<ReplyTarget | null> {
-    const thread = await this.db.mailThread.findUnique({ where: { id: token } });
+    const thread = await this.db.mailThread.findUnique({
+      where: { id: token },
+    });
     const rowId = thread ? thread.campaignContactId : token;
     const row = rowId
       ? await this.db.emailCampaignContact.findUnique({
@@ -190,7 +193,9 @@ export class MailIngestService {
     if (type === 'Bounce') {
       const bounce = event.bounce || {};
       const bounced: string[] = (bounce.bouncedRecipients || [])
-        .map((recipient: any) => String(recipient.emailAddress || '').toLowerCase())
+        .map((recipient: any) =>
+          String(recipient.emailAddress || '').toLowerCase(),
+        )
         .filter(Boolean);
       const diagnostic =
         bounce.bouncedRecipients?.[0]?.diagnosticCode ||
@@ -202,7 +207,10 @@ export class MailIngestService {
         where: { id: message.id },
         data: {
           ...(permanent && everyone
-            ? { status: 'BOUNCED', bouncedAt: new Date(bounce.timestamp || Date.now()) }
+            ? {
+                status: 'BOUNCED',
+                bouncedAt: new Date(bounce.timestamp || Date.now()),
+              }
             : {}),
           bounceType: bounce.bounceType || null,
           lastError: `Bounced${everyone ? '' : ` for ${bounced.join(', ')}`}: ${diagnostic}`,
@@ -227,7 +235,9 @@ export class MailIngestService {
 
     if (type === 'Complaint') {
       const complained: string[] = (event.complaint?.complainedRecipients || [])
-        .map((recipient: any) => String(recipient.emailAddress || '').toLowerCase())
+        .map((recipient: any) =>
+          String(recipient.emailAddress || '').toLowerCase(),
+        )
         .filter(Boolean);
       await this.db.mailMessage.update({
         where: { id: message.id },

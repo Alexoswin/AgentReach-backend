@@ -132,7 +132,10 @@ export class MailQueueService {
     return this.db.mailMessage.findOneAndUpdateRaw(
       { ownerId, ...claimableFilter(now) },
       {
-        $set: { status: 'SENDING', lockedUntil: new Date(now.getTime() + LOCK_MS) },
+        $set: {
+          status: 'SENDING',
+          lockedUntil: new Date(now.getTime() + LOCK_MS),
+        },
         $inc: { attempts: 1 },
       },
       { sort: { sendAt: 1, createdAt: 1 } },
@@ -216,7 +219,8 @@ export class MailQueueService {
         data: {
           status: 'CANCELLED',
           lockedUntil: null,
-          lastError: 'Skipped: the recipient unsubscribed, bounced or complained earlier.',
+          lastError:
+            'Skipped: the recipient unsubscribed, bounced or complained earlier.',
         },
       });
       if (message.campaignContactId) {
@@ -238,7 +242,10 @@ export class MailQueueService {
         contentType: attachment.contentType,
         contentId: attachment.contentId,
         inline: attachment.inline,
-        content: await this.attachments.read(message.ownerId, attachment.fileId),
+        content: await this.attachments.read(
+          message.ownerId,
+          attachment.fileId,
+        ),
       })),
     );
 
@@ -249,7 +256,10 @@ export class MailQueueService {
       .filter((part) => part?.trim())
       .join('\n\n');
     if (message.trackingToken && html.trim()) {
-      html = addOpenPixel(html, this.trackingConfig.openPixelUrl(message.trackingToken));
+      html = addOpenPixel(
+        html,
+        this.trackingConfig.openPixelUrl(message.trackingToken),
+      );
     }
 
     const headers: Record<string, string> = {};
@@ -301,7 +311,10 @@ export class MailQueueService {
     if (cached && Date.now() - cached.at < QUOTA_CACHE_MS) return cached.ms;
     let ms = MIN_SEND_INTERVAL_MS;
     try {
-      ms = Math.max(MIN_SEND_INTERVAL_MS, Math.ceil(1000 / (await maxSendRate(client))));
+      ms = Math.max(
+        MIN_SEND_INTERVAL_MS,
+        Math.ceil(1000 / (await maxSendRate(client))),
+      );
     } catch {
       // Without ses:GetSendQuota permission the 5 a second cap still applies.
     }
@@ -309,7 +322,11 @@ export class MailQueueService {
     return ms;
   }
 
-  private async markSent(message: any, sesMessageId: string | null, settings: any) {
+  private async markSent(
+    message: any,
+    sesMessageId: string | null,
+    settings: any,
+  ) {
     const now = new Date();
     await this.db.mailMessage.update({
       where: { id: message.id },
@@ -340,7 +357,8 @@ export class MailQueueService {
       });
     }
     await this.store.refreshThread(message.threadId);
-    if (message.campaignId) await this.maybeCompleteCampaign(message.campaignId);
+    if (message.campaignId)
+      await this.maybeCompleteCampaign(message.campaignId);
   }
 
   private async handleFailure(message: any, error: any) {
@@ -349,7 +367,10 @@ export class MailQueueService {
       !(error instanceof PermanentSendError) && isRetryableSesError(error);
 
     if (retryable && (message.attempts || 0) < MAX_ATTEMPTS) {
-      const delay = Math.min(2 ** (message.attempts || 1) * 1000, MAX_RETRY_DELAY_MS);
+      const delay = Math.min(
+        2 ** (message.attempts || 1) * 1000,
+        MAX_RETRY_DELAY_MS,
+      );
       await this.db.mailMessage.update({
         where: { id: message.id },
         data: {
@@ -381,7 +402,8 @@ export class MailQueueService {
       });
     }
     await this.store.refreshThread(message.threadId);
-    if (message.campaignId) await this.maybeCompleteCampaign(message.campaignId);
+    if (message.campaignId)
+      await this.maybeCompleteCampaign(message.campaignId);
   }
 
   async maybeCompleteCampaign(campaignId: string) {

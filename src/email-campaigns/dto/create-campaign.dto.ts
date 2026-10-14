@@ -72,7 +72,8 @@ export class CreateCampaignDto {
   @ApiProperty({
     required: false,
     nullable: true,
-    description: 'Spread the sends out to this many per hour; null for no limit',
+    description:
+      'Spread the sends out to this many per hour; null for no limit',
   })
   @IsInt()
   @Min(1)

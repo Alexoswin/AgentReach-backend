@@ -186,7 +186,8 @@ describe('EmailTrackingService replies', () => {
 
   it('reads the email from S3 when the receipt rule stores it there', async () => {
     const { service, createMessage } = setup();
-    const raw = 'From: Jane <jane@acme.com>\r\nSubject: Re: Big file\r\n\r\nSee attached.';
+    const raw =
+      'From: Jane <jane@acme.com>\r\nSubject: Re: Big file\r\n\r\nSee attached.';
     const s3 = jest.spyOn(S3Client.prototype, 'send').mockResolvedValue({
       Body: { transformToByteArray: async () => Buffer.from(raw) },
     } as never);
@@ -276,9 +277,9 @@ describe('EmailTrackingService sending events', () => {
     const { service, db, store } = setup();
     db.mailMessage.findFirst.mockResolvedValue(sentMessage);
 
-    await expect(service.handleSnsMessage(bounceEvent(OWN_TOPIC))).resolves.toBe(
-      true,
-    );
+    await expect(
+      service.handleSnsMessage(bounceEvent(OWN_TOPIC)),
+    ).resolves.toBe(true);
 
     expect(db.mailMessage.update.mock.calls[0][0].data).toMatchObject({
       status: 'BOUNCED',

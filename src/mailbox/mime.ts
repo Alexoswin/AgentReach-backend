@@ -45,17 +45,21 @@ export function buildMimeMessage(message: MimeMessage): Buffer {
   if (message.cc?.length) {
     headers.push(`Cc: ${message.cc.map(formatAddress).join(', ')}`);
   }
-  if (message.replyTo) headers.push(`Reply-To: ${headerValue(message.replyTo)}`);
+  if (message.replyTo)
+    headers.push(`Reply-To: ${headerValue(message.replyTo)}`);
   headers.push(`Subject: ${encodeHeaderWords(message.subject || '')}`);
   headers.push(`Date: ${(message.date || new Date()).toUTCString()}`);
   if (message.inReplyTo) {
     headers.push(`In-Reply-To: ${headerValue(message.inReplyTo)}`);
   }
   if (message.references?.length) {
-    headers.push(`References: ${message.references.map(headerValue).join(' ')}`);
+    headers.push(
+      `References: ${message.references.map(headerValue).join(' ')}`,
+    );
   }
   for (const [name, value] of Object.entries(message.headers || {})) {
-    if (/^[A-Za-z0-9-]+$/.test(name)) headers.push(`${name}: ${headerValue(value)}`);
+    if (/^[A-Za-z0-9-]+$/.test(name))
+      headers.push(`${name}: ${headerValue(value)}`);
   }
   headers.push('MIME-Version: 1.0');
 
@@ -75,15 +79,20 @@ function buildBody(message: MimeMessage): Part {
       : '';
   const attachments = message.attachments || [];
   const inline = html
-    ? attachments.filter((attachment) => attachment.inline && attachment.contentId)
+    ? attachments.filter(
+        (attachment) => attachment.inline && attachment.contentId,
+      )
     : [];
-  const regular = attachments.filter((attachment) => !inline.includes(attachment));
+  const regular = attachments.filter(
+    (attachment) => !inline.includes(attachment),
+  );
 
   const textParts: Part[] = [];
   if (text || !html) textParts.push(leaf('text/plain; charset=UTF-8', text));
   if (html) textParts.push(leaf('text/html; charset=UTF-8', html));
 
-  let body = textParts.length > 1 ? multipart('alternative', textParts) : textParts[0];
+  let body =
+    textParts.length > 1 ? multipart('alternative', textParts) : textParts[0];
   if (inline.length > 0) {
     body = multipart('related', [body, ...inline.map(attachmentPart)]);
   }
@@ -93,8 +102,13 @@ function buildBody(message: MimeMessage): Part {
   return body;
 }
 
-function leaf(contentType: string, content: string | Buffer, extra: string[] = []): Part {
-  const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+function leaf(
+  contentType: string,
+  content: string | Buffer,
+  extra: string[] = [],
+): Part {
+  const data =
+    typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
   return {
     headers: [
       `Content-Type: ${contentType}`,
@@ -127,18 +141,25 @@ function attachmentPart(attachment: MimeAttachment): Part {
     `Content-Disposition: ${attachment.inline && attachment.contentId ? 'inline' : 'attachment'}; ${name.disposition}`,
   ];
   if (attachment.contentId) {
-    extra.push(`Content-ID: <${headerValue(attachment.contentId).replace(/[<>]/g, '')}>`);
+    extra.push(
+      `Content-ID: <${headerValue(attachment.contentId).replace(/[<>]/g, '')}>`,
+    );
   }
   return leaf(`${type}; ${name.type}`, attachment.content, extra);
 }
 
 function fileNameParameters(value: string) {
-  const clean = (value || 'attachment').replace(/[\r\n"\\]/g, '_').slice(0, 180);
+  const clean = (value || 'attachment')
+    .replace(/[\r\n"\\]/g, '_')
+    .slice(0, 180);
   if (/^[\x20-\x7e]*$/.test(clean)) {
     return { type: `name="${clean}"`, disposition: `filename="${clean}"` };
   }
   const ascii = clean.replace(/[^\x20-\x7e]/g, '_');
-  const encoded = encodeURIComponent(clean).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  const encoded = encodeURIComponent(clean).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
   return {
     type: `name="${encodeHeaderWords(clean)}"`,
     disposition: `filename="${ascii}"; filename*=UTF-8''${encoded}`,
@@ -151,7 +172,9 @@ export function chunkBase64(value: string) {
 
 /** A header value with line breaks removed, so it cannot start a new header. */
 export function headerValue(value: string) {
-  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+  return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
 }
 
 /** RFC 2047 encoded words for anything outside printable ASCII. */
@@ -169,7 +192,9 @@ export function encodeHeaderWords(value: string) {
   }
   if (current) words.push(current);
   return words
-    .map((word) => `=?UTF-8?B?${Buffer.from(word, 'utf8').toString('base64')}?=`)
+    .map(
+      (word) => `=?UTF-8?B?${Buffer.from(word, 'utf8').toString('base64')}?=`,
+    )
     .join(' ');
 }
 
@@ -184,8 +209,13 @@ export function formatAddress(address: MimeAddress) {
 }
 
 /** Rough size SES counts against its 10 MB raw message limit. */
-export function encodedSize(parts: { html?: string; text?: string; attachmentBytes: number }) {
+export function encodedSize(parts: {
+  html?: string;
+  text?: string;
+  attachmentBytes: number;
+}) {
   const bodyBytes =
-    Buffer.byteLength(parts.html || '', 'utf8') + Buffer.byteLength(parts.text || '', 'utf8');
+    Buffer.byteLength(parts.html || '', 'utf8') +
+    Buffer.byteLength(parts.text || '', 'utf8');
   return Math.ceil(((bodyBytes + parts.attachmentBytes) * 4) / 3) + 4096;
 }

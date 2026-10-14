@@ -77,7 +77,9 @@ describe('summarizeThread', () => {
   });
 
   it('does not put campaign emails in Sent', () => {
-    expect(summarizeThread([outbound({ source: 'CAMPAIGN' })]).manualSent).toBe(false);
+    expect(summarizeThread([outbound({ source: 'CAMPAIGN' })]).manualSent).toBe(
+      false,
+    );
   });
 
   it('counts a read reply as read', () => {

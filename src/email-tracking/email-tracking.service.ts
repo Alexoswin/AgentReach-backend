@@ -305,7 +305,8 @@ export class EmailTrackingService {
     const action = notification.receipt?.action;
     if (action?.type === 'S3' && action.bucketName && action.objectKey) {
       // The bucket is in the receiving region, which is the topic's.
-      const region = topicArn.split(':')[3] || settings.awsRegion || 'us-east-1';
+      const region =
+        topicArn.split(':')[3] || settings.awsRegion || 'us-east-1';
       const client = new S3Client({
         region,
         credentials: {
@@ -314,7 +315,10 @@ export class EmailTrackingService {
         },
       });
       const object = await client.send(
-        new GetObjectCommand({ Bucket: action.bucketName, Key: action.objectKey }),
+        new GetObjectCommand({
+          Bucket: action.bucketName,
+          Key: action.objectKey,
+        }),
       );
       return Buffer.from(await object.Body!.transformToByteArray());
     }
