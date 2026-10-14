@@ -28,6 +28,9 @@ const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 // account whose SES limit is lower is held to that instead.
 export const MAX_SENDS_PER_SECOND = 5;
 const MIN_SEND_INTERVAL_MS = 1000 / MAX_SENDS_PER_SECOND;
+// One send takes longer than a slot (the SES round trip plus bookkeeping),
+// so each lane sends this many at once to keep up with its slots.
+const LANE_WORKERS = MAX_SENDS_PER_SECOND;
 const QUOTA_CACHE_MS = 10 * 60 * 1000;
 const UNFINISHED_STATUSES = ['QUEUED', 'SENDING', 'PAUSED'];
 
@@ -112,9 +115,7 @@ export class MailQueueService {
   private async drainOwner(ownerId: string) {
     let lane: Lane | null = null;
     let loadedAt = 0;
-    for (;;) {
-      const message = await this.claimNext(ownerId);
-      if (!message) return;
+    const currentLane = async () => {
       if (!lane || Date.now() - loadedAt > SETTINGS_REFRESH_MS) {
         const settings = await this.settingsService.getRawSettings(ownerId);
         lane = {
@@ -123,8 +124,16 @@ export class MailQueueService {
         };
         loadedAt = Date.now();
       }
-      await this.deliver(message, lane);
-    }
+      return lane;
+    };
+    const worker = async () => {
+      for (;;) {
+        const message = await this.claimNext(ownerId);
+        if (!message) return;
+        await this.deliver(message, await currentLane());
+      }
+    };
+    await Promise.all(Array.from({ length: LANE_WORKERS }, worker));
   }
 
   claimNext(ownerId: string) {
@@ -170,13 +179,16 @@ export class MailQueueService {
       }
 
       await this.waitForSendSlot(message.ownerId, lane.client);
+      // The moment the email goes to SES, which is what the rate limit
+      // spaces out; replies come back after a varying delay.
+      const sentAt = new Date();
       const sesMessageId = await sendRawEmail(
         lane.client,
         raw,
         destinations,
         lane.settings?.sesConfigurationSet,
       );
-      await this.markSent(message, sesMessageId, lane.settings);
+      await this.markSent(message, sesMessageId, lane.settings, sentAt);
     } catch (error) {
       await this.handleFailure(message, error);
     }
@@ -326,13 +338,13 @@ export class MailQueueService {
     message: any,
     sesMessageId: string | null,
     settings: any,
+    sentAt: Date,
   ) {
-    const now = new Date();
     await this.db.mailMessage.update({
       where: { id: message.id },
       data: {
         status: 'SENT',
-        sentAt: now,
+        sentAt,
         sesMessageId,
         messageIdHeader: sesMessageId
           ? sesMessageIdHeader(sesMessageId, settings?.awsRegion)
@@ -346,7 +358,7 @@ export class MailQueueService {
         where: { id: message.campaignContactId },
         data: {
           deliveryStatus: 'SENT',
-          sentTime: now,
+          sentTime: sentAt,
           subject: message.subject,
           bodyHtml: message.html,
           bodyText: message.text,
