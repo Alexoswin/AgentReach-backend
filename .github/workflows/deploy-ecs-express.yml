@@ -81,9 +81,7 @@ jobs:
               --service-arn "$ECS_SERVICE_ARN" \
               --health-check-path /api \
               --scaling-target minTaskCount=1,maxTaskCount=2,autoScalingMetric=AVERAGE_CPU,autoScalingTargetValue=60 \
-              --primary-container "$primary_container" \
-              --monitor-resources DEPLOYMENT \
-              --monitor-mode TEXT-ONLY
+              --primary-container "$primary_container"
           else
             create_args=(
               ecs create-express-gateway-service
@@ -97,8 +95,6 @@ jobs:
               --cpu 1024
               --memory 2048
               --scaling-target minTaskCount=1,maxTaskCount=2,autoScalingMetric=AVERAGE_CPU,autoScalingTargetValue=60
-              --monitor-resources DEPLOYMENT
-              --monitor-mode TEXT-ONLY
             )
             if [ -n "${ECS_TASK_ROLE_ARN:-}" ]; then
               create_args+=(--task-role-arn "$ECS_TASK_ROLE_ARN")
