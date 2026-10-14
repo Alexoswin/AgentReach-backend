@@ -80,6 +80,7 @@ jobs:
               --region "$AWS_REGION" \
               --service-arn "$ECS_SERVICE_ARN" \
               --health-check-path /api \
+              --scaling-target minTaskCount=1,maxTaskCount=2,autoScalingMetric=AVERAGE_CPU,autoScalingTargetValue=60 \
               --primary-container "$primary_container" \
               --monitor-resources DEPLOYMENT \
               --monitor-mode TEXT-ONLY
