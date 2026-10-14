@@ -18,6 +18,7 @@ import { BotModule } from './bot/bot.module';
 import { SignalsModule } from './signals/signals.module';
 import { CampaignSchedulerModule } from './scheduler/campaign-scheduler.module';
 import { ProspectsModule } from './prospects/prospects.module';
+import { MailboxModule } from './mailbox/mailbox.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { ProspectsModule } from './prospects/prospects.module';
     SignalsModule,
     CampaignSchedulerModule,
     ProspectsModule,
+    MailboxModule,
   ],
   controllers: [AppController],
   providers: [AppService],

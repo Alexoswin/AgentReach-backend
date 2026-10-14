@@ -22,6 +22,22 @@ export function hasSesCredentials(settings: any) {
 }
 
 /**
+ * The user's own SES reply domain, or null until their reply tracking is
+ * fully set up in their AWS account (domain, SNS topic, SES keys and sender).
+ * Mailbox and campaign emails only ever use this; there is no fallback to
+ * the platform's SMTP inbound service.
+ */
+export function sesReplyDomain(settings: any): string | null {
+  const domain =
+    settings?.replyTrackingTopicArn?.trim() &&
+    settings?.replyTrackingDomain?.trim().toLowerCase();
+  if (!domain || !hasSesCredentials(settings) || !settings?.awsSenderEmail?.trim()) {
+    return null;
+  }
+  return domain;
+}
+
+/**
  * The Message-ID recipients see. SES discards the one in the raw message and
  * sets <MessageId@email.amazonses.com> (us-east-1) or
  * <MessageId@REGION.amazonses.com> elsewhere.

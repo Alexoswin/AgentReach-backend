@@ -1,13 +1,11 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { isEmail } from 'class-validator';
 import { MongoService } from '../mongo.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
-import {
-  SESClient,
-  SendEmailCommand,
-  SendRawEmailCommand,
-} from '@aws-sdk/client-ses';
+import { SendTestDto } from './dto/send-test.dto';
 import { SettingsService } from '../settings/settings.service';
 import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
 import { ListRepliesQueryDto } from './dto/list-replies.dto';
@@ -18,14 +16,23 @@ import {
   resolvePage,
 } from '../common/pagination';
 import { percentOf } from '../common/rates';
+import { EmailTrackingConfig } from '../email-tracking/email-tracking.config';
+import { newTrackingToken } from '../email-tracking/open-pixel';
+import { MailAttachmentsService } from '../mailbox/mail-attachments.service';
+import { MailQueueService } from '../mailbox/mail-queue.service';
+import { MailSendersService } from '../mailbox/mail-senders.service';
+import { MailStoreService, contactName } from '../mailbox/mail-store.service';
+import { snippetOf } from '../mailbox/mail-format';
+import { buildMimeMessage } from '../mailbox/mime';
 import {
-  EmailTrackingConfig,
-  replyDomainFor,
-} from '../email-tracking/email-tracking.config';
-import { addOpenPixel, newTrackingToken } from '../email-tracking/open-pixel';
+  hasSesCredentials,
+  SES_MAX_RAW_MESSAGE_BYTES,
+  sendRawEmail,
+  sesClientFor,
+  sesReplyDomain,
+} from '../mailbox/ses';
 
-/** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
-const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
+const INSERT_BATCH_SIZE = 500;
 
 /**
  * Clears a recipient's previous send before it is queued again. Opens and
@@ -49,6 +56,9 @@ const RESET_FOR_RESEND = {
   replySubject: null,
   replyText: null,
   replyReadAt: null,
+  bouncedAt: null,
+  complainedAt: null,
+  unsubscribedAt: null,
 };
 
 @Injectable()
@@ -57,6 +67,10 @@ export class EmailCampaignsService {
     private db: MongoService,
     private settingsService: SettingsService,
     private trackingConfig: EmailTrackingConfig,
+    private mailStore: MailStoreService,
+    private mailAttachments: MailAttachmentsService,
+    private mailSenders: MailSendersService,
+    private mailQueue: MailQueueService,
   ) {}
 
   async findAll(userId: string, query?: ListCampaignsQueryDto) {
@@ -110,6 +124,9 @@ export class EmailCampaignsService {
       scheduledAt: c.scheduledAt,
       template: c.template,
       trackOpens: c.trackOpens !== false,
+      unsubscribeLink: c.unsubscribeLink !== false,
+      sendRatePerHour: c.sendRatePerHour ?? null,
+      fromEmail: c.fromEmail || '',
       opensIncludeCopies: this.opensIncludeCopies(c),
       ...withRates(stats.get(c.id) ?? emptyCounts()),
     }));
@@ -133,8 +150,15 @@ export class EmailCampaignsService {
           _id: '$campaignId',
           contactCount: { $sum: 1 },
           pendingCount: countIf({ $eq: ['$deliveryStatus', 'PENDING'] }),
+          queuedCount: countIf({ $eq: ['$deliveryStatus', 'QUEUED'] }),
           failedCount: countIf({ $eq: ['$deliveryStatus', 'FAILED'] }),
           sentCount: countIf(sent),
+          deliveredCount: countIf({ $eq: ['$deliveryStatus', 'DELIVERED'] }),
+          bouncedCount: countIf({ $eq: ['$deliveryStatus', 'BOUNCED'] }),
+          suppressedCount: countIf({ $eq: ['$deliveryStatus', 'SUPPRESSED'] }),
+          unsubscribedCount: countIf({
+            $gt: [{ $ifNull: ['$unsubscribedAt', null] }, null],
+          }),
           openedCount: countIf({
             $and: [sent, { $eq: ['$openStatus', true] }],
           }),
@@ -253,15 +277,38 @@ export class EmailCampaignsService {
 
     const isSent = (row: any) => SENT_STATUSES.includes(row.deliveryStatus);
     const rows: any[] = campaign.contacts;
+    const withStatus = (status: string) =>
+      rows.filter((r) => r.deliveryStatus === status).length;
+    // Each recipient's conversation, so the page can open it in the inbox.
+    const threads = rows.length
+      ? await this.db.mailThread.findMany({
+          where: { campaignContactId: { in: rows.map((r) => r.id) } },
+          select: { id: true, campaignContactId: true },
+        })
+      : [];
+    const threadByRow = new Map(
+      threads.map((thread: any) => [thread.campaignContactId, thread.id]),
+    );
     return {
       ...campaign,
+      contacts: rows.map((row) => ({
+        ...row,
+        threadId: threadByRow.get(row.id) || null,
+      })),
       trackOpens: campaign.trackOpens !== false,
+      unsubscribeLink: campaign.unsubscribeLink !== false,
+      sendRatePerHour: campaign.sendRatePerHour ?? null,
       opensIncludeCopies: this.opensIncludeCopies(campaign),
       stats: withRates({
         contactCount: rows.length,
-        pendingCount: rows.filter((r) => r.deliveryStatus === 'PENDING').length,
-        failedCount: rows.filter((r) => r.deliveryStatus === 'FAILED').length,
+        pendingCount: withStatus('PENDING'),
+        queuedCount: withStatus('QUEUED'),
+        failedCount: withStatus('FAILED'),
         sentCount: rows.filter(isSent).length,
+        deliveredCount: withStatus('DELIVERED'),
+        bouncedCount: withStatus('BOUNCED'),
+        suppressedCount: withStatus('SUPPRESSED'),
+        unsubscribedCount: rows.filter((r) => r.unsubscribedAt).length,
         openedCount: rows.filter((r) => isSent(r) && r.openStatus).length,
         repliedCount: rows.filter((r) => isSent(r) && r.replyStatus).length,
       }),
@@ -272,6 +319,7 @@ export class EmailCampaignsService {
     if (dto.templateId) {
       await this.assertTemplateExists(dto.templateId, userId);
     }
+    assertFromAddressFormat(dto.fromEmail);
 
     return this.db.emailCampaign.create({
       data: { ...this.withNormalizedCopyLists(dto), ownerId: userId },
@@ -288,6 +336,7 @@ export class EmailCampaignsService {
     if (dto.templateId) {
       await this.assertTemplateExists(dto.templateId, userId);
     }
+    assertFromAddressFormat(dto.fromEmail);
 
     return this.db.emailCampaign.update({
       where: { id, ownerId: userId },
@@ -347,11 +396,17 @@ export class EmailCampaignsService {
     if (campaign.status === 'RUNNING') {
       throw new BadRequestException('Campaign is already running');
     }
+    if (campaign.status === 'PAUSED') {
+      throw new BadRequestException(
+        'This campaign is paused. Resume or stop it first.',
+      );
+    }
     if (campaign.contacts.length === 0) {
       throw new BadRequestException('No contacts in this campaign');
     }
 
     this.assertMessageFitsSesLimit(campaign.template);
+    const settings = await this.sendingSettings(userId, campaign);
 
     // Reset every recipient, not just the failed ones.
     await this.db.emailCampaignContact.updateMany({
@@ -361,15 +416,24 @@ export class EmailCampaignsService {
 
     await this.db.emailCampaign.update({
       where: { id, ownerId: userId },
-      data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
+      data: {
+        status: 'RUNNING',
+        scheduledAt: null,
+        pausedAt: null,
+        launchedBy: userId,
+      },
     });
 
-    this.runBackgroundSending(campaign.id);
+    const rows = await this.db.emailCampaignContact.findMany({
+      where: { campaignId: id },
+      include: { contact: true },
+    });
+    const result = await this.enqueueRecipients(campaign, rows, settings);
 
     const count = campaign.contacts.length;
     return {
       success: true,
-      message: `Re-sending this campaign to all ${count} recipient${count === 1 ? '' : 's'}.`,
+      message: `Re-sending this campaign to all ${count} recipient${count === 1 ? '' : 's'}${describeSkipped(result)}.`,
     };
   }
 
@@ -427,6 +491,7 @@ export class EmailCampaignsService {
     if (!campaign) {
       throw new BadRequestException('Campaign not found');
     }
+    await this.cancelQueued({ campaignId: id, ownerId: userId });
     return campaign;
   }
 
@@ -492,6 +557,7 @@ export class EmailCampaignsService {
       );
     }
 
+    await this.cancelQueued({ campaignContactId: record.id, ownerId: userId });
     return this.db.emailCampaignContact.delete({
       where: { id: record.id },
     });
@@ -516,6 +582,11 @@ export class EmailCampaignsService {
     }
     if (campaign.status === 'RUNNING') {
       throw new BadRequestException('Campaign is already running');
+    }
+    if (campaign.status === 'PAUSED') {
+      throw new BadRequestException(
+        'This campaign is paused. Resume or stop it first.',
+      );
     }
 
     const when = new Date(scheduledAt);
@@ -586,6 +657,12 @@ export class EmailCampaignsService {
       throw new BadRequestException('Campaign is already running');
     }
 
+    if (campaign.status === 'PAUSED') {
+      throw new BadRequestException(
+        'This campaign is paused. Resume or stop it first.',
+      );
+    }
+
     if (campaign.contacts.length === 0) {
       throw new BadRequestException('No contacts in this campaign');
     }
@@ -605,6 +682,7 @@ export class EmailCampaignsService {
       );
     }
 
+    const settings = await this.sendingSettings(userId, campaign);
     const isRetry = neverAttempted.length === 0 && failed.length > 0;
 
     if (isRetry) {
@@ -619,239 +697,403 @@ export class EmailCampaignsService {
     // Set campaign status to RUNNING and clear any stale schedule
     await this.db.emailCampaign.update({
       where: { id, ownerId: userId },
-      data: { status: 'RUNNING', scheduledAt: null, launchedBy: userId },
+      data: {
+        status: 'RUNNING',
+        scheduledAt: null,
+        pausedAt: null,
+        launchedBy: userId,
+      },
     });
 
-    // Execute sending in the background
-    this.runBackgroundSending(campaign.id);
+    // Every email is personalized and handed to the send queue now, so a
+    // restart or deploy mid-campaign no longer loses the rest of it.
+    const rows = await this.db.emailCampaignContact.findMany({
+      where: { campaignId: id, deliveryStatus: 'PENDING' },
+      include: { contact: true },
+    });
+    const result = await this.enqueueRecipients(campaign, rows, settings);
 
     return {
       success: true,
-      message: isRetry
-        ? `Retrying ${failed.length} previously failed recipient${failed.length === 1 ? '' : 's'}.`
-        : 'Campaign execution started in background',
+      message:
+        (isRetry
+          ? `Retrying ${failed.length} previously failed recipient${failed.length === 1 ? '' : 's'}`
+          : `Sending to ${result.queued} recipient${result.queued === 1 ? '' : 's'}`) +
+        `${describeSkipped(result)}.`,
     };
   }
 
-  private async runBackgroundSending(campaignId: string) {
-    try {
-      const campaign = await this.db.emailCampaign.findUnique({
-        where: { id: campaignId },
-        include: {
-          template: true,
-          contacts: {
-            where: { deliveryStatus: 'PENDING' },
-            include: { contact: true },
-          },
-        },
-      });
-
-      if (!campaign) return;
-
-      if (!campaign.template) {
-        await this.db.emailCampaign.update({
-          where: { id: campaignId },
-          data: { status: 'FAILED' },
-        });
-        return;
-      }
-
-      const template = campaign.template;
-      const settings = await this.settingsService.getRawSettings(
-        campaign.launchedBy,
-      );
-      if (!settings?.awsAccessKeyId || !settings?.awsSecretAccessKey) {
-        throw new Error(
-          'AWS SES is not configured. Add your SES credentials in Settings before launching campaigns.',
-        );
-      }
-
-      const senderEmail = settings.awsSenderEmail?.trim();
-      if (!senderEmail) {
-        throw new Error(
-          'No sender email configured. Add a Sender Email Address in Settings before launching real campaigns.',
-        );
-      }
-      const senderSource = `<${senderEmail}>`;
-      const ccAddresses: string[] = (campaign.cc || [])
-        .filter(Boolean)
-        .map((entry: string) => entry.trim().toLowerCase());
-      const bccAddresses: string[] = (campaign.bcc || [])
-        .filter(Boolean)
-        .map((entry: string) => entry.trim().toLowerCase());
-
-      const client = new SESClient({
-        region: settings.awsRegion || 'us-east-1',
-        credentials: {
-          accessKeyId: settings.awsAccessKeyId,
-          secretAccessKey: settings.awsSecretAccessKey,
-        },
-      });
-
-      // Campaigns created before the setting existed have no value: track.
-      const trackOpens = campaign.trackOpens !== false;
-      const replyDomain = replyDomainFor(settings);
-
-      for (const campaignContact of campaign.contacts) {
-        const contact = campaignContact.contact;
-        if (!contact) {
-          await this.db.emailCampaignContact.update({
-            where: { id: campaignContact.id },
-            data: {
-              deliveryStatus: 'FAILED',
-              sentTime: new Date(),
-              errorMessage: 'Contact no longer exists',
-            },
-          });
-          continue;
-        }
-
-        // A contact who also sits on the campaign CC/BCC list would otherwise
-        // receive the same email twice. Drop them from the copy lists for their
-        // own send only — other recipients still copy them as configured.
-        const recipient = (contact.email || '').trim().toLowerCase();
-        const contactCc = ccAddresses.filter((entry) => entry !== recipient);
-        const contactBcc = bccAddresses.filter((entry) => entry !== recipient);
-
-        const subject = this.interpolate(template.subject, contact);
-        const bodyHtml = this.interpolate(template.bodyHtml, contact, {
-          html: true,
-        });
-        const bodyText = this.interpolate(template.bodyText, contact);
-        const attachments = this.normalizeTemplateAttachments(
-          template.attachments,
-          contact,
-        );
-        // Only the copy handed to SES carries the tracking image; the stored
-        // bodyHtml stays without it (see addOpenPixel).
-        const trackingToken = newTrackingToken();
-        const sentHtml =
-          trackOpens && bodyHtml.trim()
-            ? addOpenPixel(
-                bodyHtml,
-                this.trackingConfig.openPixelUrl(trackingToken),
-              )
-            : bodyHtml;
-        const replyTo = replyDomain
-          ? this.trackingConfig.replyToAddress(campaignContact.id, replyDomain)
-          : undefined;
-
-        const messageBody: {
-          Html?: { Data: string };
-          Text?: { Data: string };
-        } = {};
-
-        if (sentHtml.trim()) {
-          messageBody.Html = { Data: sentHtml };
-        }
-
-        if (bodyText.trim()) {
-          messageBody.Text = { Data: bodyText };
-        }
-
-        try {
-          if (!messageBody.Html && !messageBody.Text) {
-            throw new Error('Template has no email body content');
-          }
-
-          const result = await this.sendWithRetry(async () => {
-            if (attachments.length > 0) {
-              const command = new SendRawEmailCommand({
-                Destinations: [contact.email, ...contactCc, ...contactBcc],
-                RawMessage: {
-                  Data: Buffer.from(
-                    this.buildRawEmail({
-                      to: contact.email,
-                      cc: contactCc,
-                      replyTo,
-                      subject,
-                      bodyHtml: sentHtml,
-                      bodyText,
-                      attachments,
-                      from: senderSource,
-                    }),
-                  ),
-                },
-              });
-
-              return client.send(command);
-            }
-
-            const command = new SendEmailCommand({
-              Source: senderSource,
-              Destination: {
-                ToAddresses: [contact.email],
-                CcAddresses: contactCc.length ? contactCc : undefined,
-                BccAddresses: contactBcc.length ? contactBcc : undefined,
-              },
-              ReplyToAddresses: replyTo ? [replyTo] : undefined,
-              Message: {
-                Subject: { Data: subject },
-                Body: messageBody,
-              },
-            });
-
-            return client.send(command);
-          });
-
-          // Small pacing delay between real sends to stay under SES's
-          // per-second sending rate and avoid throttling errors.
-          await new Promise((r) => setTimeout(r, 250));
-
-          await this.db.emailCampaignContact.update({
-            where: { id: campaignContact.id },
-            data: {
-              deliveryStatus: 'SENT',
-              sentTime: new Date(),
-              subject,
-              bodyHtml,
-              bodyText,
-              trackingToken: sentHtml !== bodyHtml ? trackingToken : null,
-              sesMessageId: result?.MessageId || null,
-            },
-          });
-        } catch (err: any) {
-          await this.db.emailCampaignContact.update({
-            where: { id: campaignContact.id },
-            data: {
-              deliveryStatus: 'FAILED',
-              sentTime: new Date(),
-              subject,
-              bodyHtml,
-              bodyText,
-              errorMessage: err.message || 'Unknown SES sending error',
-            },
-          });
-        }
-      }
-
-      // Update campaign status to COMPLETED
-      await this.db.emailCampaign.update({
-        where: { id: campaignId },
-        data: { status: 'COMPLETED' },
-      });
-    } catch (error) {
-      console.error('Error executing campaign background sending:', error);
-      await this.db.emailCampaign.update({
-        where: { id: campaignId },
-        data: { status: 'FAILED' },
-      });
+  async pauseCampaign(id: string, userId: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id, ownerId: userId },
+    });
+    if (!campaign) throw new BadRequestException('Campaign not found');
+    if (campaign.status !== 'RUNNING') {
+      throw new BadRequestException('Only a campaign that is sending can be paused.');
     }
+
+    await this.db.emailCampaign.update({
+      where: { id, ownerId: userId },
+      data: { status: 'PAUSED', pausedAt: new Date() },
+    });
+    const held = await this.db.mailMessage.updateMany({
+      where: { campaignId: id, ownerId: userId, status: 'QUEUED' },
+      data: { status: 'PAUSED' },
+    });
+    return {
+      success: true,
+      message: `Paused. ${held.count} email${held.count === 1 ? ' is' : 's are'} on hold until you resume.`,
+    };
   }
 
-  /** Retries a single SES send once after a short backoff on throttling-style errors. */
-  private async sendWithRetry<T>(send: () => Promise<T>): Promise<T> {
-    try {
-      return await send();
-    } catch (err: any) {
-      const message = String(err?.name || err?.message || '').toLowerCase();
-      const isThrottling =
-        message.includes('throttl') || message.includes('rate exceeded');
-      if (!isThrottling) throw err;
-
-      await new Promise((r) => setTimeout(r, 1000));
-      return send();
+  async resumeCampaign(id: string, userId: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id, ownerId: userId },
+    });
+    if (!campaign) throw new BadRequestException('Campaign not found');
+    if (campaign.status !== 'PAUSED') {
+      throw new BadRequestException('This campaign is not paused.');
     }
+
+    // Queued sends move back by the length of the pause, which keeps a
+    // throttled campaign's spacing.
+    const now = new Date();
+    const pausedFor =
+      now.getTime() - new Date(campaign.pausedAt || now).getTime();
+    await this.db.emailCampaign.update({
+      where: { id, ownerId: userId },
+      data: { status: 'RUNNING', pausedAt: null },
+    });
+    const resumed = await this.db.mailMessage.updateManyRaw(
+      { campaignId: id, ownerId: userId, status: 'PAUSED' },
+      [
+        {
+          $set: {
+            status: 'QUEUED',
+            sendAt: { $add: [{ $ifNull: ['$sendAt', now] }, pausedFor] },
+          },
+        },
+      ],
+    );
+    await this.mailQueue.maybeCompleteCampaign(id);
+    return {
+      success: true,
+      message: `Resumed. Sending the remaining ${resumed.count} email${resumed.count === 1 ? '' : 's'}.`,
+    };
+  }
+
+  /** Stops sending; recipients not reached yet stay pending for a later launch. */
+  async stopCampaign(id: string, userId: string) {
+    const campaign = await this.db.emailCampaign.findUnique({
+      where: { id, ownerId: userId },
+    });
+    if (!campaign) throw new BadRequestException('Campaign not found');
+    if (!['RUNNING', 'PAUSED', 'SCHEDULED'].includes(campaign.status)) {
+      throw new BadRequestException('This campaign is not sending.');
+    }
+
+    const cancelled = await this.cancelQueued({ campaignId: id, ownerId: userId });
+    await this.db.emailCampaignContact.updateMany({
+      where: { campaignId: id, deliveryStatus: 'QUEUED' },
+      data: { deliveryStatus: 'PENDING' },
+    });
+    await this.db.emailCampaign.update({
+      where: { id, ownerId: userId },
+      data: { status: 'STOPPED', scheduledAt: null, pausedAt: null },
+    });
+    return {
+      success: true,
+      message: `Stopped. ${cancelled} unsent email${cancelled === 1 ? ' was' : 's were'} cancelled; launch again to send to them.`,
+    };
+  }
+
+  /**
+   * Sends one copy of a template, filled in for a contact or sample data, to
+   * the user's own address (or another one) straight away.
+   */
+  async sendTest(dto: SendTestDto, userId: string) {
+    const template = await this.db.template.findUnique({
+      where: { id: dto.templateId, ownerId: userId },
+    });
+    if (!template) {
+      throw new BadRequestException('Template not found');
+    }
+    this.assertMessageFitsSesLimit(template);
+
+    const settings = await this.sendingSettings(userId, {
+      fromEmail: dto.fromEmail,
+    });
+    const to = (dto.to || settings.awsSenderEmail).trim().toLowerCase();
+    if (!isEmail(to)) {
+      throw new BadRequestException('Enter a valid address to send the test to.');
+    }
+    const contact = dto.contactId
+      ? await this.db.contact.findFirst({
+          where: { id: dto.contactId, ownerId: userId },
+        })
+      : null;
+    const sample = contact || {
+      firstName: 'Alex',
+      lastName: 'Morgan',
+      company: 'Acme Inc',
+      jobTitle: 'Head of Growth',
+      email: to,
+    };
+
+    const unsubscribeUrl =
+      dto.unsubscribeLink === false
+        ? null
+        : this.trackingConfig.unsubscribeUrl('test');
+    const rendered = this.render(template, sample, unsubscribeUrl);
+    const from = await this.mailSenders.assertAllowedFrom(
+      settings,
+      dto.fromEmail || settings.awsSenderEmail,
+    );
+    const raw = buildMimeMessage({
+      from: {
+        email: from,
+        name: dto.fromName?.trim() || settings.mailFromName?.trim() || null,
+      },
+      to: [{ email: to }],
+      subject: `[Test] ${rendered.subject}`,
+      html: rendered.html,
+      text: rendered.text,
+      attachments: this.normalizeTemplateAttachments(
+        template.attachments,
+        sample,
+      ).map((attachment) => ({
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: Buffer.from(attachment.contentBase64, 'base64'),
+      })),
+    });
+
+    try {
+      await sendRawEmail(sesClientFor(settings), raw, [to]);
+    } catch (error: any) {
+      throw new BadRequestException(
+        `AWS SES did not accept the test email: ${error?.message || 'unknown error'}`,
+      );
+    }
+    return { success: true, message: `Test email sent to ${to}.` };
+  }
+
+  /** The owner's settings, checked for everything a campaign send needs. */
+  private async sendingSettings(userId: string, campaign: { fromEmail?: string }) {
+    const settings = await this.settingsService.getRawSettings(userId);
+    if (!hasSesCredentials(settings)) {
+      throw new BadRequestException(
+        'AWS SES is not configured. Add your SES credentials in Settings before sending.',
+      );
+    }
+    if (!settings.awsSenderEmail?.trim()) {
+      throw new BadRequestException(
+        'No sender email configured. Add a Sender Email Address in Settings before sending.',
+      );
+    }
+    if (campaign.fromEmail?.trim()) {
+      await this.mailSenders.assertAllowedFrom(settings, campaign.fromEmail);
+    }
+    return settings;
+  }
+
+  private render(template: any, contact: any, unsubscribeUrl: string | null) {
+    let html = this.interpolate(template.bodyHtml, contact, { html: true });
+    let text = this.interpolate(template.bodyText, contact);
+    if (unsubscribeUrl) {
+      if (html.trim()) html = appendUnsubscribeHtml(html, unsubscribeUrl);
+      if (text.trim()) {
+        text = `${text}\n\n--\nUnsubscribe: ${unsubscribeUrl}`;
+      }
+    }
+    return {
+      subject: this.interpolate(template.subject, contact),
+      html,
+      text,
+    };
+  }
+
+  /**
+   * Personalizes the campaign for each recipient and puts the emails on the
+   * send queue, each in the recipient's own conversation. Recipients who
+   * unsubscribed, bounced or complained earlier are skipped.
+   */
+  private async enqueueRecipients(campaign: any, rows: any[], settings: any) {
+    const ownerId = campaign.ownerId;
+    const template = campaign.template;
+    const sender = {
+      email: (campaign.fromEmail?.trim() || settings.awsSenderEmail)
+        .trim()
+        .toLowerCase(),
+      name: campaign.fromName?.trim() || settings.mailFromName?.trim() || null,
+    };
+    const replyDomain = sesReplyDomain(settings);
+    const trackOpens = campaign.trackOpens !== false;
+    const unsubscribeLink = campaign.unsubscribeLink !== false;
+    const ccAddresses: string[] = (campaign.cc || [])
+      .filter(Boolean)
+      .map((entry: string) => entry.trim().toLowerCase());
+    const bccAddresses: string[] = (campaign.bcc || [])
+      .filter(Boolean)
+      .map((entry: string) => entry.trim().toLowerCase());
+    // Saved once and shared by every email in this send.
+    const files = await this.mailAttachments.saveTemplateAttachments(
+      ownerId,
+      template.attachments,
+    );
+    const suppressed = await this.mailStore.suppressedEmails(
+      ownerId,
+      rows.map((row) => row.contact?.email).filter(Boolean),
+    );
+    const existingThreads = rows.length
+      ? await this.db.mailThread.findMany({
+          where: { campaignContactId: { in: rows.map((row) => row.id) } },
+          select: { id: true, campaignContactId: true },
+        })
+      : [];
+    const threadByRow = new Map<string, string>(
+      existingThreads.map((thread: any) => [thread.campaignContactId, thread.id]),
+    );
+    const spacingMs = campaign.sendRatePerHour
+      ? Math.ceil(3_600_000 / campaign.sendRatePerHour)
+      : 0;
+    const start = Date.now();
+
+    const newThreads: any[] = [];
+    const messages: any[] = [];
+    const queuedRowIds: string[] = [];
+    const missingRowIds: string[] = [];
+    const suppressedRowIds: string[] = [];
+
+    for (const row of rows) {
+      const contact = row.contact;
+      if (!contact?.email) {
+        missingRowIds.push(row.id);
+        continue;
+      }
+      const recipient = contact.email.trim().toLowerCase();
+      if (suppressed.has(recipient)) {
+        suppressedRowIds.push(row.id);
+        continue;
+      }
+
+      const unsubscribeToken = unsubscribeLink ? newTrackingToken() : null;
+      const rendered = this.render(
+        template,
+        contact,
+        unsubscribeToken ? this.trackingConfig.unsubscribeUrl(unsubscribeToken) : null,
+      );
+      const to = [{ email: recipient, name: contactName(contact) }];
+      let threadId = threadByRow.get(row.id);
+      if (!threadId) {
+        threadId = randomUUID();
+        newThreads.push({
+          id: threadId,
+          ownerId,
+          subject: rendered.subject,
+          participants: to,
+          contactId: contact.id,
+          campaignId: campaign.id,
+          campaignContactId: row.id,
+          lastActivityAt: new Date(),
+        });
+      }
+      const names = this.normalizeTemplateAttachments(
+        template.attachments,
+        contact,
+      ).map((attachment) => attachment.name);
+
+      messages.push({
+        ownerId,
+        threadId,
+        direction: 'OUTBOUND',
+        source: 'CAMPAIGN',
+        status: 'QUEUED',
+        from: sender,
+        to,
+        // A contact who also sits on the campaign CC/BCC list would otherwise
+        // receive the same email twice.
+        cc: ccAddresses
+          .filter((entry) => entry !== recipient)
+          .map((email) => ({ email })),
+        bcc: bccAddresses
+          .filter((entry) => entry !== recipient)
+          .map((email) => ({ email })),
+        replyTo: replyDomain
+          ? this.trackingConfig.replyToAddress(threadId, replyDomain)
+          : null,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+        snippet: snippetOf(rendered.text, rendered.html),
+        attachments: files.map((file, index) => ({
+          ...file,
+          name: names[index] || file.name,
+        })),
+        sendAt: new Date(start + queuedRowIds.length * spacingMs),
+        trackOpens,
+        trackingToken: trackOpens && rendered.html.trim() ? newTrackingToken() : null,
+        unsubscribeToken,
+        campaignId: campaign.id,
+        campaignContactId: row.id,
+        contactId: contact.id,
+      });
+      queuedRowIds.push(row.id);
+    }
+
+    for (let i = 0; i < newThreads.length; i += INSERT_BATCH_SIZE) {
+      await this.db.mailThread.createMany({
+        data: newThreads.slice(i, i + INSERT_BATCH_SIZE),
+      });
+    }
+    for (let i = 0; i < messages.length; i += INSERT_BATCH_SIZE) {
+      await this.db.mailMessage.createMany({
+        data: messages.slice(i, i + INSERT_BATCH_SIZE),
+      });
+    }
+    if (queuedRowIds.length > 0) {
+      await this.db.emailCampaignContact.updateMany({
+        where: { id: { in: queuedRowIds } },
+        data: { deliveryStatus: 'QUEUED', errorMessage: null },
+      });
+    }
+    if (missingRowIds.length > 0) {
+      await this.db.emailCampaignContact.updateMany({
+        where: { id: { in: missingRowIds } },
+        data: {
+          deliveryStatus: 'FAILED',
+          sentTime: new Date(),
+          errorMessage: 'Contact no longer exists',
+        },
+      });
+    }
+    if (suppressedRowIds.length > 0) {
+      await this.db.emailCampaignContact.updateMany({
+        where: { id: { in: suppressedRowIds } },
+        data: {
+          deliveryStatus: 'SUPPRESSED',
+          errorMessage: 'Skipped: unsubscribed, bounced or complained earlier',
+        },
+      });
+    }
+    if (queuedRowIds.length === 0) {
+      await this.mailQueue.maybeCompleteCampaign(campaign.id);
+    }
+
+    return {
+      queued: queuedRowIds.length,
+      suppressed: suppressedRowIds.length,
+      missing: missingRowIds.length,
+    };
+  }
+
+  /** Cancels queued and paused campaign emails; returns how many. */
+  private async cancelQueued(where: Record<string, unknown>) {
+    const result = await this.db.mailMessage.updateMany({
+      where: { ...where, source: 'CAMPAIGN', status: { in: ['QUEUED', 'PAUSED'] } },
+      data: { status: 'CANCELLED' },
+    });
+    return result.count;
   }
 
   // Contact data comes from user imports, so in HTML bodies it is escaped
@@ -902,99 +1144,6 @@ export class EmailCampaignsService {
         contentBase64: attachment.contentBase64,
       }));
   }
-
-  private buildRawEmail({
-    to,
-    cc,
-    replyTo,
-    subject,
-    bodyHtml,
-    bodyText,
-    attachments,
-    from,
-  }: {
-    to: string;
-    cc?: string[];
-    replyTo?: string;
-    subject: string;
-    bodyHtml: string;
-    bodyText: string;
-    attachments: { name: string; contentType: string; contentBase64: string }[];
-    from: string;
-  }) {
-    const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const lines: string[] = [
-      `From: ${from}`,
-      `To: ${stripLineBreaks(to)}`,
-      ...(cc && cc.length > 0 ? [`Cc: ${stripLineBreaks(cc.join(', '))}`] : []),
-      ...(replyTo ? [`Reply-To: ${stripLineBreaks(replyTo)}`] : []),
-      `Subject: ${this.encodeMimeHeader(subject)}`,
-      'MIME-Version: 1.0',
-      `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
-      '',
-      `--${mixedBoundary}`,
-      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
-      '',
-    ];
-
-    if (bodyText.trim()) {
-      lines.push(
-        `--${altBoundary}`,
-        'Content-Type: text/plain; charset=UTF-8',
-        'Content-Transfer-Encoding: base64',
-        '',
-        this.chunkBase64(Buffer.from(bodyText, 'utf8').toString('base64')),
-        '',
-      );
-    }
-
-    if (bodyHtml.trim()) {
-      lines.push(
-        `--${altBoundary}`,
-        'Content-Type: text/html; charset=UTF-8',
-        'Content-Transfer-Encoding: base64',
-        '',
-        this.chunkBase64(Buffer.from(bodyHtml, 'utf8').toString('base64')),
-        '',
-      );
-    }
-
-    lines.push(`--${altBoundary}--`, '');
-
-    attachments.forEach((attachment) => {
-      const fileName = this.escapeMimeParameter(attachment.name);
-      lines.push(
-        `--${mixedBoundary}`,
-        `Content-Type: ${attachment.contentType}; name="${fileName}"`,
-        'Content-Transfer-Encoding: base64',
-        `Content-Disposition: attachment; filename="${fileName}"`,
-        '',
-        this.chunkBase64(attachment.contentBase64),
-        '',
-      );
-    });
-
-    lines.push(`--${mixedBoundary}--`, '');
-    return lines.join('\r\n');
-  }
-
-  private chunkBase64(value: string) {
-    return (
-      value
-        .replace(/\s/g, '')
-        .match(/.{1,76}/g)
-        ?.join('\r\n') || ''
-    );
-  }
-
-  private encodeMimeHeader(value: string) {
-    return `=?UTF-8?B?${Buffer.from(value || '', 'utf8').toString('base64')}?=`;
-  }
-
-  private escapeMimeParameter(value: string) {
-    return (value || 'attachment').replace(/[\r\n"]/g, '_').slice(0, 180);
-  }
 }
 
 const SENT_STATUSES = ['SENT', 'DELIVERED'];
@@ -1002,8 +1151,13 @@ const SENT_STATUSES = ['SENT', 'DELIVERED'];
 type RecipientCounts = {
   contactCount: number;
   pendingCount: number;
+  queuedCount: number;
   failedCount: number;
   sentCount: number;
+  deliveredCount: number;
+  bouncedCount: number;
+  suppressedCount: number;
+  unsubscribedCount: number;
   openedCount: number;
   repliedCount: number;
 };
@@ -1012,8 +1166,13 @@ function emptyCounts(): RecipientCounts {
   return {
     contactCount: 0,
     pendingCount: 0,
+    queuedCount: 0,
     failedCount: 0,
     sentCount: 0,
+    deliveredCount: 0,
+    bouncedCount: 0,
+    suppressedCount: 0,
+    unsubscribedCount: 0,
     openedCount: 0,
     repliedCount: 0,
   };
@@ -1037,7 +1196,31 @@ function escapeHtml(value: string) {
     .replace(/'/g, '&#39;');
 }
 
-// Keeps a value from starting a new header line in the raw MIME message.
-function stripLineBreaks(value: string) {
-  return value.replace(/[\r\n]+/g, ' ');
+function appendUnsubscribeHtml(html: string, url: string) {
+  const footer = `<p style="margin-top:24px;font-size:12px;color:#6b7280">Don't want these emails? <a href="${escapeHtml(url)}" style="color:#6b7280">Unsubscribe</a>.</p>`;
+  const bodyClose = html.toLowerCase().lastIndexOf('</body>');
+  return bodyClose === -1
+    ? `${html}${footer}`
+    : `${html.slice(0, bodyClose)}${footer}${html.slice(bodyClose)}`;
+}
+
+function describeSkipped(result: { suppressed: number; missing: number }) {
+  const parts: string[] = [];
+  if (result.suppressed > 0) {
+    parts.push(`${result.suppressed} skipped (unsubscribed or bounced before)`);
+  }
+  if (result.missing > 0) {
+    parts.push(`${result.missing} skipped (contact deleted)`);
+  }
+  return parts.length > 0 ? `; ${parts.join(', ')}` : '';
+}
+
+// Only the format is checked here; whether SES lets the user send as the
+// address is checked when the campaign is sent.
+function assertFromAddressFormat(fromEmail?: string) {
+  if (fromEmail?.trim() && !isEmail(fromEmail.trim())) {
+    throw new BadRequestException(
+      'The From address must be a valid email address, or leave it blank.',
+    );
+  }
 }

@@ -23,10 +23,14 @@ export class EmailTrackingConfig {
     return `${this.publicApiBaseUrl()}/email-track/o/${trackingToken}.gif`;
   }
 
+  unsubscribeUrl(unsubscribeToken: string) {
+    return `${this.publicApiBaseUrl()}/email-track/u/${unsubscribeToken}`;
+  }
+
   /**
-   * Reply-To for one recipient row. It uses the row id rather than the
-   * per-send tracking token, which a relaunch replaces, so replies to an
-   * earlier send can still be routed.
+   * Reply-To for a mailbox thread, given the thread id. Campaign emails sent
+   * before the mailbox existed used the recipient row id instead; replies to
+   * those are still routed (see MailIngestService.resolveReplyTarget).
    */
   replyToAddress(campaignContactId: string, replyDomain: string) {
     return `reply+${campaignContactId}@${replyDomain}`;

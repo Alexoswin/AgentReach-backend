@@ -108,10 +108,15 @@ const PROVIDER_WEBHOOK_PATH = /^\/api\/calling-campaigns\/(twilio|plivo)\//;
 // signature and the configured topic instead.
 const EMAIL_INBOUND_WEBHOOK_PATH = /^\/api\/email-track\/inbound(-raw)?$/;
 
+// Mail apps post one-click unsubscribes here, and so does the unsubscribe
+// page's button. There is no session either way; the token is the proof.
+const EMAIL_UNSUBSCRIBE_PATH = /^\/api\/email-track\/u\/[a-f0-9]{32}$/;
+
 export function requiresCsrfToken(method: string, path: string) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return false;
   if (CSRF_EXEMPT_AUTH_PATHS.has(path)) return false;
   if (EMAIL_INBOUND_WEBHOOK_PATH.test(path)) return false;
+  if (EMAIL_UNSUBSCRIBE_PATH.test(path)) return false;
   return !PROVIDER_WEBHOOK_PATH.test(path);
 }
 

@@ -15,6 +15,7 @@ import { EmailCampaignsService } from './email-campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { AddContactsDto } from './dto/add-contacts.dto';
+import { SendTestDto } from './dto/send-test.dto';
 import { ListCampaignsQueryDto } from '../common/list-campaigns.dto';
 import { ListRepliesQueryDto } from './dto/list-replies.dto';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -49,6 +50,15 @@ export class EmailCampaignsController {
     query: ListRepliesQueryDto,
   ) {
     return this.emailCampaignsService.listReplies(request.user.id, query);
+  }
+
+  @Post('test-send')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({
+    summary: 'Send one test copy of a template to yourself or another address',
+  })
+  async sendTest(@Req() request: any, @Body() dto: SendTestDto) {
+    return this.emailCampaignsService.sendTest(dto, request.user.id);
   }
 
   @Post('replies/:id/read')
@@ -135,6 +145,26 @@ export class EmailCampaignsController {
   })
   async relaunchCampaign(@Req() request: any, @Param('id') id: string) {
     return this.emailCampaignsService.relaunchCampaign(id, request.user.id);
+  }
+
+  @Post(':id/pause')
+  @ApiOperation({ summary: 'Hold the emails a running campaign has not sent' })
+  async pause(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.pauseCampaign(id, request.user.id);
+  }
+
+  @Post(':id/resume')
+  @ApiOperation({ summary: 'Continue sending a paused campaign' })
+  async resume(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.resumeCampaign(id, request.user.id);
+  }
+
+  @Post(':id/stop')
+  @ApiOperation({
+    summary: 'Cancel the unsent emails; those recipients stay pending',
+  })
+  async stop(@Req() request: any, @Param('id') id: string) {
+    return this.emailCampaignsService.stopCampaign(id, request.user.id);
   }
 
   @Post(':id/schedule')

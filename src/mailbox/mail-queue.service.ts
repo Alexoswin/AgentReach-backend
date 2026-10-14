@@ -20,7 +20,8 @@ import {
 const QUEUE_POLL_MS = 3000;
 // A claimed message whose task died is picked up again after this long.
 const LOCK_MS = 2 * 60 * 1000;
-const DRAIN_BUDGET_MS = 50 * 1000;
+// A long-running lane rereads the account's settings this often.
+const SETTINGS_REFRESH_MS = 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 // At most 5 emails a second per sending account, across every API task; an
@@ -55,7 +56,10 @@ type Lane = { settings: any; client: SESClient | null };
 @Injectable()
 export class MailQueueService {
   private readonly logger = new Logger(MailQueueService.name);
-  private draining = false;
+  private polling = false;
+  // One lane per account, so a big campaign never holds up anyone else's
+  // email.
+  private readonly lanes = new Map<string, Promise<void>>();
   private readonly intervals = new Map<string, { at: number; ms: number }>();
 
   constructor(
@@ -68,42 +72,57 @@ export class MailQueueService {
 
   @Interval(QUEUE_POLL_MS)
   async tick() {
-    if (this.draining) return;
-    this.draining = true;
+    if (this.polling) return;
+    this.polling = true;
     try {
-      await this.drain();
+      for (const ownerId of await this.dueOwners()) this.startLane(ownerId);
     } catch (error) {
       this.logger.error(`Send queue failed: ${(error as Error).message}`);
     } finally {
-      this.draining = false;
+      this.polling = false;
     }
   }
 
-  async drain(deadline = Date.now() + DRAIN_BUDGET_MS) {
+  /** Sends everything due now and resolves when done. */
+  async drain() {
+    await Promise.all((await this.dueOwners()).map((id) => this.startLane(id)));
+  }
+
+  private async dueOwners() {
     const owners = await this.db.mailMessage.aggregate<{ _id: string }>([
       { $match: claimableFilter(new Date()) },
       { $group: { _id: '$ownerId' } },
       { $limit: 100 },
     ]);
-    // One lane per account, so a big campaign does not hold up anyone else.
-    await Promise.all(
-      owners.map(({ _id }) =>
-        this.drainOwner(_id, deadline).catch((error: Error) =>
-          this.logger.error(`Send queue for ${_id} failed: ${error.message}`),
-        ),
-      ),
-    );
+    return owners.map((owner) => owner._id);
   }
 
-  private async drainOwner(ownerId: string, deadline: number) {
-    const settings = await this.settingsService.getRawSettings(ownerId);
-    const lane: Lane = {
-      settings,
-      client: hasSesCredentials(settings) ? sesClientFor(settings) : null,
-    };
-    while (Date.now() < deadline) {
+  private startLane(ownerId: string) {
+    const running = this.lanes.get(ownerId);
+    if (running) return running;
+    const lane = this.drainOwner(ownerId)
+      .catch((error: Error) =>
+        this.logger.error(`Send queue for ${ownerId} failed: ${error.message}`),
+      )
+      .finally(() => this.lanes.delete(ownerId));
+    this.lanes.set(ownerId, lane);
+    return lane;
+  }
+
+  private async drainOwner(ownerId: string) {
+    let lane: Lane | null = null;
+    let loadedAt = 0;
+    for (;;) {
       const message = await this.claimNext(ownerId);
       if (!message) return;
+      if (!lane || Date.now() - loadedAt > SETTINGS_REFRESH_MS) {
+        const settings = await this.settingsService.getRawSettings(ownerId);
+        lane = {
+          settings,
+          client: hasSesCredentials(settings) ? sesClientFor(settings) : null,
+        };
+        loadedAt = Date.now();
+      }
       await this.deliver(message, lane);
     }
   }
@@ -127,7 +146,11 @@ export class MailQueueService {
           'AWS SES is not configured. Add your SES credentials in Settings.',
         );
       }
-      if (message.campaignId && !(await this.campaignAllowsSend(message))) {
+      if (
+        message.source === 'CAMPAIGN' &&
+        message.campaignId &&
+        !(await this.campaignAllowsSend(message))
+      ) {
         return;
       }
 

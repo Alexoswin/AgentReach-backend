@@ -1,6 +1,7 @@
 const MAX_REPLY_TEXT_LENGTH = 5000;
 
-// UUID of the EmailCampaignContact row, as put in Reply-To by
+// UUID of the MailThread (or, for emails sent before the mailbox existed,
+// the EmailCampaignContact row), as put in Reply-To by
 // EmailTrackingConfig.replyToAddress.
 const REPLY_LOCAL_PART =
   /^reply\+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;

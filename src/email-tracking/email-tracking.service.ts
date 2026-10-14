@@ -1,8 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { simpleParser } from 'mailparser';
 import { MongoService } from '../mongo.service';
 import { SettingsService } from '../settings/settings.service';
+import { MailIngestService } from '../mailbox/mail-ingest.service';
+import type { ReplyTarget } from '../mailbox/mail-ingest.service';
+import { MailStoreService } from '../mailbox/mail-store.service';
 import { platformReplyDomain, replyDomainFor } from './email-tracking.config';
 import { buildForwardedEmail } from './forward-email';
 import {
@@ -27,7 +31,12 @@ type SesReceivedNotification = {
     recipients?: string[];
     spamVerdict?: { status?: string };
     virusVerdict?: { status?: string };
-    action?: { type?: string; encoding?: string };
+    action?: {
+      type?: string;
+      encoding?: string;
+      bucketName?: string;
+      objectKey?: string;
+    };
   };
   content?: string;
 };
@@ -40,9 +49,13 @@ export class EmailTrackingService {
   constructor(
     private readonly db: MongoService,
     private readonly settingsService: SettingsService,
+    private readonly mailIngest: MailIngestService,
+    private readonly mailStore: MailStoreService,
   ) {}
 
   async recordOpen(trackingToken: string) {
+    await this.recordMessageOpen(trackingToken);
+
     const row = await this.db.emailCampaignContact.findFirst({
       where: { trackingToken },
       select: { id: true, sentTime: true },
@@ -66,6 +79,37 @@ export class EmailTrackingService {
         },
       ],
     );
+  }
+
+  private async recordMessageOpen(trackingToken: string) {
+    const message = await this.db.mailMessage.findFirst({
+      where: { trackingToken },
+      select: { id: true, sentAt: true },
+    });
+    const now = new Date();
+    if (
+      !message?.sentAt ||
+      now.getTime() - new Date(message.sentAt).getTime() < SCANNER_WINDOW_MS
+    ) {
+      return;
+    }
+    await this.db.mailMessage.updateOneRaw({ _id: message.id, trackingToken }, [
+      {
+        $set: {
+          openCount: { $add: [{ $ifNull: ['$openCount', 0] }, 1] },
+          lastOpenedAt: now,
+          firstOpenedAt: { $ifNull: ['$firstOpenedAt', now] },
+        },
+      },
+    ]);
+  }
+
+  unsubscribeTarget(token: string) {
+    return this.mailStore.unsubscribeTarget(token);
+  }
+
+  unsubscribe(token: string) {
+    return this.mailStore.unsubscribe(token);
   }
 
   /**
@@ -98,7 +142,11 @@ export class EmailTrackingService {
     if (message.Type !== 'Notification') return true;
 
     const notification = JSON.parse(message.Message) as SesReceivedNotification;
-    if (notification.notificationType !== 'Received') return true;
+    // Delivery, bounce and complaint events from the SES configuration set
+    // arrive on the same topic.
+    if (notification.notificationType !== 'Received') {
+      return this.mailIngest.applySendingEvent(notification, message.TopicArn);
+    }
 
     return this.handleReceivedEmail(notification, message.TopicArn);
   }
@@ -129,15 +177,14 @@ export class EmailTrackingService {
       return true;
     }
 
-    const row = await this.db.emailCampaignContact.findUnique({
-      where: { id: address.campaignContactId },
-      include: { contact: true, campaign: true },
-    });
-    if (!row) {
-      // The recipient row or its campaign was deleted, so there is no one
-      // left to forward the reply to.
+    const target = await this.mailIngest.resolveReplyTarget(
+      address.campaignContactId,
+    );
+    if (!target) {
+      // The conversation, or the recipient row and its campaign, was
+      // deleted, so there is no one left to deliver the reply to.
       this.logger.warn(
-        `Inbound message ${sesMessageId} is for unknown campaign recipient ${address.campaignContactId}`,
+        `Inbound message ${sesMessageId} is for unknown conversation ${address.campaignContactId}`,
       );
       return true;
     }
@@ -145,19 +192,23 @@ export class EmailTrackingService {
     // The reply must come through the owner's own topic and domain; a valid
     // SNS signature alone could come from anyone's topic.
     const settings = await this.settingsService.getRawSettings(
-      row.campaign?.launchedBy || row.ownerId,
+      target.row?.campaign?.launchedBy || target.ownerId,
     );
     if (
       settings?.replyTrackingTopicArn !== topicArn ||
       replyDomainFor(settings) !== address.domain
     ) {
       this.logger.warn(
-        `Inbound message ${sesMessageId} did not come through the reply topic and domain of its campaign's owner`,
+        `Inbound message ${sesMessageId} did not come through the reply topic and domain of its owner`,
       );
       return false;
     }
 
-    await this.processReply(row, settings, this.loadRawEmail(notification));
+    await this.processReply(
+      target,
+      settings,
+      await this.loadRawEmail(notification, settings, topicArn),
+    );
     this.rememberMessageId(sesMessageId);
     return true;
   }
@@ -166,22 +217,25 @@ export class EmailTrackingService {
     const address = replyAddressFromRecipients(recipients);
     if (!address || address.domain !== platformReplyDomain()) return false;
 
-    const row = await this.db.emailCampaignContact.findUnique({
-      where: { id: address.campaignContactId },
-      include: { contact: true, campaign: true },
-    });
-    if (!row) return true;
+    const target = await this.mailIngest.resolveReplyTarget(
+      address.campaignContactId,
+    );
+    if (!target) return true;
 
     const settings = await this.settingsService.getRawSettings(
-      row.campaign?.launchedBy || row.ownerId,
+      target.row?.campaign?.launchedBy || target.ownerId,
     );
     if (replyDomainFor(settings) !== address.domain) return true;
 
-    await this.processReply(row, settings, raw);
+    await this.processReply(target, settings, raw);
     return true;
   }
 
-  private async processReply(row: any, settings: any, raw: Buffer) {
+  private async processReply(target: ReplyTarget, settings: any, raw: Buffer) {
+    // Before the campaign row below records this reply, so a thread made
+    // from the row does not list it a second time.
+    const thread = await this.mailIngest.threadFor(target);
+    const row = target.row;
     const parsed = await simpleParser(raw);
     const from = parsed.from?.value?.[0];
     const fromAddress = (from?.address || '').trim().toLowerCase();
@@ -198,10 +252,11 @@ export class EmailTrackingService {
     // A reply-all from someone on the campaign's CC/BCC list carries the
     // same reply address; only the contact's own reply counts.
     const fromContact =
+      !!row &&
       !!fromAddress &&
       fromAddress === (row.contact?.email || '').trim().toLowerCase();
 
-    if (fromContact && !automated) {
+    if (row && fromContact && !automated) {
       const now = new Date();
       await this.db.emailCampaignContact.updateOneRaw(
         { _id: row.id, repliedAt: null },
@@ -223,18 +278,49 @@ export class EmailTrackingService {
       );
     }
 
+    await this.mailIngest.storeInbound(thread, parsed, { automated });
+
     // Every message is passed on, including auto-replies and bounces: the
     // reply address replaced the user's own, so nothing may be swallowed.
-    await this.forwardToUser(settings, raw, from?.name);
+    // The reply is already in the mailbox, so a failed forward (an email
+    // over SES's 10 MB limit, say) is logged rather than retried by SNS.
+    try {
+      await this.forwardToUser(settings, raw, from?.name);
+    } catch (error) {
+      this.logger.warn(
+        `Could not forward a reply to the sender inbox: ${(error as Error).message}`,
+      );
+    }
   }
 
-  // The receipt rule's SNS action includes the whole email. SES bounces
-  // anything over SNS's 150 KB limit back to the sender, so very large
-  // replies (big attachments) never reach this point.
-  private loadRawEmail(notification: SesReceivedNotification) {
+  // With an SNS action the notification carries the whole email, and SES
+  // bounces anything over SNS's 150 KB limit back to the sender. With an S3
+  // action that also publishes to the topic, SES stores the email (up to
+  // 40 MB) in the user's bucket and the notification only points at it.
+  private async loadRawEmail(
+    notification: SesReceivedNotification,
+    settings: any,
+    topicArn: string,
+  ) {
+    const action = notification.receipt?.action;
+    if (action?.type === 'S3' && action.bucketName && action.objectKey) {
+      // The bucket is in the receiving region, which is the topic's.
+      const region = topicArn.split(':')[3] || settings.awsRegion || 'us-east-1';
+      const client = new S3Client({
+        region,
+        credentials: {
+          accessKeyId: settings.awsAccessKeyId,
+          secretAccessKey: settings.awsSecretAccessKey,
+        },
+      });
+      const object = await client.send(
+        new GetObjectCommand({ Bucket: action.bucketName, Key: action.objectKey }),
+      );
+      return Buffer.from(await object.Body!.transformToByteArray());
+    }
     if (!notification.content) {
       throw new Error(
-        'SES notification has no email content. The receipt rule needs an SNS action (not an S3 action).',
+        'SES notification has no email content. The receipt rule needs an SNS action, or an S3 action that publishes to the topic.',
       );
     }
     return Buffer.from(

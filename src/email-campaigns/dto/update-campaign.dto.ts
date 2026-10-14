@@ -6,6 +6,10 @@ import {
   IsEmail,
   IsArray,
   IsBoolean,
+  IsInt,
+  Max,
+  MaxLength,
+  Min,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -13,6 +17,8 @@ export const CAMPAIGN_STATUSES = [
   'DRAFT',
   'SCHEDULED',
   'RUNNING',
+  'PAUSED',
+  'STOPPED',
   'COMPLETED',
   'FAILED',
 ] as const;
@@ -53,4 +59,28 @@ export class UpdateCampaignDto {
   @IsBoolean()
   @IsOptional()
   trackOpens?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  @MaxLength(320)
+  fromEmail?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  fromName?: string;
+
+  @ApiProperty({ required: false, nullable: true })
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  @IsOptional()
+  sendRatePerHour?: number | null;
+
+  @ApiProperty({ required: false })
+  @IsBoolean()
+  @IsOptional()
+  unsubscribeLink?: boolean;
 }

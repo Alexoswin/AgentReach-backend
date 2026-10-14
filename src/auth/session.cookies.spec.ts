@@ -17,6 +17,16 @@ describe('requiresCsrfToken', () => {
     expect(requiresCsrfToken('POST', '/api/email-track/inbound')).toBe(false);
   });
 
+  it('lets mail apps post one-click unsubscribes without a CSRF token', () => {
+    expect(
+      requiresCsrfToken('POST', `/api/email-track/u/${'a'.repeat(32)}`),
+    ).toBe(false);
+    expect(requiresCsrfToken('POST', '/api/email-track/u/not-a-token')).toBe(
+      true,
+    );
+    expect(requiresCsrfToken('POST', '/api/mail/drafts/x/send')).toBe(true);
+  });
+
   it('still protects signed-in actions, including launching calls', () => {
     expect(
       requiresCsrfToken('POST', '/api/calling-campaigns/campaign-1/launch'),

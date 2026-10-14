@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn, MaxLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { GEMINI_TEXT_MODEL_OPTIONS } from '../../config/gemini-text';
 
@@ -43,6 +43,23 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   replyTrackingTopicArn?: string;
+
+  @ApiProperty({ required: false, example: 'reachconvert' })
+  @IsString()
+  @IsOptional()
+  sesConfigurationSet?: string;
+
+  @ApiProperty({ required: false, example: 'Jane from Acme' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  mailFromName?: string;
+
+  @ApiProperty({ required: false, description: 'HTML signature for mailbox emails' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(10000)
+  mailSignature?: string;
 
   @ApiProperty({ required: false })
   @IsString()

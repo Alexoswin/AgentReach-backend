@@ -18,6 +18,7 @@ const DOMAIN_PATTERN =
   /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const SNS_TOPIC_ARN_PATTERN =
   /^arn:aws(-cn|-us-gov)?:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/;
+const SES_CONFIGURATION_SET_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 const PROVIDER_STATUS_FIELDS: Record<string, string[]> = {
   geminiStatus: ['geminiApiKey'],
@@ -126,6 +127,15 @@ export class SettingsService {
           'This SNS topic is already used by another account. Create a topic for this account.',
         );
       }
+    }
+
+    if (
+      data.sesConfigurationSet &&
+      !SES_CONFIGURATION_SET_PATTERN.test(data.sesConfigurationSet)
+    ) {
+      throw new BadRequestException(
+        'SES configuration set names use letters, numbers, dashes and underscores (64 at most), or leave it blank.',
+      );
     }
 
     if (data.geminiTextModel !== undefined) {

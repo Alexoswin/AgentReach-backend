@@ -17,6 +17,7 @@ import { Public } from '../auth/public.decorator';
 import { EmailTrackingService } from './email-tracking.service';
 import { parseTrackingToken, TRANSPARENT_GIF } from './open-pixel';
 import { SnsMessage } from './sns';
+import { unsubscribePage } from './unsubscribe-page';
 
 // SNS notifications with the email inline are at most ~200 KB once encoded.
 const MAX_SNS_BODY_BYTES = 1024 * 1024;
@@ -54,6 +55,39 @@ export class EmailTrackingController {
         Expires: '0',
       })
       .end(TRANSPARENT_GIF);
+  }
+
+  /**
+   * The unsubscribe link in campaign emails. Opening it only asks; link
+   * scanners open every URL in an email, so unsubscribing takes the click.
+   */
+  @Get('u/:token')
+  @Public()
+  async unsubscribePage(
+    @Param('token') token: string,
+    @Res() response: Response,
+  ) {
+    const target = await this.tracking.unsubscribeTarget(token);
+    sendUnsubscribePage(
+      response,
+      target ? 200 : 404,
+      unsubscribePage(
+        !target ? 'missing' : target.unsubscribed ? 'done' : 'confirm',
+        target,
+      ),
+    );
+  }
+
+  /** The page's button, and one-click unsubscribe from mail apps (RFC 8058). */
+  @Post('u/:token')
+  @Public()
+  async unsubscribe(@Param('token') token: string, @Res() response: Response) {
+    const target = await this.tracking.unsubscribe(token);
+    sendUnsubscribePage(
+      response,
+      target ? 200 : 404,
+      unsubscribePage(target ? 'done' : 'missing', target),
+    );
   }
 
   /** SNS endpoint for replies that SES receives on the reply domain. */
@@ -100,6 +134,18 @@ export class EmailTrackingController {
     }
     return { ok: true };
   }
+}
+
+function sendUnsubscribePage(response: Response, status: number, html: string) {
+  response
+    .status(status)
+    .set({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy':
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      'Cache-Control': 'no-store',
+    })
+    .send(html);
 }
 
 // SNS posts JSON as text/plain, which the app's JSON parser leaves unread.

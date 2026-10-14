@@ -5,6 +5,10 @@ import {
   IsEmail,
   IsArray,
   IsBoolean,
+  IsInt,
+  Max,
+  MaxLength,
+  Min,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -48,4 +52,40 @@ export class CreateCampaignDto {
   @IsBoolean()
   @IsOptional()
   trackOpens?: boolean;
+
+  // Format is checked in the service, so an empty string can clear it.
+  @ApiProperty({
+    required: false,
+    description: 'Send from this verified address instead of the Sender Email',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(320)
+  fromEmail?: string;
+
+  @ApiProperty({ required: false, description: 'Display name on the emails' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  fromName?: string;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Spread the sends out to this many per hour; null for no limit',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  @IsOptional()
+  sendRatePerHour?: number | null;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Add an unsubscribe link and one-click unsubscribe headers (default true)',
+  })
+  @IsBoolean()
+  @IsOptional()
+  unsubscribeLink?: boolean;
 }
