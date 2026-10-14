@@ -23,6 +23,7 @@ import {
   replyDomainFor,
 } from '../email-tracking/email-tracking.config';
 import { addOpenPixel, newTrackingToken } from '../email-tracking/open-pixel';
+import { MailServiceClient } from '../mail-service/mail-service.client';
 
 /** AWS SES hard limit on a single raw (MIME) message, after base64 encoding. */
 const SES_MAX_RAW_MESSAGE_BYTES = 10 * 1024 * 1024;
@@ -57,6 +58,7 @@ export class EmailCampaignsService {
     private db: MongoService,
     private settingsService: SettingsService,
     private trackingConfig: EmailTrackingConfig,
+    private mailService: MailServiceClient,
   ) {}
 
   async findAll(userId: string, query?: ListCampaignsQueryDto) {
@@ -660,14 +662,8 @@ export class EmailCampaignsService {
       const settings = await this.settingsService.getRawSettings(
         campaign.launchedBy,
       );
-      if (!settings?.awsAccessKeyId || !settings?.awsSecretAccessKey) {
-        throw new Error(
-          'AWS SES is not configured. Add your SES credentials in Settings before launching campaigns.',
-        );
-      }
-
       const senderEmail =
-        settings.sendingFromEmail?.trim() || settings.awsSenderEmail?.trim();
+        settings?.sendingFromEmail?.trim() || settings?.awsSenderEmail?.trim();
       if (!senderEmail) {
         throw new Error(
           'No sender email configured. Add and verify a sending domain before launching real campaigns.',
@@ -687,6 +683,25 @@ export class EmailCampaignsService {
           );
         }
       }
+
+      const selfHostedDomainSelected = Boolean(
+        settings.sendingDomainId && settings.sendingFromEmail?.trim(),
+      );
+      const useMailService = selfHostedDomainSelected;
+      if (useMailService && !this.mailService.isConfigured()) {
+        throw new Error(
+          'The mail service is not configured. Start it and set MAIL_SERVICE_ENABLED=true with MAIL_SERVICE_SECRET before launching this domain.',
+        );
+      }
+      if (
+        !useMailService &&
+        (!settings?.awsAccessKeyId || !settings?.awsSecretAccessKey)
+      ) {
+        throw new Error(
+          'AWS SES is not configured. Add your SES credentials in Settings or select a verified sending domain connected to the mail service.',
+        );
+      }
+
       const senderSource = `<${senderEmail}>`;
       const ccAddresses: string[] = (campaign.cc || [])
         .filter(Boolean)
@@ -695,13 +710,15 @@ export class EmailCampaignsService {
         .filter(Boolean)
         .map((entry: string) => entry.trim().toLowerCase());
 
-      const client = new SESClient({
-        region: settings.awsRegion || 'us-east-1',
-        credentials: {
-          accessKeyId: settings.awsAccessKeyId,
-          secretAccessKey: settings.awsSecretAccessKey,
-        },
-      });
+      const client = useMailService
+        ? null
+        : new SESClient({
+            region: settings.awsRegion || 'us-east-1',
+            credentials: {
+              accessKeyId: settings.awsAccessKeyId,
+              secretAccessKey: settings.awsSecretAccessKey,
+            },
+          });
 
       // Campaigns created before the setting existed have no value: track.
       const trackOpens = campaign.trackOpens !== false;
@@ -770,6 +787,25 @@ export class EmailCampaignsService {
           }
 
           const result = await this.sendWithRetry(async () => {
+            if (useMailService) {
+              return this.mailService.submit({
+                idempotencyKey: `${campaignContact.id}:${trackingToken}`,
+                from: senderEmail,
+                to: [contact.email],
+                cc: contactCc.length ? contactCc : undefined,
+                bcc: contactBcc.length ? contactBcc : undefined,
+                replyTo,
+                subject,
+                text: bodyText.trim() ? bodyText : undefined,
+                html: sentHtml.trim() ? sentHtml : undefined,
+                attachments: attachments.length ? attachments : undefined,
+              });
+            }
+
+            if (!client) {
+              throw new Error('No email delivery provider is configured.');
+            }
+
             if (attachments.length > 0) {
               const command = new SendRawEmailCommand({
                 Destinations: [contact.email, ...contactCc, ...contactBcc],
@@ -808,6 +844,8 @@ export class EmailCampaignsService {
 
             return client.send(command);
           });
+          const resultMessageId =
+            'MessageId' in result ? result.MessageId : result.messageId;
 
           // Small pacing delay between real sends to stay under SES's
           // per-second sending rate and avoid throttling errors.
@@ -822,7 +860,7 @@ export class EmailCampaignsService {
               bodyHtml,
               bodyText,
               trackingToken: sentHtml !== bodyHtml ? trackingToken : null,
-              sesMessageId: result?.MessageId || null,
+              sesMessageId: resultMessageId || null,
             },
           });
         } catch (err: any) {
@@ -834,7 +872,7 @@ export class EmailCampaignsService {
               subject,
               bodyHtml,
               bodyText,
-              errorMessage: err.message || 'Unknown SES sending error',
+              errorMessage: err.message || 'Unknown email sending error',
             },
           });
         }

@@ -15,6 +15,13 @@ export type MailMessage = {
   subject: string;
   text?: string;
   html?: string;
+  attachments?: MailAttachment[];
+};
+
+export type MailAttachment = {
+  name: string;
+  contentType: string;
+  contentBase64: string;
 };
 
 type MailServiceHealth = {
