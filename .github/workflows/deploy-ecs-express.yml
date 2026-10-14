@@ -1,0 +1,106 @@
+name: Build & Deploy to ECS Express Mode
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ecs-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'agentreach-backend' }}
+  ECS_SERVICE_NAME: ${{ vars.ECS_SERVICE_NAME || 'agentreach-backend' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'default' }}
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories \
+            --region "$AWS_REGION" \
+            --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 || \
+          aws ecr create-repository \
+            --region "$AWS_REGION" \
+            --repository-name "$ECR_REPOSITORY" >/dev/null
+
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          image="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          docker build --platform linux/amd64 -t "$image" .
+          docker push "$image"
+          echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update ECS Express Mode service
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          ECS_SERVICE_ARN: ${{ vars.ECS_SERVICE_ARN }}
+          ECS_EXECUTION_ROLE_ARN: ${{ secrets.ECS_EXECUTION_ROLE_ARN }}
+          ECS_INFRASTRUCTURE_ROLE_ARN: ${{ secrets.ECS_INFRASTRUCTURE_ROLE_ARN }}
+          ECS_TASK_ROLE_ARN: ${{ secrets.ECS_TASK_ROLE_ARN }}
+          # JSON arrays. Keep sensitive values in ECS_SECRETS_JSON and point
+          # them at Secrets Manager/SSM ARNs, rather than putting them here.
+          ECS_ENV_JSON: ${{ secrets.ECS_ENV_JSON }}
+          ECS_SECRETS_JSON: ${{ secrets.ECS_SECRETS_JSON }}
+        run: |
+          set -euo pipefail
+
+          test -n "$ECS_EXECUTION_ROLE_ARN" || { echo "Missing ECS_EXECUTION_ROLE_ARN"; exit 1; }
+          test -n "$ECS_INFRASTRUCTURE_ROLE_ARN" || { echo "Missing ECS_INFRASTRUCTURE_ROLE_ARN"; exit 1; }
+
+          primary_container=$(jq -cn \
+            --arg image "$IMAGE_URI" \
+            --argjson environment "${ECS_ENV_JSON:-[]}" \
+            --argjson secrets "${ECS_SECRETS_JSON:-[]}" \
+            '{image: $image, containerPort: 8080, environment: $environment, secrets: $secrets}')
+
+          if [ -n "${ECS_SERVICE_ARN:-}" ]; then
+            aws ecs update-express-gateway-service \
+              --region "$AWS_REGION" \
+              --service-arn "$ECS_SERVICE_ARN" \
+              --health-check-path /api \
+              --primary-container "$primary_container" \
+              --monitor-resources DEPLOYMENT \
+              --monitor-mode TEXT-ONLY
+          else
+            create_args=(
+              ecs create-express-gateway-service
+              --region "$AWS_REGION"
+              --service-name "$ECS_SERVICE_NAME"
+              --cluster "$ECS_CLUSTER"
+              --execution-role-arn "$ECS_EXECUTION_ROLE_ARN"
+              --infrastructure-role-arn "$ECS_INFRASTRUCTURE_ROLE_ARN"
+              --health-check-path /api
+              --primary-container "$primary_container"
+              --cpu 1024
+              --memory 2048
+              --scaling-target minTaskCount=1,maxTaskCount=2,autoScalingMetric=AVERAGE_CPU,autoScalingTargetValue=60
+              --monitor-resources DEPLOYMENT
+              --monitor-mode TEXT-ONLY
+            )
+            if [ -n "${ECS_TASK_ROLE_ARN:-}" ]; then
+              create_args+=(--task-role-arn "$ECS_TASK_ROLE_ARN")
+            fi
+            aws "${create_args[@]}"
+          fi
