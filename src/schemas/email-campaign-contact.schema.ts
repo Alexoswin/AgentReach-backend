@@ -28,7 +28,8 @@ export class EmailCampaignContact {
   @Prop({ type: Date, default: null })
   sentTime?: Date | null;
 
-  // 'PENDING', 'SENT', 'DELIVERED', 'FAILED'
+  // 'PENDING', 'QUEUED', 'SENT', 'DELIVERED', 'BOUNCED', 'FAILED',
+  // 'SUPPRESSED' (skipped: unsubscribed, bounced or complained before)
   @Prop({ default: 'PENDING' })
   deliveryStatus: string;
 
@@ -72,6 +73,15 @@ export class EmailCampaignContact {
   // When the owner read the reply in the Replies inbox; null means unread.
   @Prop({ type: Date, default: null })
   replyReadAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  bouncedAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  complainedAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  unsubscribedAt?: Date | null;
 }
 
 export const EmailCampaignContactSchema =

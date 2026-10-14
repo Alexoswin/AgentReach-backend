@@ -13,9 +13,13 @@ export class EmailCampaign {
   @Prop({ required: true })
   name: string;
 
-  // 'DRAFT', 'SCHEDULED', 'RUNNING', 'COMPLETED', 'FAILED'
+  // 'DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'FAILED'
   @Prop({ default: 'DRAFT' })
   status: string;
+
+  // When it was paused, so resuming can push queued sends back by as long.
+  @Prop({ type: Date, default: null })
+  pausedAt?: Date | null;
 
   // When set (and status === 'SCHEDULED'), the campaign scheduler launches
   // the campaign automatically once this time is reached.
@@ -42,6 +46,21 @@ export class EmailCampaign {
   // Adds a 1×1 tracking image to HTML emails so opens can be counted.
   @Prop({ default: true })
   trackOpens: boolean;
+
+  // Sender for this campaign; empty means the Sender Email in Settings.
+  @Prop({ type: String, default: '' })
+  fromEmail?: string;
+
+  @Prop({ type: String, default: '' })
+  fromName?: string;
+
+  // Spreads the sends out evenly; null sends as fast as SES allows.
+  @Prop({ type: Number, default: null })
+  sendRatePerHour?: number | null;
+
+  // Adds an unsubscribe link and the one-click List-Unsubscribe headers.
+  @Prop({ default: true })
+  unsubscribeLink: boolean;
 }
 
 export const EmailCampaignSchema = SchemaFactory.createForClass(EmailCampaign);

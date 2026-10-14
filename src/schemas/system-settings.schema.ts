@@ -27,6 +27,18 @@ export class SystemSettings {
   @Prop({ default: '' })
   replyTrackingTopicArn: string;
 
+  // SES configuration set whose delivery, bounce and complaint events are
+  // published to the reply tracking topic.
+  @Prop({ default: '' })
+  sesConfigurationSet: string;
+
+  // Display name and HTML signature for emails written in the mailbox.
+  @Prop({ default: '' })
+  mailFromName: string;
+
+  @Prop({ default: '' })
+  mailSignature: string;
+
   @Prop({ default: '' })
   geminiApiKey: string;
 

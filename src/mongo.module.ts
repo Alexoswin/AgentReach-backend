@@ -58,6 +58,16 @@ import {
   ProspectCompanySchema,
 } from './schemas/prospect-company.schema';
 import { Prospect, ProspectSchema } from './schemas/prospect.schema';
+import { MailThread, MailThreadSchema } from './schemas/mail-thread.schema';
+import { MailMessage, MailMessageSchema } from './schemas/mail-message.schema';
+import {
+  EmailSuppression,
+  EmailSuppressionSchema,
+} from './schemas/email-suppression.schema';
+import {
+  MailSendSlot,
+  MailSendSlotSchema,
+} from './schemas/mail-send-slot.schema';
 
 @Global()
 @Module({
@@ -86,6 +96,10 @@ import { Prospect, ProspectSchema } from './schemas/prospect.schema';
       { name: ProspectSearch.name, schema: ProspectSearchSchema },
       { name: ProspectCompany.name, schema: ProspectCompanySchema },
       { name: Prospect.name, schema: ProspectSchema },
+      { name: MailThread.name, schema: MailThreadSchema },
+      { name: MailMessage.name, schema: MailMessageSchema },
+      { name: EmailSuppression.name, schema: EmailSuppressionSchema },
+      { name: MailSendSlot.name, schema: MailSendSlotSchema },
     ]),
   ],
   providers: [MongoService],

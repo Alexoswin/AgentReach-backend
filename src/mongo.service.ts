@@ -22,6 +22,10 @@ import { TriggeredOutreach } from './schemas/triggered-outreach.schema';
 import { ProspectSearch } from './schemas/prospect-search.schema';
 import { ProspectCompany } from './schemas/prospect-company.schema';
 import { Prospect } from './schemas/prospect.schema';
+import { MailThread } from './schemas/mail-thread.schema';
+import { MailMessage } from './schemas/mail-message.schema';
+import { EmailSuppression } from './schemas/email-suppression.schema';
+import { MailSendSlot } from './schemas/mail-send-slot.schema';
 
 type AnyModel = Model<any>;
 
@@ -51,6 +55,10 @@ export class MongoService implements OnModuleInit {
   prospectSearch: MongoDelegate;
   prospectCompany: MongoDelegate;
   prospect: MongoDelegate;
+  mailThread: MongoDelegate;
+  mailMessage: MongoDelegate;
+  emailSuppression: MongoDelegate;
+  mailSendSlot: MongoDelegate;
 
   constructor(
     @InjectModel(User.name) private userModel: AnyModel,
@@ -76,6 +84,11 @@ export class MongoService implements OnModuleInit {
     @InjectModel(ProspectSearch.name) private prospectSearchModel: AnyModel,
     @InjectModel(ProspectCompany.name) private prospectCompanyModel: AnyModel,
     @InjectModel(Prospect.name) private prospectModel: AnyModel,
+    @InjectModel(MailThread.name) private mailThreadModel: AnyModel,
+    @InjectModel(MailMessage.name) private mailMessageModel: AnyModel,
+    @InjectModel(EmailSuppression.name)
+    private emailSuppressionModel: AnyModel,
+    @InjectModel(MailSendSlot.name) private mailSendSlotModel: AnyModel,
   ) {
     const models = () => ({
       user: this.userModel,
@@ -97,6 +110,10 @@ export class MongoService implements OnModuleInit {
       prospectSearch: this.prospectSearchModel,
       prospectCompany: this.prospectCompanyModel,
       prospect: this.prospectModel,
+      mailThread: this.mailThreadModel,
+      mailMessage: this.mailMessageModel,
+      emailSuppression: this.emailSuppressionModel,
+      mailSendSlot: this.mailSendSlotModel,
     });
 
     this.user = new MongoDelegate('user', this.userModel, models);
@@ -175,6 +192,26 @@ export class MongoService implements OnModuleInit {
       models,
     );
     this.prospect = new MongoDelegate('prospect', this.prospectModel, models);
+    this.mailThread = new MongoDelegate(
+      'mailThread',
+      this.mailThreadModel,
+      models,
+    );
+    this.mailMessage = new MongoDelegate(
+      'mailMessage',
+      this.mailMessageModel,
+      models,
+    );
+    this.emailSuppression = new MongoDelegate(
+      'emailSuppression',
+      this.emailSuppressionModel,
+      models,
+    );
+    this.mailSendSlot = new MongoDelegate(
+      'mailSendSlot',
+      this.mailSendSlotModel,
+      models,
+    );
   }
 
   async onModuleInit() {
@@ -392,6 +429,34 @@ class MongoDelegate {
       updatePipeline: Array.isArray(update),
     });
     return { count: result.modifiedCount };
+  }
+
+  async updateManyRaw(filter: any, update: any) {
+    const result = await this.model.updateMany(filter, update, {
+      updatePipeline: Array.isArray(update),
+    });
+    return { count: result.modifiedCount };
+  }
+
+  // Changes and returns one document in a single step, so two workers can
+  // never both claim it.
+  async findOneAndUpdateRaw(filter: any, update: any, options: any = {}) {
+    const doc = await this.model
+      .findOneAndUpdate(filter, update, {
+        returnDocument: 'after',
+        updatePipeline: Array.isArray(update),
+        ...options,
+      })
+      .lean();
+    return doc ? this.toApi(doc) : null;
+  }
+
+  async createMany(args: { data: any[] }) {
+    if (args.data.length === 0) return [];
+    const created = await this.model.insertMany(
+      args.data.map((row) => this.toMongoData(row)),
+    );
+    return created.map((doc: any) => this.toApi(doc.toObject()));
   }
 
   private toMongoWhere(where: any = {}) {
