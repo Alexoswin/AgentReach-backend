@@ -21,7 +21,6 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { Public } from './public.decorator';
 import { enforceAuthRateLimit } from './rate-limit';
-import { IdentityPlatformDto } from './dto/identity-platform.dto';
 import { CognitoSignInDto } from './dto/cognito-sign-in.dto';
 import {
   clearSessionCookies,
@@ -55,24 +54,6 @@ export class AuthController {
   ) {
     enforceAuthRateLimit('login', request, dto.email);
     return this.writeSession(response, this.authService.login(dto));
-  }
-
-  @Public()
-  @Post('identity-platform')
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({
-    summary: 'Exchange a verified Google Identity Platform token for a session',
-  })
-  identityPlatform(
-    @Req() request: Request,
-    @Body() dto: IdentityPlatformDto,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    enforceAuthRateLimit('identity-platform', request);
-    return this.writeSession(
-      response,
-      this.authService.loginWithGoogle(dto.idToken),
-    );
   }
 
   @Public()
@@ -175,22 +156,6 @@ export class AuthController {
   logout(@Req() request: any, @Res({ passthrough: true }) response: Response) {
     clearSessionCookies(response);
     return this.authService.logout(request.user.id, request.user.sessionId);
-  }
-
-  @Post('link-google')
-  @UsePipes(new ValidationPipe({ whitelist: true }))
-  @ApiOperation({
-    summary: 'Link the matching Google identity to the current account',
-  })
-  linkGoogle(
-    @Req() request: any,
-    @Body() dto: IdentityPlatformDto,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.writeSession(
-      response,
-      this.authService.linkGoogle(request.user.id, dto.idToken),
-    );
   }
 
   @Post('link-cognito')

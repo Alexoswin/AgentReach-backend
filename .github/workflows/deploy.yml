@@ -73,12 +73,10 @@ jobs:
           AWS_KEY: ${{ secrets.AWS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_SENDER_EMAIL: ${{ secrets.AWS_SENDER_EMAIL }}
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
           # Optional: dedicated key for stored provider credentials.
           CREDENTIAL_ENCRYPTION_KEY: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
         run: |
-          for name in JWT_SECRET CORS_ORIGINS COOKIE_SECURE COOKIE_SAME_SITE PUBLIC_APP_URL PUBLIC_API_URL PUBLIC_WS_URL ALLOW_REGISTRATION ALLOWED_SIGNUP_EMAILS AWS_KEY_ID AWS_KEY AWS_REGION AWS_SENDER_EMAIL FIREBASE_PROJECT_ID GOOGLE_CLOUD_PROJECT; do
+          for name in JWT_SECRET CORS_ORIGINS COOKIE_SECURE COOKIE_SAME_SITE PUBLIC_APP_URL PUBLIC_API_URL PUBLIC_WS_URL ALLOW_REGISTRATION ALLOWED_SIGNUP_EMAILS AWS_KEY_ID AWS_KEY AWS_REGION AWS_SENDER_EMAIL; do
             [ -n "${!name}" ] || { echo "::error::secrets.$name is not set"; exit 1; }
           done
           env_flag=()
@@ -104,8 +102,8 @@ jobs:
                   continue
               env[key] = value
 
-          # Keep Identity Platform project settings in the deployment even
-          # when CLOUD_RUN_ENV is managed as one consolidated secret.
+          # Keep these settings in the deployment even when CLOUD_RUN_ENV is
+          # managed as one consolidated secret.
           for key in (
               "JWT_SECRET",
               "CORS_ORIGINS",
@@ -120,8 +118,6 @@ jobs:
               "AWS_KEY",
               "AWS_REGION",
               "AWS_SENDER_EMAIL",
-              "FIREBASE_PROJECT_ID",
-              "GOOGLE_CLOUD_PROJECT",
               "CREDENTIAL_ENCRYPTION_KEY",
           ):
               value = os.environ.get(key, "").strip()

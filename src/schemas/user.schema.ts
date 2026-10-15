@@ -12,9 +12,6 @@ export class User {
   @Prop({ type: String, default: null })
   passwordHash?: string | null;
 
-  @Prop({ type: String, unique: true, sparse: true, index: true })
-  identityPlatformUid?: string | null;
-
   // Google's account ID, from sign-in through the AWS Cognito user pool.
   @Prop({ type: String, unique: true, sparse: true, index: true })
   googleId?: string | null;

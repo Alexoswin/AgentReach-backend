@@ -5,7 +5,6 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
-import { IdentityPlatformService } from './identity-platform.service';
 import { CognitoAuthService } from './cognito-auth.service';
 
 @Module({
@@ -14,7 +13,6 @@ import { CognitoAuthService } from './cognito-auth.service';
   providers: [
     AuthService,
     TokenService,
-    IdentityPlatformService,
     CognitoAuthService,
     {
       provide: APP_GUARD,

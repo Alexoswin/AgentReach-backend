@@ -58,7 +58,6 @@ function createService(users: any[] = [], env: Record<string, string> = {}) {
     new TokenService(),
     configService as any,
     { verifyGoogleIdToken: jest.fn() } as any,
-    { verifyGoogleIdToken: jest.fn() } as any,
   );
   return { service, user, authSession };
 }
@@ -158,7 +157,7 @@ describe('AuthService', () => {
           passwordHash: 'previous-password-hash',
           authProvider: 'password',
           emailVerified: false,
-          identityPlatformUid: null,
+          googleId: null,
           emailVerificationSentAt: new Date(Date.now() - 61_000),
         },
       ],
@@ -194,7 +193,7 @@ describe('AuthService', () => {
         passwordHash: 'previous-password-hash',
         authProvider: 'password',
         emailVerified: false,
-        identityPlatformUid: null,
+        googleId: null,
         emailVerificationSentAt: new Date(Date.now() - 61_000),
       },
     ]);
@@ -221,7 +220,7 @@ describe('AuthService', () => {
           email: 'jane@x.com',
           passwordHash: null,
           authProvider: 'google',
-          identityPlatformUid: 'google-uid',
+          googleId: 'google-uid',
           emailVerified: false,
         },
       ],
@@ -247,29 +246,28 @@ describe('AuthService', () => {
         passwordHash: 'password-hash',
         authProvider: 'password',
         emailVerified: false,
-        identityPlatformUid: null,
+        googleId: null,
         emailVerificationCodeHash: 'code-hash',
         emailVerificationExpiresAt: new Date(Date.now() + 60_000),
         emailVerificationAttempts: 0,
         emailVerificationSentAt: new Date(),
       },
     ]);
-    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+    (service as any).cognitoAuthService.verifyGoogleIdToken = jest
       .fn()
       .mockResolvedValue({
-        uid: 'google-uid',
+        googleId: 'google-uid',
         email: 'jane@x.com',
-        email_verified: true,
         name: 'Jane Doe',
       });
 
-    const session = await service.loginWithGoogle('google-token');
+    const session = await service.loginWithCognito('google-token');
 
     expect(session).toHaveProperty('accessToken');
     // The pending signup's password was never proven to belong to the
     // mailbox owner, so linking Google must not keep it usable.
     expect(user.records[0]).toMatchObject({
-      identityPlatformUid: 'google-uid',
+      googleId: 'google-uid',
       authProvider: 'google',
       passwordHash: null,
       emailVerified: true,
@@ -290,22 +288,21 @@ describe('AuthService', () => {
         passwordHash: 'password-hash',
         authProvider: 'password',
         emailVerified: true,
-        identityPlatformUid: null,
+        googleId: null,
       },
     ]);
-    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+    (service as any).cognitoAuthService.verifyGoogleIdToken = jest
       .fn()
       .mockResolvedValue({
-        uid: 'google-uid',
+        googleId: 'google-uid',
         email: 'jane@x.com',
-        email_verified: true,
       });
 
     await expect(
-      service.loginWithGoogle('google-token'),
+      service.loginWithCognito('google-token'),
     ).resolves.toHaveProperty('accessToken');
     expect(user.records[0]).toMatchObject({
-      identityPlatformUid: 'google-uid',
+      googleId: 'google-uid',
       authProvider: 'password+google',
       emailVerified: true,
     });
@@ -318,21 +315,20 @@ describe('AuthService', () => {
     const { service, user } = createService([], {
       ALLOW_REGISTRATION: 'false',
     });
-    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+    (service as any).cognitoAuthService.verifyGoogleIdToken = jest
       .fn()
       .mockResolvedValue({
-        uid: 'google-uid',
+        googleId: 'google-uid',
         email: 'new@x.com',
-        email_verified: true,
         name: 'New User',
       });
 
     await expect(
-      service.loginWithGoogle('google-token'),
+      service.loginWithCognito('google-token'),
     ).resolves.toHaveProperty('accessToken');
     expect(user.records[0]).toMatchObject({
       email: 'new@x.com',
-      identityPlatformUid: 'google-uid',
+      googleId: 'google-uid',
       authProvider: 'google',
       emailVerified: true,
     });
@@ -346,20 +342,19 @@ describe('AuthService', () => {
         email: 'jane@x.com',
         passwordHash: null,
         authProvider: 'google',
-        identityPlatformUid: 'different-google-uid',
+        googleId: 'different-google-uid',
         emailVerified: true,
       },
     ]);
-    (service as any).identityPlatformService.verifyGoogleIdToken = jest
+    (service as any).cognitoAuthService.verifyGoogleIdToken = jest
       .fn()
       .mockResolvedValue({
-        uid: 'google-uid',
+        googleId: 'google-uid',
         email: 'jane@x.com',
-        email_verified: true,
       });
 
     await expect(
-      service.loginWithGoogle('google-token'),
+      service.loginWithCognito('google-token'),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -581,7 +576,7 @@ describe('AuthService', () => {
         email: 'a@x.com',
         passwordHash: await hashPassword('pw-12345'),
         emailVerified: true,
-        identityPlatformUid: 'google-uid',
+        googleId: 'google-uid',
         authProvider: 'password+google',
       },
     ]);
@@ -613,7 +608,7 @@ describe('AuthService', () => {
     expect(user.records[0]).toMatchObject({
       email: 'b@x.com',
       emailVerified: false,
-      identityPlatformUid: null,
+      googleId: null,
       authProvider: 'password',
     });
     // Other devices are signed out; this one stays.
