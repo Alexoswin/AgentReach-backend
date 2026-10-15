@@ -312,6 +312,81 @@ describe('runSearch', () => {
     });
   });
 
+  it('saves phones, LinkedIn profiles and company contacts', async () => {
+    const { db, deps, run } = setup({
+      stage: 'qualify',
+      companies: [
+        {
+          id: 'k1',
+          ownerId: 'u1',
+          searchId: 's1',
+          name: 'Acme',
+          domain: 'acme.com',
+          status: 'pending',
+        },
+      ],
+    });
+    const url = 'https://acme.com/team';
+    const found = (kind: string, value: string, extra = {}) => ({
+      kind,
+      value,
+      url,
+      label: '',
+      seen: [url],
+      ...extra,
+    });
+    const readSite = deps.reader.readSite as jest.Mock;
+    readSite.mockResolvedValueOnce({
+      pages: [
+        {
+          url,
+          text: 'Acme builds software for banks. 450 engineers. Offices in Pune. Priya Sharma, VP HR, +91 91234 56789, linkedin.com/in/priya-sharma, priya.sharma@acme.com. Rahul Iyer, Head of Talent. Sales: sales@acme.com. Office +91 20 4012 3456.',
+        },
+      ],
+      emails: ['priya.sharma@acme.com', 'sales@acme.com'],
+      contacts: [
+        found('email', 'priya.sharma@acme.com'),
+        found('email', 'sales@acme.com'),
+        found('phone', '+919123456789', { type: 'mobile' }),
+        found('phone', '+912040123456', { type: 'landline' }),
+        found('linkedin', 'https://www.linkedin.com/in/priya-sharma', {
+          label: 'person',
+        }),
+      ],
+    });
+    const original = (deps.generate as jest.Mock).getMockImplementation()!;
+    (deps.generate as jest.Mock).mockImplementation(async (prompt: string) => {
+      const result: any = await original(prompt);
+      return {
+        ...result,
+        people: result.people.map((person: any) =>
+          person.firstName === 'Priya'
+            ? { ...person, phone: '+91 91234 56789' }
+            : person,
+        ),
+      };
+    });
+
+    await run();
+
+    expect(readSite).toHaveBeenCalledWith('acme.com', { country: 'IN' });
+    const priya = db.prospect.rows.find((row) => row.firstName === 'Priya');
+    expect(priya).toMatchObject({
+      phone: '+919123456789',
+      phoneType: 'mobile',
+      linkedinUrl: 'https://www.linkedin.com/in/priya-sharma',
+    });
+    const rahul = db.prospect.rows.find((row) => row.firstName === 'Rahul');
+    expect(rahul.phone).toBeUndefined();
+    expect(db.prospectCompany.rows[0]).toMatchObject({
+      status: 'qualified',
+      emails: [{ value: 'sales@acme.com', label: 'sales', url }],
+      phones: [{ value: '+912040123456', type: 'landline', label: '', url }],
+      linkedinUrl: '',
+    });
+    expect(db.prospectSearch.rows[0].counts.withPhone).toBe(1);
+  });
+
   it('marks a person who is already a contact as a duplicate', async () => {
     const { db, run } = setup({
       stage: 'qualify',

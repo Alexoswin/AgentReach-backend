@@ -805,7 +805,7 @@ export function pickProfiles(
     ) {
       continue;
     }
-    const target = `${url.origin}${url.pathname}`;
+    const target = `${url.origin}${path}`;
     if (!found.includes(target)) found.push(target);
   }
   return found.slice(0, limit);

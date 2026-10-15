@@ -99,6 +99,31 @@ describe('ProspectsService', () => {
     });
   });
 
+  it('carries the phone and LinkedIn profile into Contacts', async () => {
+    const { service, db, contacts, prospects } = makeService();
+    prospects.push(
+      prospect({
+        phone: '+919123456789',
+        linkedinUrl: 'https://www.linkedin.com/in/priya-sharma',
+      }),
+    );
+    db.contact.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'c1', email: 'priya.sharma@acme.com' }]);
+
+    await service.addToContacts('u1', { ids: ['p1'] });
+
+    const [dto] = contacts.importContacts.mock.calls[0] as any;
+    expect(dto.rows[0]).toMatchObject({
+      phoneNumber: '+919123456789',
+      linkedinUrl: 'https://www.linkedin.com/in/priya-sharma',
+    });
+    expect(dto.mapping).toMatchObject({
+      phoneNumber: 'phoneNumber',
+      linkedinUrl: 'linkedinUrl',
+    });
+  });
+
   it('flags prospects that were already contacts', async () => {
     const { service, db, prospects } = makeService();
     prospects.push(prospect());
