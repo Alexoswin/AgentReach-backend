@@ -51,10 +51,10 @@ export class MailThread {
   @Prop({ default: false })
   hasInbound: boolean;
 
-  // The owner wrote and sent a message here (campaign sends do not count),
-  // which puts the thread in Sent.
+  // An email went out from the owner here, written in the inbox or sent by a
+  // campaign, which puts the thread in Sent.
   @Prop({ default: false })
-  manualSent: boolean;
+  hasSent: boolean;
 
   @Prop({ default: 0 })
   draftCount: number;

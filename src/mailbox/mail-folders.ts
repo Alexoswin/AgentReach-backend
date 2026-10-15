@@ -17,13 +17,18 @@ export function folderFilter(folder: MailFolder): Record<string, unknown> {
     case 'starred':
       return { starred: true, trashed: false };
     case 'sent':
-      return { manualSent: true, trashed: false };
+      return { hasSent: true, trashed: false };
     case 'drafts':
       return { draftCount: { $gt: 0 }, trashed: false };
     case 'scheduled':
       return { scheduledCount: { $gt: 0 }, trashed: false };
+    // Every campaign conversation that has mail in it, replied to or not.
     case 'campaigns':
-      return { hasInbound: true, campaignId: { $ne: null }, trashed: false };
+      return {
+        campaignId: { $ne: null },
+        lastMessageAt: { $ne: null },
+        trashed: false,
+      };
     case 'archive':
       return { archived: true, trashed: false };
     case 'trash':

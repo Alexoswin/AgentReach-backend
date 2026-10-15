@@ -151,6 +151,7 @@ export class MailboxService {
     const where: Record<string, unknown> = { ownerId, ...folderFilter(folder) };
     if (query.unread === 'true') where.unreadCount = { $gt: 0 };
     if (query.campaignId) where.campaignId = query.campaignId;
+    if (query.replied) where.hasInbound = query.replied === 'true';
     if (query.label) where.labels = query.label;
 
     const term = query.search?.trim();

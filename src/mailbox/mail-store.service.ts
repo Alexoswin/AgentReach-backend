@@ -99,8 +99,8 @@ export function summarizeThread(messages: any[]) {
     unreadCount: visible.filter((m) => m.direction === 'INBOUND' && !m.readAt)
       .length,
     hasInbound: visible.some((m) => m.direction === 'INBOUND'),
-    manualSent: visible.some(
-      (m) => m.direction === 'OUTBOUND' && m.source === 'MANUAL',
+    hasSent: visible.some(
+      (m) => m.direction === 'OUTBOUND' && m.status !== 'FAILED',
     ),
     draftCount: drafts.length,
     scheduledCount: scheduled.length,

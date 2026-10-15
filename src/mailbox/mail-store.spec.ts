@@ -44,7 +44,7 @@ describe('summarizeThread', () => {
       messageCount: 2,
       unreadCount: 1,
       hasInbound: true,
-      manualSent: true,
+      hasSent: true,
       draftCount: 0,
       scheduledCount: 0,
       hasAttachments: true,
@@ -67,7 +67,7 @@ describe('summarizeThread', () => {
     ]);
     expect(summary).toMatchObject({
       messageCount: 0,
-      manualSent: false,
+      hasSent: false,
       hasInbound: false,
       draftCount: 1,
       scheduledCount: 1,
@@ -76,10 +76,14 @@ describe('summarizeThread', () => {
     expect(summary.lastActivityAt).toEqual(at(9));
   });
 
-  it('does not put campaign emails in Sent', () => {
-    expect(summarizeThread([outbound({ source: 'CAMPAIGN' })]).manualSent).toBe(
-      false,
+  it('puts campaign emails in Sent, but not ones that failed to send', () => {
+    expect(summarizeThread([outbound({ source: 'CAMPAIGN' })]).hasSent).toBe(
+      true,
     );
+    expect(
+      summarizeThread([outbound({ source: 'CAMPAIGN', status: 'FAILED' })])
+        .hasSent,
+    ).toBe(false);
   });
 
   it('counts a read reply as read', () => {
@@ -106,5 +110,14 @@ describe('folderFilter', () => {
       archived: false,
       trashed: false,
     });
+  });
+
+  it('shows every campaign conversation with mail in it, replied or not', () => {
+    expect(folderFilter('campaigns')).toEqual({
+      campaignId: { $ne: null },
+      lastMessageAt: { $ne: null },
+      trashed: false,
+    });
+    expect(folderFilter('sent')).toEqual({ hasSent: true, trashed: false });
   });
 });

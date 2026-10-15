@@ -16,6 +16,11 @@ export class ListThreadsQueryDto extends PaginationQueryDto {
   @IsUUID()
   campaignId?: string;
 
+  // Only conversations someone replied to ('true') or not yet ('false').
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  replied?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(40)
