@@ -239,6 +239,38 @@ describe('site-reader', () => {
     ]);
   });
 
+  it('skips product pages and blog posts that only mention people or management', () => {
+    const home = new URL('https://acme.com/');
+    const links = [
+      ['https://acme.com/solutions/api-lifecycle-management/', 'API'],
+      ['https://acme.com/lead-management-system/', 'Lead management'],
+      ['https://acme.com/blog/people-analytics-tips', 'People analytics'],
+      ['https://acme.com/blog', 'Blog'],
+      ['https://acme.com/about/management/', 'Management'],
+      ['https://acme.com/company/contact-us/', 'Contact'],
+      ['https://acme.com/our-team', ''],
+    ].map(([url, text]) => ({ url: new URL(url), text }));
+    expect(pickPages(links, home)).toEqual([
+      'https://acme.com/about/management/',
+      'https://acme.com/company/contact-us/',
+      'https://acme.com/our-team',
+      'https://acme.com/blog',
+    ]);
+  });
+
+  it('reads a page once whatever its slash, www or query variant', () => {
+    const links = [
+      'https://acme.com/contact',
+      'https://acme.com/contact/',
+      'https://www.acme.com/contact?ref=footer',
+      'https://acme.com/en-us/Leadership.html',
+    ].map((url) => ({ url: new URL(url), text: '' }));
+    expect(pickPages(links, new URL('https://acme.com/'))).toEqual([
+      'https://acme.com/contact',
+      'https://acme.com/en-us/Leadership.html',
+    ]);
+  });
+
   it('picks profile pages linked from a team page', () => {
     const team = new URL('https://acme.com/team/');
     const links = [

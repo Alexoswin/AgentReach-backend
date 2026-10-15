@@ -29,10 +29,17 @@ const MIN_PAGE_TEXT = 200;
 const MAX_SITEMAP_URLS = 2000;
 const MAX_CONTACTS = 30;
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
-const KEY_PAGES =
-  /team|leadership|people|management|founders|executives|contact|reach-?us|get-?in-?touch/;
-const TEAM_PAGES =
-  /team|leadership|people|management|founders|executives|board|directors/;
+const LOCALE = /^[a-z]{2}(-[a-z]{2})?$/;
+const TEAM_SEGMENT =
+  /^(our-?|the-?|meet-?the-?|meet-?our-?)?(teams?|leadership|leaders|founders|executives|management|people|directors|board-?of-?directors|(leadership|management|executive|founding)-?team)$/;
+const TEAM_LABEL =
+  /^(our |the |meet the |meet our )?(teams?|leadership|leaders|founders|executives|management|people|directors|board of directors|(leadership|management|executive|founding) team)$/;
+const CONTACT_SEGMENT =
+  /^(contacts?|contact-?us|contact-?sales|reach-?us|get-?in-?touch|(our-?)?offices|locations|branches)$/;
+const CONTACT_LABEL =
+  /^(contact|contact us|contact sales|get in touch|reach us|(our )?offices|locations)$/;
+const CONTENT_SECTION =
+  /^(blogs?|news|newsroom|posts?|articles?|resources|insights|events|webinars?|case-stud(y|ies)|customers|clients|partners|portfolio|projects|work|stories|podcasts?|guides?|whitepapers?|ebooks?|[\w-]*glossary|learn|academy|docs|help|support|kb|tags?|categor(y|ies)|authors?|solutions?|products?|features?|use-cases?|appstore|templates?|integrations?|apps|marketplace|platform)$/;
 const NOT_PROFILE =
   /career|job|culture|value|join|hiring|news|blog|contact|about|page|categor|tag|feed|event/;
 const APP_SHELL =
@@ -743,12 +750,48 @@ export function extractLinks(html: string, base: URL) {
 }
 
 const PAGE_HINTS: Array<[RegExp, number]> = [
-  [/team|leadership|people|management|founders|executives|our-?people/, 3],
-  [/contact|reach-?us|get-?in-?touch|our-?offices|locations|branches/, 3],
-  [/about|company|who-?we-?are|story/, 2],
-  [/career|jobs|join|hiring|openings/, 2],
-  [/news|press|media|blog/, 1],
+  [/(^|-)(about|aboutus|company|who-?we-?are|our-?story|ourstory)(-|$)/, 2],
+  [/(^|-)(careers?|jobs|join-?us|hiring|openings)(-|$)/, 2],
+  [/contact/, 2],
+  [/(^|-)(news|newsroom|press|press-?releases|media|blog)(-|$)/, 1],
 ];
+
+function pathSegments(url: URL) {
+  const segments = url.pathname
+    .toLowerCase()
+    .replace(/\.(html?|php|aspx?|jsp)$/, '')
+    .split('/')
+    .filter(Boolean);
+  return LOCALE.test(segments[0] || '') ? segments.slice(1) : segments;
+}
+
+function isTeamOrContact(url: URL) {
+  const last = pathSegments(url).pop() || '';
+  return TEAM_SEGMENT.test(last) || CONTACT_SEGMENT.test(last);
+}
+
+export function pageKey(url: URL) {
+  return `${url.hostname.replace(/^www\./, '')}/${pathSegments(url).join('/')}`;
+}
+
+function pageScore(url: URL, text: string) {
+  const segments = pathSegments(url);
+  if (!segments.length || segments.length > 3) return 0;
+  const last = segments[segments.length - 1];
+  const label = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (TEAM_LABEL.test(label) || CONTACT_LABEL.test(label)) return 3;
+  if (segments.length > 1 && CONTENT_SECTION.test(segments[0])) return 0;
+  if (TEAM_SEGMENT.test(last) || CONTACT_SEGMENT.test(last)) return 3;
+  const words = [
+    last.split('-').length <= 3 ? last : '',
+    label.split(' ').length <= 3 ? label.replace(/ /g, '-') : '',
+  ].filter(Boolean);
+  return PAGE_HINTS.reduce(
+    (best, [pattern, weight]) =>
+      words.some((word) => pattern.test(word)) ? Math.max(best, weight) : best,
+    0,
+  );
+}
 
 export function pickPages(
   links: { url: URL; text: string }[],
@@ -756,33 +799,29 @@ export function pickPages(
   limit = MAX_PAGES,
 ) {
   const hostOf = (url: URL) => url.hostname.replace(/^www\./, '');
-  const scored = new Map<string, number>();
+  const scored = new Map<string, { url: string; score: number }>();
   for (const { url, text } of links) {
-    if (!/^https?:$/.test(url.protocol) || hostOf(url) !== hostOf(home)) {
-      continue;
-    }
-    const target = `${url.pathname} ${text}`.toLowerCase();
     if (
-      url.pathname === '/' ||
+      !/^https?:$/.test(url.protocol) ||
+      hostOf(url) !== hostOf(home) ||
       /\.(pdf|jpe?g|png|zip|docx?)$/i.test(url.pathname)
     ) {
       continue;
     }
-    const score = PAGE_HINTS.reduce(
-      (best, [pattern, weight]) =>
-        pattern.test(target) ? Math.max(best, weight) : best,
-      0,
-    );
+    const score = pageScore(url, text);
     if (score > 0) {
       url.hash = '';
-      const key = url.toString();
-      scored.set(key, Math.max(scored.get(key) || 0, score));
+      const key = pageKey(url);
+      const current = scored.get(key);
+      if (!current || score > current.score) {
+        scored.set(key, { url: current?.url || url.toString(), score });
+      }
     }
   }
-  return [...scored.entries()]
-    .sort((a, b) => b[1] - a[1])
+  return [...scored.values()]
+    .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(([url]) => url);
+    .map((item) => item.url);
 }
 
 export function pickProfiles(
@@ -871,25 +910,23 @@ export class SiteReader {
     const links = extractLinks(first.html, first.url);
     let targets = pickPages(links, home);
     const keyPages = targets.filter((target) =>
-      KEY_PAGES.test(new URL(target).pathname.toLowerCase()),
+      isTeamOrContact(new URL(target)),
     );
     if (keyPages.length < 2) {
       targets = pickPages([...links, ...(await this.sitemapLinks(home))], home);
     }
     let total = pages[0].text.length;
+    const read = new Set([pageKey(first.url)]);
     const visit = async (target: string, limit: number) => {
-      if (
-        total >= MAX_TOTAL_CHARS ||
-        pages.some((page) => page.url === target)
-      ) {
-        return null;
-      }
       const url = new URL(target);
+      const key = pageKey(url);
+      if (total >= MAX_TOTAL_CHARS || read.has(key)) return null;
+      read.add(key);
       if (!(await this.robotsAllow(url))) return null;
       const page = await this.fetchPage(url).catch(() => null);
-      if (!page || pages.some((item) => item.url === page.url.toString())) {
-        return null;
-      }
+      const landed = page ? pageKey(page.url) : key;
+      if (!page || (landed !== key && read.has(landed))) return null;
+      read.add(landed);
       add(page, limit);
       total += pages[pages.length - 1].text.length;
       return page;
@@ -897,7 +934,7 @@ export class SiteReader {
     const profiles: string[] = [];
     for (const target of targets) {
       const page = await visit(target, MAX_PAGE_CHARS);
-      if (page && TEAM_PAGES.test(page.url.pathname.toLowerCase())) {
+      if (page && TEAM_SEGMENT.test(pathSegments(page.url).pop() || '')) {
         profiles.push(
           ...pickProfiles(extractLinks(page.html, page.url), page.url),
         );
