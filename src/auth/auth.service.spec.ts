@@ -58,6 +58,7 @@ function createService(users: any[] = [], env: Record<string, string> = {}) {
     new TokenService(),
     configService as any,
     { verifyGoogleIdToken: jest.fn() } as any,
+    { verifyGoogleIdToken: jest.fn() } as any,
   );
   return { service, user, authSession };
 }
@@ -360,6 +361,133 @@ describe('AuthService', () => {
     await expect(
       service.loginWithGoogle('google-token'),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  describe('Google sign-in through AWS Cognito', () => {
+    const cognitoIdentity = {
+      googleId: 'google-account-1',
+      email: 'jane@x.com',
+      name: 'Jane Doe',
+    };
+    const withCognito = (service: AuthService, identity = cognitoIdentity) => {
+      (service as any).cognitoAuthService.verifyGoogleIdToken = jest
+        .fn()
+        .mockResolvedValue(identity);
+    };
+
+    beforeEach(() => {
+      process.env.JWT_SECRET = 'test-secret';
+    });
+    afterEach(() => {
+      delete process.env.JWT_SECRET;
+    });
+
+    it('signs a user linked through Firebase into the same account', async () => {
+      const { service, user } = createService([
+        {
+          id: 'google-1',
+          email: 'jane@x.com',
+          passwordHash: null,
+          authProvider: 'google',
+          identityPlatformUid: 'firebase-uid',
+          emailVerified: true,
+        },
+      ]);
+      withCognito(service);
+
+      await expect(
+        service.loginWithCognito('cognito-token', 'nonce-1'),
+      ).resolves.toHaveProperty('accessToken');
+      expect(
+        (service as any).cognitoAuthService.verifyGoogleIdToken,
+      ).toHaveBeenCalledWith('cognito-token', 'nonce-1');
+      expect(user.records).toHaveLength(1);
+      expect(user.records[0]).toMatchObject({
+        googleId: 'google-account-1',
+        identityPlatformUid: 'firebase-uid',
+        authProvider: 'google',
+      });
+    });
+
+    it('finds the user by Google account on later sign-ins', async () => {
+      const { service, user } = createService([
+        {
+          id: 'google-1',
+          email: 'old@x.com',
+          passwordHash: null,
+          authProvider: 'google',
+          googleId: 'google-account-1',
+          emailVerified: true,
+        },
+      ]);
+      withCognito(service);
+
+      await expect(
+        service.loginWithCognito('cognito-token'),
+      ).resolves.toHaveProperty('accessToken');
+      expect(user.records).toHaveLength(1);
+    });
+
+    it('creates an account for a new Google user', async () => {
+      const { service, user } = createService([], {
+        ALLOW_REGISTRATION: 'false',
+      });
+      withCognito(service, { ...cognitoIdentity, email: 'new@x.com' });
+
+      await expect(
+        service.loginWithCognito('cognito-token'),
+      ).resolves.toHaveProperty('accessToken');
+      expect(user.records[0]).toMatchObject({
+        email: 'new@x.com',
+        googleId: 'google-account-1',
+        authProvider: 'google',
+        emailVerified: true,
+        name: 'Jane Doe',
+        initials: 'JD',
+      });
+    });
+
+    it('rejects a different Google account for an email already linked', async () => {
+      const { service } = createService([
+        {
+          id: 'google-1',
+          email: 'jane@x.com',
+          authProvider: 'google',
+          googleId: 'another-google-account',
+          emailVerified: true,
+        },
+      ]);
+      withCognito(service);
+
+      await expect(
+        service.loginWithCognito('cognito-token'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('links Google from the profile only for the same email', async () => {
+      const { service, user } = createService([
+        {
+          id: 'password-1',
+          email: 'jane@x.com',
+          passwordHash: 'password-hash',
+          authProvider: 'password',
+          emailVerified: true,
+        },
+      ]);
+      withCognito(service, { ...cognitoIdentity, email: 'other@x.com' });
+      await expect(
+        service.linkCognito('password-1', 'cognito-token'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      withCognito(service);
+      await expect(
+        service.linkCognito('password-1', 'cognito-token'),
+      ).resolves.toHaveProperty('accessToken');
+      expect(user.records[0]).toMatchObject({
+        googleId: 'google-account-1',
+        authProvider: 'password+google',
+      });
+    });
   });
 
   it('does not refresh a session for a disabled account', async () => {

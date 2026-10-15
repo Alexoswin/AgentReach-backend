@@ -22,6 +22,7 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { Public } from './public.decorator';
 import { enforceAuthRateLimit } from './rate-limit';
 import { IdentityPlatformDto } from './dto/identity-platform.dto';
+import { CognitoSignInDto } from './dto/cognito-sign-in.dto';
 import {
   clearSessionCookies,
   readCookie,
@@ -71,6 +72,25 @@ export class AuthController {
     return this.writeSession(
       response,
       this.authService.loginWithGoogle(dto.idToken),
+    );
+  }
+
+  @Public()
+  @Post('cognito')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Exchange a Google sign-in from the AWS Cognito user pool for a session',
+  })
+  cognito(
+    @Req() request: Request,
+    @Body() dto: CognitoSignInDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    enforceAuthRateLimit('cognito', request);
+    return this.writeSession(
+      response,
+      this.authService.loginWithCognito(dto.idToken, dto.nonce),
     );
   }
 
@@ -170,6 +190,22 @@ export class AuthController {
     return this.writeSession(
       response,
       this.authService.linkGoogle(request.user.id, dto.idToken),
+    );
+  }
+
+  @Post('link-cognito')
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @ApiOperation({
+    summary: 'Link the matching Google identity, signed in through Cognito',
+  })
+  linkCognito(
+    @Req() request: any,
+    @Body() dto: CognitoSignInDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.writeSession(
+      response,
+      this.authService.linkCognito(request.user.id, dto.idToken, dto.nonce),
     );
   }
 

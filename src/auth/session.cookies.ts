@@ -89,6 +89,7 @@ const CSRF_EXEMPT_AUTH_PATHS = new Set([
   '/api/auth/register',
   '/api/auth/login',
   '/api/auth/identity-platform',
+  '/api/auth/cognito',
   '/api/auth/refresh',
   '/api/auth/forgot-password',
   '/api/auth/reset-password',

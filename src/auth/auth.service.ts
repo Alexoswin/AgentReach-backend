@@ -19,6 +19,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { RegisterDto } from './dto/register.dto';
 import { IdentityPlatformService } from './identity-platform.service';
+import { CognitoAuthService } from './cognito-auth.service';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 
 const THEME_VALUES = [
@@ -58,6 +59,7 @@ export class AuthService {
     private tokenService: TokenService,
     private configService: ConfigService,
     private identityPlatformService: IdentityPlatformService,
+    private cognitoAuthService: CognitoAuthService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -71,6 +73,7 @@ export class AuthService {
         !existing.emailVerified &&
         Boolean(existing.passwordHash) &&
         !existing.identityPlatformUid &&
+        !existing.googleId &&
         existing.authProvider !== 'google';
 
       if (!isPendingPasswordUser) {
@@ -196,10 +199,36 @@ export class AuthService {
   async loginWithGoogle(idToken: string) {
     const decoded =
       await this.identityPlatformService.verifyGoogleIdToken(idToken);
-    const email = decoded.email!.trim().toLowerCase();
+    return this.signInWithGoogle('identityPlatformUid', {
+      uid: decoded.uid,
+      email: decoded.email!,
+      name: decoded.name,
+    });
+  }
+
+  /** Google sign-in through the AWS Cognito user pool. */
+  async loginWithCognito(idToken: string, nonce?: string) {
+    const identity = await this.cognitoAuthService.verifyGoogleIdToken(
+      idToken,
+      nonce,
+    );
+    return this.signInWithGoogle('googleId', {
+      uid: identity.googleId,
+      email: identity.email,
+      name: identity.name,
+    });
+  }
+
+  // `field` is where the Google identity is recorded: identityPlatformUid for
+  // Firebase/Identity Platform, googleId for the Cognito user pool.
+  private async signInWithGoogle(
+    field: GoogleIdentityField,
+    identity: { uid: string; email: string; name?: string },
+  ) {
+    const email = identity.email.trim().toLowerCase();
 
     let user = await this.db.user.findUnique({
-      where: { identityPlatformUid: decoded.uid },
+      where: { [field]: identity.uid },
     });
 
     if (user) {
@@ -222,8 +251,8 @@ export class AuthService {
       if (existingEmailUser.disabled) {
         throw new ForbiddenException('This account is disabled.');
       }
-      const linkedIdentityUid = existingEmailUser.identityPlatformUid?.trim();
-      if (linkedIdentityUid && linkedIdentityUid !== decoded.uid) {
+      const linkedIdentityUid = existingEmailUser[field]?.trim();
+      if (linkedIdentityUid && linkedIdentityUid !== identity.uid) {
         throw new ConflictException(
           'This email is already linked to a different Google account.',
         );
@@ -244,7 +273,7 @@ export class AuthService {
       user = await this.db.user.update({
         where: { id: existingEmailUser.id },
         data: {
-          identityPlatformUid: decoded.uid,
+          [field]: identity.uid,
           ...(unprovenPassword ? { passwordHash: null } : {}),
           authProvider: keepsPassword ? 'password+google' : 'google',
           emailVerified: true,
@@ -259,7 +288,7 @@ export class AuthService {
     }
 
     // Google sign-up is always open: Google has already verified the email.
-    const name = decoded.name?.trim() || email.split('@')[0];
+    const name = identity.name?.trim() || email.split('@')[0];
     const parts = name.split(/\s+/).filter(Boolean);
     const initials =
       parts.length > 1
@@ -270,7 +299,7 @@ export class AuthService {
       data: {
         email,
         passwordHash: null,
-        identityPlatformUid: decoded.uid,
+        [field]: identity.uid,
         authProvider: 'google',
         emailVerified: true,
         lastLoginAt: new Date(),
@@ -285,7 +314,29 @@ export class AuthService {
   async linkGoogle(userId: string, idToken: string) {
     const decoded =
       await this.identityPlatformService.verifyGoogleIdToken(idToken);
-    const email = decoded.email!.trim().toLowerCase();
+    return this.linkGoogleIdentity(userId, 'identityPlatformUid', {
+      uid: decoded.uid,
+      email: decoded.email!,
+    });
+  }
+
+  async linkCognito(userId: string, idToken: string, nonce?: string) {
+    const identity = await this.cognitoAuthService.verifyGoogleIdToken(
+      idToken,
+      nonce,
+    );
+    return this.linkGoogleIdentity(userId, 'googleId', {
+      uid: identity.googleId,
+      email: identity.email,
+    });
+  }
+
+  private async linkGoogleIdentity(
+    userId: string,
+    field: GoogleIdentityField,
+    identity: { uid: string; email: string },
+  ) {
+    const email = identity.email.trim().toLowerCase();
     const user = await this.db.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
     if (user.disabled)
@@ -295,14 +346,14 @@ export class AuthService {
         'The Google email must match your ReachConvert email.',
       );
     }
-    if (user.identityPlatformUid && user.identityPlatformUid !== decoded.uid) {
+    if (user[field] && user[field] !== identity.uid) {
       throw new ConflictException(
         'A different Google account is already linked.',
       );
     }
 
     const linkedUser = await this.db.user.findUnique({
-      where: { identityPlatformUid: decoded.uid },
+      where: { [field]: identity.uid },
     });
     if (linkedUser && linkedUser.id !== userId) {
       throw new ConflictException(
@@ -313,7 +364,7 @@ export class AuthService {
     const updated = await this.db.user.update({
       where: { id: userId },
       data: {
-        identityPlatformUid: decoded.uid,
+        [field]: identity.uid,
         authProvider: user.passwordHash ? 'password+google' : 'google',
         emailVerified: true,
         lastLoginAt: new Date(),
@@ -498,6 +549,7 @@ export class AuthService {
         emailVerificationAttempts: 0,
         emailVerificationSentAt: now,
         identityPlatformUid: null,
+        googleId: null,
         authProvider: 'password',
       });
     }
@@ -857,6 +909,8 @@ export class AuthService {
   }
 }
 
+type GoogleIdentityField = 'identityPlatformUid' | 'googleId';
+
 // refreshToken is omitted when the browser already holds the current one.
 type RefreshedSession = {
   accessToken: string;
@@ -877,6 +931,7 @@ type UserProfile = {
   passwordHash?: string | null;
   refreshTokenHash?: string | null;
   identityPlatformUid?: string | null;
+  googleId?: string | null;
   authProvider?: string;
   disabled?: boolean;
   emailVerified?: boolean;

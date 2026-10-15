@@ -20,6 +20,7 @@ const AUTH_LIMITS: Record<string, { perEmail?: Limit; perIp: Limit }> = {
     perIp: { limit: 10, windowMs: HOUR },
   },
   'identity-platform': { perIp: { limit: 30, windowMs: 15 * MINUTE } },
+  cognito: { perIp: { limit: 30, windowMs: 15 * MINUTE } },
   'forgot-password': {
     perEmail: { limit: 3, windowMs: HOUR },
     perIp: { limit: 20, windowMs: HOUR },
