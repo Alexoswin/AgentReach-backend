@@ -2,7 +2,15 @@ import * as dns from 'dns';
 import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
+import type { CountryCode } from 'libphonenumber-js/max';
 import { createGunzip } from 'zlib';
+import {
+  countryFromDomain,
+  countryFromName,
+  findPhones,
+  parsePhone,
+} from './phones';
+import { extractEmails, linkedinUrl } from './verify';
 
 const USER_AGENT =
   'ReachConvertBot/1.0 (+https://www.reachconvert.site/compliance)';
@@ -11,9 +19,24 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_BODY_BYTES = 1_500_000;
 const MAX_REDIRECTS = 3;
 const MIN_HOST_INTERVAL_MS = 1000;
-const MAX_PAGES = 4;
+const MAX_PAGES = 5;
+const MAX_PROFILE_PAGES = 3;
 const MAX_PAGE_CHARS = 8000;
-const MAX_TOTAL_CHARS = 24_000;
+const MAX_PROFILE_CHARS = 3000;
+const MAX_STRUCTURED_CHARS = 1500;
+const MAX_TOTAL_CHARS = 40_000;
+const MIN_PAGE_TEXT = 200;
+const MAX_SITEMAP_URLS = 2000;
+const MAX_CONTACTS = 30;
+const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const KEY_PAGES =
+  /team|leadership|people|management|founders|executives|contact|reach-?us|get-?in-?touch/;
+const TEAM_PAGES =
+  /team|leadership|people|management|founders|executives|board|directors/;
+const NOT_PROFILE =
+  /career|job|culture|value|join|hiring|news|blog|contact|about|page|categor|tag|feed|event/;
+const APP_SHELL =
+  /<div[^>]*\bid\s*=\s*["'](?:root|app|__next|___gatsby|svelte)["'][^>]*>\s*<\/div>|<noscript[^>]*>[^<]{0,300}javascript/i;
 
 export type RawResponse = {
   status: number;
@@ -25,10 +48,30 @@ export type Transport = (url: URL) => Promise<RawResponse>;
 
 export type SitePage = { url: string; text: string };
 
+export type SiteContact = {
+  kind: 'email' | 'phone' | 'linkedin';
+  value: string;
+  url: string;
+  label: string;
+  type?: string;
+  seen: string[];
+};
+
 export type SiteContent = {
   pages: SitePage[];
   emails: string[];
+  contacts: SiteContact[];
   unreachableReason?: string;
+};
+
+type PageRead = {
+  url: string;
+  text: string;
+  full: string;
+  emails: string[];
+  phones: Array<{ raw: string; label: string }>;
+  links: string[];
+  country?: CountryCode;
 };
 
 type RobotsRule = { allow: boolean; pattern: string };
@@ -273,25 +316,36 @@ export function robotsAllows(rules: RobotsRule[], path: string) {
   return best ? best.allow : true;
 }
 
-export function htmlToText(html: string) {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(
-      /<\/(p|div|li|ul|ol|h[1-6]|tr|section|article|header|footer|br)>/gi,
-      '\n',
-    )
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+export function decodeEntities(text: string) {
+  return text
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&commat;/gi, '@')
+    .replace(/&period;/gi, '.')
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) =>
+      String.fromCodePoint(Math.min(parseInt(code, 16), 0x10ffff)),
+    )
     .replace(/&#(\d+);/g, (_, code) =>
       String.fromCodePoint(Math.min(Number(code), 0x10ffff)),
-    )
+    );
+}
+
+export function htmlToText(html: string) {
+  return decodeEntities(
+    html
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(
+        /<\/(p|div|li|ul|ol|h[1-6]|tr|section|article|header|footer|br)>/gi,
+        '\n',
+      )
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' '),
+  )
     .replace(/[ \t\f\v]+/g, ' ')
     .replace(/ *\n+ */g, '\n')
     .trim();
@@ -302,13 +356,373 @@ export function extractMailtoEmails(html: string) {
   const pattern = /href\s*=\s*["']mailto:([^"'?]+)/gi;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(html))) {
-    try {
-      found.push(decodeURIComponent(match[1]).trim().toLowerCase());
-    } catch {
-      found.push(match[1].trim().toLowerCase());
-    }
+    found.push(safeDecode(decodeEntities(match[1])).trim().toLowerCase());
   }
   return found;
+}
+
+function safeDecode(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodeCloudflareEmail(hex: string) {
+  const bytes = Buffer.from(hex, 'hex');
+  if (bytes.length < 2) return '';
+  const email = Buffer.from(
+    bytes.subarray(1).map((byte) => byte ^ bytes[0]),
+  ).toString('utf8');
+  return email.includes('@') ? email : '';
+}
+
+export function whatsappNumber(href: string) {
+  try {
+    const url = new URL(href);
+    const host = url.hostname.replace(/^www\./, '');
+    const number =
+      host === 'wa.me'
+        ? url.pathname.slice(1)
+        : url.protocol === 'whatsapp:' || host.endsWith('whatsapp.com')
+          ? url.searchParams.get('phone') || ''
+          : '';
+    const digits = number.replace(/[\s+().-]/g, '');
+    return /^\d{7,15}$/.test(digits) ? digits : '';
+  } catch {
+    return '';
+  }
+}
+
+function hiddenContact(href: string, inner: string) {
+  const shown = () => htmlToText(inner).toLowerCase();
+  if (/^mailto:/i.test(href)) {
+    const email = safeDecode(href.slice(7).split('?')[0]).trim().toLowerCase();
+    return email && !shown().includes(email) ? email : '';
+  }
+  if (/^(tel|callto):/i.test(href)) {
+    const number = safeDecode(href.replace(/^(tel|callto):/i, '')).trim();
+    const digits = number.replace(/\D/g, '');
+    return digits.length >= 6 &&
+      !shown().replace(/\D/g, '').includes(digits.slice(-6))
+      ? number
+      : '';
+  }
+  const whatsapp = whatsappNumber(href);
+  if (whatsapp) {
+    return shown().replace(/\D/g, '').includes(whatsapp.slice(-6))
+      ? 'WhatsApp'
+      : `WhatsApp +${whatsapp}`;
+  }
+  const profile = linkedinUrl(href);
+  return profile?.kind === 'in' && !shown().includes('linkedin.com/in/')
+    ? profile.url.replace('https://www.', '')
+    : '';
+}
+
+export function revealContacts(html: string) {
+  return html
+    .replace(
+      /(href\s*=\s*["'])[^"']*\/cdn-cgi\/l\/email-protection#([0-9a-f]+)/gi,
+      (_, start: string, hex: string) =>
+        `${start}mailto:${decodeCloudflareEmail(hex)}`,
+    )
+    .replace(
+      /<(a|span)\b[^>]*\bdata-cfemail\s*=\s*["']([0-9a-f]+)["'][^>]*>[\s\S]*?<\/\1>/gi,
+      (_, _tag: string, hex: string) => decodeCloudflareEmail(hex),
+    )
+    .replace(
+      /<a\s([^>]*?)href\s*=\s*(["'])([^"']*)\2([^>]*)>([\s\S]*?)<\/a>/gi,
+      (
+        whole: string,
+        before: string,
+        quote: string,
+        href: string,
+        after: string,
+        inner: string,
+      ) => {
+        const target = decodeEntities(href).trim();
+        if (
+          !/^(mailto:|tel:|callto:|whatsapp:|(https?:)?\/\/([\w-]+\.)*(wa\.me|whatsapp\.com|linkedin\.com)\/)/i.test(
+            target,
+          )
+        ) {
+          return whole;
+        }
+        const extra = hiddenContact(target, inner);
+        return extra
+          ? `<a ${before}href=${quote}${href}${quote}${after}>${inner} ${extra}</a>`
+          : whole;
+      },
+    );
+}
+
+export function revealObfuscatedEmails(text: string) {
+  return text
+    .replace(/(\w)\s*[[({<]\s*at\s*[\])}>]\s*(\w)/gi, '$1@$2')
+    .replace(/(\w)\s*[[({<]\s*dot\s*[\])}>]\s*(\w)/gi, '$1.$2');
+}
+
+function strings(value: unknown): string[] {
+  return (Array.isArray(value) ? value : [value]).flatMap((item) =>
+    typeof item === 'string' && item.trim() ? [item.trim()] : [],
+  );
+}
+
+export function readStructuredData(html: string) {
+  const result = {
+    lines: [] as string[],
+    emails: [] as string[],
+    phones: [] as Array<{ raw: string; label: string }>,
+    links: [] as string[],
+    country: undefined as CountryCode | undefined,
+  };
+  let budget = 300;
+  const visit = (node: unknown, depth: number, inherited: string) => {
+    if (!node || typeof node !== 'object' || depth > 8 || budget-- <= 0) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1, inherited);
+      return;
+    }
+    const item = node as Record<string, unknown>;
+    const type = strings(item['@type']).join(' ');
+    const person = /\bPerson\b/.test(type);
+    const contactType = strings(item.contactType)[0]?.toLowerCase() || '';
+    const label = person
+      ? ''
+      : contactType ||
+        (/Organization|Business|Corporation|Store|Restaurant|Office/.test(type)
+          ? 'main'
+          : inherited);
+    const emails = strings(item.email).map((email) =>
+      email.replace(/^mailto:/i, '').toLowerCase(),
+    );
+    const phones = strings(item.telephone);
+    const links = strings(item.sameAs).filter((url) => linkedinUrl(url));
+    const name =
+      typeof item.name === 'string'
+        ? item.name.trim()
+        : strings([item.givenName, item.familyName]).join(' ');
+    result.emails.push(...emails);
+    result.phones.push(...phones.map((raw) => ({ raw, label })));
+    result.links.push(...links);
+    if (
+      person &&
+      name &&
+      (item.jobTitle || emails.length || phones.length || links.length)
+    ) {
+      result.lines.push(
+        [
+          name,
+          ...strings(item.jobTitle),
+          ...emails,
+          ...phones,
+          ...links.map((url) =>
+            String(linkedinUrl(url)?.url).replace('https://www.', ''),
+          ),
+        ].join(', '),
+      );
+    } else if (!person && (emails.length || phones.length)) {
+      result.lines.push(
+        `${[name, contactType].filter(Boolean).join(', ') || 'Contact'}: ${[...emails, ...phones].join(', ')}`,
+      );
+    }
+    const address = item.address as Record<string, unknown> | undefined;
+    if (!result.country && address && typeof address === 'object') {
+      const country = address.addressCountry as
+        | Record<string, unknown>
+        | string
+        | undefined;
+      result.country = countryFromName(
+        country && typeof country === 'object' ? country.name : country,
+      );
+    }
+    for (const [key, value] of Object.entries(item)) {
+      if (key !== 'address') visit(value, depth + 1, label);
+    }
+  };
+  for (const match of html.matchAll(
+    /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+  )) {
+    try {
+      visit(
+        JSON.parse(
+          match[1]
+            .trim()
+            .replace(/^(<!--|<!\[CDATA\[)/, '')
+            .replace(/(-->|\]\]>)$/, ''),
+        ),
+        0,
+        '',
+      );
+    } catch {
+      continue;
+    }
+  }
+  result.lines = [...new Set(result.lines)];
+  return result;
+}
+
+export function embeddedText(html: string) {
+  const found = new Set<string>();
+  const collect = (node: unknown, depth: number) => {
+    if (found.size >= 2000 || depth > 40) return;
+    if (typeof node === 'string') {
+      const text = (/<[a-z][\s\S]*>/i.test(node) ? htmlToText(node) : node)
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (
+        text.length > 1 &&
+        text.length <= 2000 &&
+        /\p{L}/u.test(text) &&
+        !/^(https?:|\/|data:|#|\{|\[)/.test(text) &&
+        !/^[\w.:-]{24,}$/.test(text)
+      ) {
+        found.add(text);
+      }
+      return;
+    }
+    if (node && typeof node === 'object') {
+      for (const value of Object.values(node)) collect(value, depth + 1);
+    }
+  };
+  for (const match of html.matchAll(
+    /<script[^>]*type\s*=\s*["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi,
+  )) {
+    try {
+      collect(JSON.parse(match[1]), 0);
+    } catch {
+      continue;
+    }
+  }
+  return [...found].join('\n').slice(0, MAX_PAGE_CHARS);
+}
+
+function stripChrome(html: string) {
+  return html.replace(/<(nav|footer)\b[\s\S]*?<\/\1>/gi, ' ');
+}
+
+function readPage(url: URL, raw: string, secondary: boolean): PageRead {
+  const html = revealContacts(raw);
+  const structured = readStructuredData(html);
+  const visible = htmlToText(html);
+  const embedded = visible.length < MIN_PAGE_TEXT ? embeddedText(html) : '';
+  const full = revealObfuscatedEmails(
+    [visible, embedded].filter(Boolean).join('\n'),
+  );
+  const body = secondary
+    ? revealObfuscatedEmails(
+        [htmlToText(stripChrome(html)), embedded].filter(Boolean).join('\n'),
+      )
+    : full;
+  const links = extractLinks(html, url).map((link) => link.url);
+  return {
+    url: url.toString(),
+    text: [structured.lines.join('\n').slice(0, MAX_STRUCTURED_CHARS), body]
+      .filter(Boolean)
+      .join('\n'),
+    full,
+    emails: [
+      ...extractMailtoEmails(html),
+      ...extractEmails(full),
+      ...structured.emails,
+    ],
+    phones: [
+      ...structured.phones,
+      ...links.flatMap((link) => {
+        if (link.protocol === 'tel:' || link.protocol === 'callto:') {
+          return [{ raw: safeDecode(link.pathname), label: '' }];
+        }
+        const whatsapp = whatsappNumber(link.toString());
+        return whatsapp ? [{ raw: `+${whatsapp}`, label: 'whatsapp' }] : [];
+      }),
+    ],
+    links: [...structured.links, ...links.map((link) => link.toString())],
+    country: structured.country,
+  };
+}
+
+function commonCountry(reads: PageRead[]) {
+  const counts = new Map<CountryCode, number>();
+  for (const read of reads) {
+    const found = [
+      ...read.phones.map((phone) => parsePhone(phone.raw)),
+      ...findPhones(read.full),
+    ];
+    for (const phone of found) {
+      if (phone?.country) {
+        counts.set(phone.country, (counts.get(phone.country) || 0) + 1);
+      }
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function collectContacts(reads: PageRead[], host: string, hint?: CountryCode) {
+  const country =
+    reads.find((read) => read.country)?.country ||
+    countryFromDomain(host) ||
+    commonCountry(reads) ||
+    hint;
+  const found = new Map<string, SiteContact>();
+  const note = (
+    kind: SiteContact['kind'],
+    value: string,
+    url: string,
+    label = '',
+    type?: string,
+  ) => {
+    const key = `${kind}:${value}`;
+    const entry = found.get(key) || {
+      kind,
+      value,
+      url,
+      label: '',
+      ...(type ? { type } : {}),
+      seen: [],
+    };
+    if (!entry.label && label) entry.label = label;
+    if (!entry.seen.includes(url)) entry.seen.push(url);
+    found.set(key, entry);
+  };
+  for (const read of reads) {
+    for (const email of read.emails) {
+      if (EMAIL.test(email)) note('email', email, read.url);
+    }
+    for (const phone of read.phones) {
+      const parsed = parsePhone(phone.raw, country);
+      if (parsed) {
+        note('phone', parsed.number, read.url, phone.label, parsed.type);
+      }
+    }
+    for (const phone of findPhones(read.full, country)) {
+      note('phone', phone.number, read.url, '', phone.type);
+    }
+    for (const link of read.links) {
+      const profile = linkedinUrl(link);
+      if (profile) {
+        note(
+          'linkedin',
+          profile.url,
+          read.url,
+          profile.kind === 'in' ? 'person' : 'company',
+        );
+      }
+    }
+  }
+  const all = [...found.values()];
+  return (['email', 'phone', 'linkedin'] as const).flatMap((kind) =>
+    all.filter((item) => item.kind === kind).slice(0, MAX_CONTACTS),
+  );
+}
+
+function sitemapUrls(xml: string) {
+  return [...xml.matchAll(/<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/loc>/gi)].map(
+    (match) => decodeEntities(match[1]),
+  );
 }
 
 export function extractLinks(html: string, base: URL) {
@@ -328,9 +742,9 @@ export function extractLinks(html: string, base: URL) {
 
 const PAGE_HINTS: Array<[RegExp, number]> = [
   [/team|leadership|people|management|founders|executives|our-?people/, 3],
+  [/contact|reach-?us|get-?in-?touch|our-?offices|locations|branches/, 3],
   [/about|company|who-?we-?are|story/, 2],
   [/career|jobs|join|hiring|openings/, 2],
-  [/contact/, 1],
   [/news|press|media|blog/, 1],
 ];
 
@@ -369,61 +783,181 @@ export function pickPages(
     .map(([url]) => url);
 }
 
+export function pickProfiles(
+  links: { url: URL; text: string }[],
+  page: URL,
+  limit = MAX_PROFILE_PAGES,
+) {
+  const base = page.pathname.replace(/\/+$/, '');
+  const host = page.hostname.replace(/^www\./, '');
+  const found: string[] = [];
+  for (const { url, text } of links) {
+    if (!base || url.hostname.replace(/^www\./, '') !== host) continue;
+    const path = url.pathname.replace(/\/+$/, '');
+    if (!path.startsWith(`${base}/`)) continue;
+    const slug = safeDecode(path.slice(base.length + 1)).toLowerCase();
+    if (
+      !/^[\p{L}\p{N}]+([-_][\p{L}\p{N}]+)*$/u.test(slug) ||
+      NOT_PROFILE.test(slug) ||
+      (!/[-_]/.test(slug) && !/profile|bio|more|view/i.test(text))
+    ) {
+      continue;
+    }
+    const target = `${url.origin}${url.pathname}`;
+    if (!found.includes(target)) found.push(target);
+  }
+  return found.slice(0, limit);
+}
+
 export class SiteReader {
   private readonly robots = new Map<string, RobotsRule[]>();
+  private readonly sitemaps = new Map<string, string[]>();
   private readonly lastRequestAt = new Map<string, number>();
 
   constructor(private readonly transport: Transport = defaultTransport) {}
 
-  async readSite(domain: string): Promise<SiteContent> {
+  async readSite(
+    domain: string,
+    options: { country?: CountryCode } = {},
+  ): Promise<SiteContent> {
     for (const scheme of ['https', 'http']) {
       let home: URL;
       try {
         home = new URL(`${scheme}://${domain}/`);
         assertFetchable(home);
       } catch {
-        return { pages: [], emails: [], unreachableReason: 'Blocked address' };
+        return {
+          pages: [],
+          emails: [],
+          contacts: [],
+          unreachableReason: 'Blocked address',
+        };
       }
       if (!(await this.robotsAllow(home))) {
         return {
           pages: [],
           emails: [],
+          contacts: [],
           unreachableReason: 'Site disallows automated access',
         };
       }
       const page = await this.fetchPage(home).catch(() => null);
       if (!page) continue;
-      return this.readRest(home, page);
+      return this.readRest(home, page, options.country);
     }
-    return { pages: [], emails: [], unreachableReason: 'Website unreachable' };
+    return {
+      pages: [],
+      emails: [],
+      contacts: [],
+      unreachableReason: 'Website unreachable',
+    };
   }
 
   private async readRest(
     home: URL,
     first: { url: URL; html: string },
+    country?: CountryCode,
   ): Promise<SiteContent> {
     const pages: SitePage[] = [];
-    const emails = new Set<string>();
-    const add = (page: { url: URL; html: string }) => {
-      pages.push({
-        url: page.url.toString(),
-        text: htmlToText(page.html).slice(0, MAX_PAGE_CHARS),
-      });
-      extractMailtoEmails(page.html).forEach((email) => emails.add(email));
+    const reads: PageRead[] = [];
+    const add = (page: { url: URL; html: string }, limit: number) => {
+      const read = readPage(page.url, page.html, pages.length > 0);
+      reads.push(read);
+      pages.push({ url: read.url, text: read.text.slice(0, limit) });
     };
-    add(first);
-    const targets = pickPages(extractLinks(first.html, first.url), home);
-    let total = pages[0].text.length;
-    for (const target of targets) {
-      if (total >= MAX_TOTAL_CHARS) break;
-      const url = new URL(target);
-      if (!(await this.robotsAllow(url))) continue;
-      const page = await this.fetchPage(url).catch(() => null);
-      if (!page) continue;
-      add(page);
-      total += pages[pages.length - 1].text.length;
+    add(first, MAX_PAGE_CHARS);
+    const links = extractLinks(first.html, first.url);
+    let targets = pickPages(links, home);
+    const keyPages = targets.filter((target) =>
+      KEY_PAGES.test(new URL(target).pathname.toLowerCase()),
+    );
+    if (keyPages.length < 2) {
+      targets = pickPages([...links, ...(await this.sitemapLinks(home))], home);
     }
-    return { pages, emails: [...emails] };
+    let total = pages[0].text.length;
+    const visit = async (target: string, limit: number) => {
+      if (
+        total >= MAX_TOTAL_CHARS ||
+        pages.some((page) => page.url === target)
+      ) {
+        return null;
+      }
+      const url = new URL(target);
+      if (!(await this.robotsAllow(url))) return null;
+      const page = await this.fetchPage(url).catch(() => null);
+      if (!page || pages.some((item) => item.url === page.url.toString())) {
+        return null;
+      }
+      add(page, limit);
+      total += pages[pages.length - 1].text.length;
+      return page;
+    };
+    const profiles: string[] = [];
+    for (const target of targets) {
+      const page = await visit(target, MAX_PAGE_CHARS);
+      if (page && TEAM_PAGES.test(page.url.pathname.toLowerCase())) {
+        profiles.push(
+          ...pickProfiles(extractLinks(page.html, page.url), page.url),
+        );
+      }
+    }
+    for (const target of [...new Set(profiles)].slice(0, MAX_PROFILE_PAGES)) {
+      await visit(target, MAX_PROFILE_CHARS);
+    }
+    const length = pages.reduce((sum, page) => sum + page.text.length, 0);
+    if (length < MIN_PAGE_TEXT && APP_SHELL.test(first.html)) {
+      return {
+        pages: [],
+        emails: [],
+        contacts: [],
+        unreachableReason: 'The website needs JavaScript to show its content',
+      };
+    }
+    const contacts = collectContacts(reads, home.hostname, country);
+    return {
+      pages,
+      emails: contacts
+        .filter((item) => item.kind === 'email')
+        .map((item) => item.value),
+      contacts,
+    };
+  }
+
+  private async sitemapLinks(home: URL) {
+    const listed = this.sitemaps.get(home.origin) || [];
+    const candidates = [
+      ...new Set([...listed, new URL('/sitemap.xml', home.origin).toString()]),
+    ].slice(0, 2);
+    for (const candidate of candidates) {
+      let xml = await this.fetchText(candidate);
+      if (!xml) continue;
+      if (/<sitemapindex/i.test(xml)) {
+        const children = sitemapUrls(xml);
+        const child =
+          children.find((url) => /page/i.test(url)) || children[0];
+        xml = child ? await this.fetchText(child) : '';
+      }
+      return sitemapUrls(xml)
+        .slice(0, MAX_SITEMAP_URLS)
+        .flatMap((loc) => {
+          try {
+            return [{ url: new URL(loc), text: '' }];
+          } catch {
+            return [];
+          }
+        });
+    }
+    return [];
+  }
+
+  private async fetchText(target: string) {
+    try {
+      const url = new URL(target);
+      if (!(await this.robotsAllow(url))) return '';
+      return (await this.fetchPage(url)).html;
+    } catch {
+      return '';
+    }
   }
 
   private async follow(start: URL, allowed?: (url: URL) => Promise<boolean>) {
@@ -468,7 +1002,15 @@ export class SiteReader {
       const { response } = await this.follow(
         new URL('/robots.txt', url.origin),
       );
-      if (response.status === 200) return parseRobots(response.body);
+      if (response.status === 200) {
+        this.sitemaps.set(
+          url.origin,
+          [...response.body.matchAll(/^\s*sitemap\s*:\s*(\S+)/gim)].map(
+            (match) => match[1],
+          ),
+        );
+        return parseRobots(response.body);
+      }
       if (response.status >= 400 && response.status < 500) return [];
     } catch {
       return [{ allow: false, pattern: '/' }];
