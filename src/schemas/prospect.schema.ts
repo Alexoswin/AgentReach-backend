@@ -38,6 +38,17 @@ export class Prospect {
   @Prop({ default: 'none' })
   emailStatus: string;
 
+  // E.164, published next to the person on the company website
+  @Prop()
+  phone?: string;
+
+  // mobile | landline | toll_free | phone
+  @Prop()
+  phoneType?: string;
+
+  @Prop()
+  linkedinUrl?: string;
+
   @Prop()
   sourceUrl?: string;
 

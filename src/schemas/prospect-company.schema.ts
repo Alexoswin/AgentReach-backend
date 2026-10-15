@@ -41,6 +41,17 @@ export class ProspectCompany {
   @Prop()
   emailPattern?: string;
 
+  // Role mailboxes such as sales@: { value, label, url }
+  @Prop({ type: [Object], default: [] })
+  emails: Array<Record<string, unknown>>;
+
+  // { value (E.164), type, label (main | whatsapp | contact type), url }
+  @Prop({ type: [Object], default: [] })
+  phones: Array<Record<string, unknown>>;
+
+  @Prop()
+  linkedinUrl?: string;
+
   @Prop({
     type: Date,
     default: () => new Date(Date.now() + PROSPECT_RETENTION_MS),

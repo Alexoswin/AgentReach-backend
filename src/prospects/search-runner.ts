@@ -1,8 +1,9 @@
 import { MongoService } from '../mongo.service';
 import { GeminiJson } from './gemini-json';
 import { normalizeProfile, ProspectProfile } from './icp';
+import { countryFromLocations, PHONE_TYPES } from './phones';
 import { QUALIFY_CONCURRENCY, QUALIFY_THRESHOLD } from './prospect.constants';
-import { analyzeCompany, rankPeople } from './qualify';
+import { analyzeCompany, companyContacts, rankPeople } from './qualify';
 import { scoreCriteria } from './scoring';
 import { normalizeDomain, SiteReader } from './site-reader';
 import { ProspectSource } from './sources/prospect-source';
@@ -84,6 +85,7 @@ export async function runSearch(
 ): Promise<RunOutcome> {
   const { db, reader } = deps;
   const profile = normalizeProfile(search.profile);
+  const country = countryFromLocations(profile.locations);
   const callBudget = search.maxCompanies * 3 + 5;
   let calls = Number(search.counts?.geminiCalls) || 0;
   let failures = 0;
@@ -97,17 +99,27 @@ export async function runSearch(
 
   const saveProgress = async () => {
     const where = { searchId: search.id };
-    const [companies, qualified, rejected, unreachable, people, withEmail] =
-      await Promise.all([
-        db.prospectCompany.count({ where }),
-        db.prospectCompany.count({ where: { ...where, status: 'qualified' } }),
-        db.prospectCompany.count({ where: { ...where, status: 'rejected' } }),
-        db.prospectCompany.count({
-          where: { ...where, status: 'unreachable' },
-        }),
-        db.prospect.count({ where }),
-        db.prospect.count({ where: { ...where, emailStatus: 'published' } }),
-      ]);
+    const [
+      companies,
+      qualified,
+      rejected,
+      unreachable,
+      people,
+      withEmail,
+      withPhone,
+    ] = await Promise.all([
+      db.prospectCompany.count({ where }),
+      db.prospectCompany.count({ where: { ...where, status: 'qualified' } }),
+      db.prospectCompany.count({ where: { ...where, status: 'rejected' } }),
+      db.prospectCompany.count({
+        where: { ...where, status: 'unreachable' },
+      }),
+      db.prospect.count({ where }),
+      db.prospect.count({ where: { ...where, emailStatus: 'published' } }),
+      db.prospect.count({
+        where: { ...where, phoneType: { in: PHONE_TYPES } },
+      }),
+    ]);
     await db.prospectSearch.update({
       where: { id: search.id },
       data: {
@@ -118,6 +130,7 @@ export async function runSearch(
           unreachable,
           people,
           withEmail,
+          withPhone,
           geminiCalls: calls,
         },
         heartbeatAt: new Date(),
@@ -216,6 +229,9 @@ export async function runSearch(
             jobTitle: person.jobTitle,
             email: person.email || undefined,
             emailStatus: person.email ? 'published' : 'none',
+            phone: person.phone || undefined,
+            phoneType: person.phone ? person.phoneType : undefined,
+            linkedinUrl: person.linkedinUrl || undefined,
             sourceUrl: person.sourceUrl,
             score,
             reasons,
@@ -241,7 +257,7 @@ export async function runSearch(
         await reject('rejected', 'Matches an exclusion');
         return 'rejected';
       }
-      const site = await reader.readSite(company.domain);
+      const site = await reader.readSite(company.domain, { country });
       if (!site.pages.length) {
         await reject(
           'unreachable',
@@ -254,6 +270,7 @@ export async function runSearch(
         peopleOnly: lookup,
       });
       const emailPattern = inferEmailPattern(analysis.people);
+      const contacts = companyContacts(site, company, analysis.people);
 
       if (lookup) {
         const saved = await savePeople(
@@ -272,6 +289,7 @@ export async function runSearch(
             summary: analysis.summary,
             pages: site.pages.map((page) => page.url),
             emailPattern,
+            ...contacts,
           },
         });
         return 'qualified';
@@ -312,7 +330,13 @@ export async function runSearch(
       await savePeople(company, analysis.people, score, reasons);
       await db.prospectCompany.update({
         where: { id: company.id },
-        data: { status: 'qualified', reason: '', emailPattern, ...base },
+        data: {
+          status: 'qualified',
+          reason: '',
+          emailPattern,
+          ...contacts,
+          ...base,
+        },
       });
       return 'qualified';
     };

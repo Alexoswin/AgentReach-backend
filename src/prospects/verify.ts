@@ -221,9 +221,9 @@ export function verifyPerson(
 }
 
 function wordIndexes(page: string, token: string) {
-  return [...page.matchAll(new RegExp(`(?<!\\p{L})${token}(?!\\p{L})`, 'gu'))].map(
-    (match) => match.index ?? 0,
-  );
+  return [
+    ...page.matchAll(new RegExp(`(?<!\\p{L})${token}(?!\\p{L})`, 'gu')),
+  ].map((match) => match.index ?? 0);
 }
 
 function nameStarts(page: string, first: string, last: string) {
@@ -270,15 +270,14 @@ export function verifyContacts(
       ),
     )
     .sort((a, b) => a - b);
-  const windows = nameStarts(context.normalizedPage, first, last).map(
-    (start) =>
-      context.normalizedPage.slice(
-        start,
-        Math.min(
-          start + NAME_WINDOW,
-          boundaries.find((index) => index > start) ?? Infinity,
-        ),
+  const windows = nameStarts(context.normalizedPage, first, last).map((start) =>
+    context.normalizedPage.slice(
+      start,
+      Math.min(
+        start + NAME_WINDOW,
+        boundaries.find((index) => index > start) ?? Infinity,
       ),
+    ),
   );
   const digits = (text: string) => text.replace(/\D/g, '');
 

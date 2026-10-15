@@ -720,9 +720,11 @@ function collectContacts(reads: PageRead[], host: string, hint?: CountryCode) {
 }
 
 function sitemapUrls(xml: string) {
-  return [...xml.matchAll(/<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/loc>/gi)].map(
-    (match) => decodeEntities(match[1]),
-  );
+  return [
+    ...xml.matchAll(
+      /<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/loc>/gi,
+    ),
+  ].map((match) => decodeEntities(match[1]));
 }
 
 export function extractLinks(html: string, base: URL) {
@@ -933,8 +935,7 @@ export class SiteReader {
       if (!xml) continue;
       if (/<sitemapindex/i.test(xml)) {
         const children = sitemapUrls(xml);
-        const child =
-          children.find((url) => /page/i.test(url)) || children[0];
+        const child = children.find((url) => /page/i.test(url)) || children[0];
         xml = child ? await this.fetchText(child) : '';
       }
       return sitemapUrls(xml)

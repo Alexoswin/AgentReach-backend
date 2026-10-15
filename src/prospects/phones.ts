@@ -64,7 +64,10 @@ export function countryFromName(value: unknown): CountryCode | undefined {
   if (!countryNames) {
     const display = new Intl.DisplayNames(['en'], { type: 'region' });
     countryNames = new Map(
-      getCountries().map((code) => [String(display.of(code)).toLowerCase(), code]),
+      getCountries().map((code) => [
+        String(display.of(code)).toLowerCase(),
+        code,
+      ]),
     );
     for (const [alias, code] of Object.entries(COUNTRY_ALIASES)) {
       countryNames.set(alias, code as CountryCode);
@@ -98,7 +101,9 @@ function looksFake(national: string, country?: CountryCode) {
   ) {
     return true;
   }
-  return (country === 'US' || country === 'CA') && national.slice(3, 6) === '555';
+  return (
+    (country === 'US' || country === 'CA') && national.slice(3, 6) === '555'
+  );
 }
 
 function describe(phone: PhoneNumber | undefined): FoundPhone | null {

@@ -147,7 +147,11 @@ describe('analyzeCompany', () => {
       }),
       profile,
       { name: 'Acme', domain: 'acme.com' },
-      { pages: [{ url: 'https://acme.com/', text: PAGE }], emails: [] },
+      {
+        pages: [{ url: 'https://acme.com/', text: PAGE }],
+        emails: [],
+        contacts: [],
+      },
     );
     expect(analysis.criteria[0].verdict).toBe('unknown');
     expect(analysis.criteria[0].evidence).toBe('');
