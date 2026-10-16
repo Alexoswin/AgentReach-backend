@@ -136,8 +136,6 @@ npm run start:dev         # watch mode on http://localhost:3001
 | `PUBLIC_WS_URL`            |  calls   | Public `wss://` URL for the `/twilio/stream` media socket. |
 | `PUBLIC_APP_URL`           | prod     | Frontend origin used in password-reset email links. |
 | `CORS_ORIGINS`             | optional | Comma-separated allowed origins. Empty allows all. |
-| `ALLOW_REGISTRATION`       | optional | `true` opens password sign-up in production (closed by default). Google sign-up is always open. Every account only sees the data it created. |
-| `ALLOWED_SIGNUP_EMAILS`    | optional | Comma-separated emails that may sign up even when registration is closed. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | optional | Creates a first account on startup if that email does not exist. |
 | `ENABLE_SWAGGER`           | optional | `true` serves `/docs` in production (off by default). |
 | `GEMINI_API_KEY`           | optional | Bootstrap fallback. The encrypted key saved in Settings takes precedence. |
@@ -172,7 +170,7 @@ unless noted. Explore the live, always-accurate contract in **Swagger** at `/doc
 ### Auth — `/api/auth`
 | Method | Path | Notes |
 | ------ | ---- | ----- |
-| POST | `/register` | Public. Create an account (closed in production unless allowed — see `ALLOW_REGISTRATION`). |
+| POST | `/register` | Public. Create an account; the email must be verified with a one-time code before sign-in. |
 | POST | `/login` | Public. Returns access + refresh tokens. |
 | POST | `/refresh` | Public. Exchange a refresh token for new tokens. |
 | POST | `/forgot-password` | Public. Emails a one-time reset link (30 min) via SES. Same response for unknown emails. |

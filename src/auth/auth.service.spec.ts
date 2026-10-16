@@ -78,7 +78,7 @@ describe('AuthService', () => {
     process.env.NODE_ENV = originalEnv;
   });
 
-  it('closes registration in production unless explicitly allowed', async () => {
+  it('opens password registration in production with email verification', async () => {
     process.env.NODE_ENV = 'production';
     process.env.JWT_SECRET = 'test-secret';
     const dto = {
@@ -87,22 +87,7 @@ describe('AuthService', () => {
       password: 'secret123',
     };
 
-    await expect(createService().service.register(dto)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
-
-    const allowlisted = createService([], {
-      ALLOWED_SIGNUP_EMAILS: 'Jane@x.com',
-    });
-    jest
-      .spyOn(allowlisted.service as any, 'sendEmailVerificationCode')
-      .mockResolvedValue(undefined);
-    await expect(allowlisted.service.register(dto)).resolves.toHaveProperty(
-      'requiresEmailVerification',
-      true,
-    );
-
-    const open = createService([], { ALLOW_REGISTRATION: 'true' });
+    const open = createService();
     jest
       .spyOn(open.service as any, 'sendEmailVerificationCode')
       .mockResolvedValue(undefined);

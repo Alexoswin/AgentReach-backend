@@ -128,8 +128,6 @@ export class AuthService {
       };
     }
 
-    this.assertRegistrationAllowed(email);
-
     const passwordHash = await hashPassword(dto.password);
     const verificationCode = this.createEmailVerificationCode();
     await this.sendEmailVerificationCode(email, verificationCode);
@@ -696,26 +694,6 @@ export class AuthService {
     });
 
     return genericResponse;
-  }
-
-  // Password sign-up is closed in production unless ALLOW_REGISTRATION=true
-  // or the email is on ALLOWED_SIGNUP_EMAILS.
-  private assertRegistrationAllowed(email: string) {
-    const allowlist = (
-      this.configService.get<string>('ALLOWED_SIGNUP_EMAILS') || ''
-    )
-      .split(',')
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean);
-    if (allowlist.includes(email)) return;
-
-    const flag = this.configService.get<string>('ALLOW_REGISTRATION')?.trim();
-    const open = flag ? flag === 'true' : !isProduction();
-    if (!open) {
-      throw new ForbiddenException(
-        'Registration is disabled. Ask an administrator for access.',
-      );
-    }
   }
 
   private async sendPasswordResetEmail(email: string, token: string) {
