@@ -63,33 +63,17 @@ jobs:
           # them at Secrets Manager/SSM ARNs, rather than putting them here.
           ECS_ENV_JSON: ${{ secrets.ECS_ENV_JSON }}
           ECS_SECRETS_JSON: ${{ secrets.ECS_SECRETS_JSON }}
-          # Platform SES credentials for verification and password reset emails.
-          AWS_KEY_ID: ${{ secrets.AWS_KEY_ID }}
-          AWS_KEY: ${{ secrets.AWS_KEY }}
-          SES_AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_SENDER_EMAIL: ${{ secrets.AWS_SENDER_EMAIL }}
         run: |
           set -euo pipefail
 
           test -n "$ECS_EXECUTION_ROLE_ARN" || { echo "Missing ECS_EXECUTION_ROLE_ARN"; exit 1; }
           test -n "$ECS_INFRASTRUCTURE_ROLE_ARN" || { echo "Missing ECS_INFRASTRUCTURE_ROLE_ARN"; exit 1; }
-          for name in AWS_KEY_ID AWS_KEY SES_AWS_REGION AWS_SENDER_EMAIL; do
-            test -n "${!name}" || { echo "Missing $name"; exit 1; }
-          done
-
-          ses_env=$(jq -cn \
-            --arg key_id "$AWS_KEY_ID" \
-            --arg key "$AWS_KEY" \
-            --arg region "$SES_AWS_REGION" \
-            --arg sender "$AWS_SENDER_EMAIL" \
-            '[{name: "AWS_KEY_ID", value: $key_id}, {name: "AWS_KEY", value: $key}, {name: "AWS_REGION", value: $region}, {name: "AWS_SENDER_EMAIL", value: $sender}]')
 
           primary_container=$(jq -cn \
             --arg image "$IMAGE_URI" \
             --argjson environment "${ECS_ENV_JSON:-[]}" \
-            --argjson ses "$ses_env" \
             --argjson secrets "${ECS_SECRETS_JSON:-[]}" \
-            '{image: $image, containerPort: 8080, environment: (($environment | map(select(.name as $n | $ses | map(.name) | index($n) | not))) + $ses), secrets: $secrets}')
+            '{image: $image, containerPort: 8080, environment: $environment, secrets: $secrets}')
 
           if [ -n "${ECS_SERVICE_ARN:-}" ]; then
             aws ecs update-express-gateway-service \
